@@ -67,6 +67,20 @@ Cost note: the claude backend is the minority lane (second in `builder_backends`
 only after the codex ladder is exhausted), so forcing its diffs onto the opencode reviewer
 costs ~zero in practice.
 
+### Reviewer lane selection
+
+Which of the *allowed* variants above gets used is the project's call: take the first entry of
+`reviewer_backends` in `PROJECT.md` frontmatter (default `[opencode]`) that the diversity table
+permits for this diff. **The table is a hard gate and config is only a preference** — if the
+configured first choice would be same-family with the builder, skip it and take the next legal
+entry. If no configured entry is legal, stop and tell the user; never fall back to same-family
+review.
+
+Note the default is deliberately *not* the flat-rate claude lane even for codex-built diffs,
+where the table permits it — review volume against the shared 5h window would compete with the
+orchestrator. Deferred pending the 2026-08-17 telemetry review; see `MODELS.md` § Project
+configuration keys and issue #14.
+
 ---
 
 ## Pre-build critique — shift-left review (R1+ / security, 2026-07-20)
@@ -101,6 +115,10 @@ same failure the Reviewer's diversity rule guards against. Route the critique to
 backend (gpt-5.6-terra, `standard`) or **opencode** `standard` — never an Anthropic critic of an
 Anthropic-authored plan. (This is the genuinely good use of the flat-rate codex lane in a review
 role.)
+
+Lane selection follows `critic_backends` in `PROJECT.md` frontmatter (default
+`[codex, opencode]`), with the same precedence as the Reviewer: diversity is the hard gate,
+config only orders the legal choices.
 
 ### Security floor
 

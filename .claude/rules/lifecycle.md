@@ -56,6 +56,12 @@ Write `PROJECT.md`:
 project: <project-name>
 setup_at: <ISO8601>
 builder_backends: [<detected order, e.g. codex, claude, opencode>]
+reviewer_backends: [opencode]
+critic_backends: [codex, opencode]
+codex_weekly_burn_threshold: 4000000
+claude_window_burn_threshold: null
+max_concurrent: {codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}
+max_concurrent_total: 6
 ---
 
 ## Project Paths
@@ -80,6 +86,21 @@ builder_backends: [<detected order, e.g. codex, claude, opencode>]
 
 <!-- Add any project-specific notes here for future PM sessions. -->
 ```
+
+**Tunable frontmatter keys.** Beyond `builder_backends`, the frontmatter carries the
+per-project routing/threshold knobs. `framework/` is a read-only subtree, so these live here
+— never edit the framework defaults to tune one project. Defaults match framework behavior;
+omitting a key uses the default. Authority for each: `framework/MODELS.md` § Project
+configuration keys.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `reviewer_backends` | `[opencode]` | Ordered preference for the first-pass Reviewer lane. Still subject to the family-diversity hard rule (`VERIFY.md`) — config narrows the choice, it never overrides diversity. |
+| `critic_backends` | `[codex, opencode]` | Ordered preference for the pre-build Critic lane. Same diversity constraint, measured against the plan's author. |
+| `codex_weekly_burn_threshold` | `4000000` | ISO-week codex burn proxy above which the `sol@high` rung is skipped (see `dispatch.md` § Backend & Tier Escalation). |
+| `claude_window_burn_threshold` | `null` (ungated) | 5-hour-window claude burn proxy, symmetric to the codex gate. Ungated until the 2026-08-17 telemetry review (issue #14). |
+| `max_concurrent` | `{codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}` | Per-lane concurrent-dispatch cap for parallel fan-out. `claude_review` is unused while `reviewer_backends` is `[opencode]`. |
+| `max_concurrent_total` | `6` | Global concurrent-dispatch cap per project. |
 
 Check whether `.claude/settings.json` exists. If not, tell the user to run `bash framework/setup.sh <project-name> <code-dir>` from the PM directory and restart.
 
