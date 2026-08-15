@@ -77,6 +77,51 @@ To escalate a role for one spawn (e.g. a genuinely architectural Tech Lead pass)
 
 ---
 
+## Project configuration keys (2026-07-31)
+
+Per-project routing and threshold knobs live in the project's **`PROJECT.md` frontmatter**,
+alongside `builder_backends`. Rationale: `framework/` is a read-only subtree in every consuming
+project, so a project cannot tune a framework default by editing the framework — it must have a
+writable surface of its own. `PROJECT.md` is that surface (it is already read at startup and
+already holds `builder_backends`; a second config file would only add a sync burden and a way
+for the two to disagree).
+
+Values in this file are the **defaults a project inherits by omitting the key**, not overrides.
+
+| Key | Default | Consumed by |
+|---|---|---|
+| `builder_backends` | `[codex, claude, opencode]` | Build dispatch + backend escalation (`.claude/rules/dispatch.md`) |
+| `reviewer_backends` | `[opencode]` | First-pass Reviewer routing (`VERIFY.md` § Diff review). Flipping this to `[claude, opencode]` is issue #14 and is **deferred to the 2026-08-17 telemetry review** — see the rationale below; do not change it without that review. |
+| `claude_window_burn_threshold` | `null` (ungated) | Reviewer/Critic claude routing. Symmetric to `codex_weekly_burn_threshold` but over the 5-hour window `cost-report.sh` already computes. Leave `null` until telemetry supports a number — see the deferral note below. |
+| `max_concurrent` | `{codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}` | Parallel dispatch fan-out (`SPEC-03`). **claude is two lanes on purpose:** a builder holds the 5-hour window for a ~295 s median (48 observed runs) and competes with the orchestrator session itself, so it stays a codex-exhausted fallback capped at 1. The separate `claude_review` cap is pre-provisioned for the issue-#14 decision — a short read-only review is a materially different claim on the same bucket than a 25-minute build — and is **unused while `reviewer_backends` stays `[opencode]`**. |
+| `critic_backends` | `[codex, opencode]` | Pre-build Critic routing (`VERIFY.md` § Pre-build critique). Adding a claude rung is part of issue #14 and carries the same 2026-08-17 deferral. The **family-diversity rule wins over this order** regardless — never an Anthropic critic of an Anthropic-authored plan. |
+| `codex_weekly_burn_threshold` | `4000000` | `sol@high` burn gate (§ Codex tier column) |
+
+**Config narrows, it never overrides a hard rule.** `reviewer_backends` / `critic_backends`
+express *preference order among otherwise-legal lanes*. The family-diversity rules in
+`VERIFY.md` are hard gates: if the configured first choice would put the reviewer in the same
+family as the builder (or the critic in the same family as the plan's author), skip it and take
+the next legal entry. A config that leaves no legal lane is a misconfiguration — report it to
+the user rather than silently degrading to same-family review.
+
+**Why `reviewer_backends` defaults to `[opencode]` and not `[claude]`.** The flat-rate-first
+principle (§ Builder Backends) argues the other way, and `VERIFY.md` already permits a Sonnet
+reviewer for codex-built diffs — so this default is metered spend the rules do not require.
+It stands deliberately: review is the highest-frequency dispatch in the framework, and the
+Claude 5h window is shared with the Opus partner/orchestrator session, so defaulting review to
+Sonnet risks starving the orchestrator mid-task. Revisiting this — together with a
+`claude_window_burn_threshold` gate symmetric to the codex one — is deferred pending the
+2026-08-17 telemetry review. See issue #14.
+
+Field data since supports the deferral rather than the flip: ISO-week 2026-W31 alone shows
+**44 claude-backend runs** on gamedaytastic, before any review traffic is added to that lane
+(`cost-report.sh` § Subscription-backend weekly burn). The plumbing to *decide* this landed
+2026-08 — `claude_window_burn_threshold`, the `claude_review` concurrency lane, and the
+partner-session records that close the burn-proxy drift issue #14 names. The default itself
+did not move.
+
+---
+
 ## Builder Backends (2026-07-15)
 
 Build tasks dispatch through one of three backends, in the project's `builder_backends`
@@ -122,11 +167,15 @@ the fallback.
 shows the @high rung (a) actually salvages tasks that @medium failed and (b) does not blow
 the weekly cliff. Until then the threshold default is conservative.
 
-### `codex_weekly_burn_threshold` (tunable)
+### `codex_weekly_burn_threshold` (tunable — set per project)
+
+**Set in the project's `PROJECT.md` frontmatter, not here.** The framework value below is the
+default a project inherits by omitting the key; `framework/` is a read-only subtree, so tuning
+one project by editing this file is a rules violation (see § Project configuration keys).
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `codex_weekly_burn_threshold` | `4_000_000` tokens (ISO-week, all codex runs incl. `reasoning_tokens`) | Above this current-week burn proxy in `logs/cost.jsonl`, the `sol@high` attempt is skipped and control falls through to the claude backend. Conservative starting value pending telemetry — raise it once `cost-report.sh` shows the real weekly ceiling. |
+| `codex_weekly_burn_threshold` | `4000000` tokens (ISO-week, all codex runs incl. `reasoning_tokens`) | Above this current-week burn proxy in `logs/cost.jsonl`, the `sol@high` attempt is skipped and control falls through to the claude backend. Conservative starting value pending telemetry — raise it once `cost-report.sh` shows the real weekly ceiling. |
 
 The proxy is the same per-run token sum `cost-report.sh` already rolls up per ISO-week (see
 Weekly-quota burn proxy below); the orchestrator reads the current week's total before
@@ -182,7 +231,7 @@ Escalation in `.claude/rules/dispatch.md`).
 |------|-------|----------|-----------|----------|
 | `fast` | `openrouter/qwen/qwen3-coder-flash` | `openrouter/deepseek/deepseek-v4-pro` | yes (e2e 2026-07-02) | Simple bug fix, isolated change, clear root cause, no API surface changes |
 | `standard` | `openrouter/deepseek/deepseek-v4-pro` | `openrouter/z-ai/glm-5.2` | yes (e2e 2026-06-29) | Multi-file feature, new patterns, moderate complexity |
-| `heavy` | `openrouter/z-ai/glm-5.2` | `openrouter/deepseek/deepseek-v4-pro` | yes (e2e 2026-06-29) | Complex architecture, new subsystems, large context, significant reasoning |
+| `heavy` | `openrouter/deepseek/deepseek-v4-pro` | `openrouter/z-ai/glm-5.2` | yes | Complex architecture, new subsystems, large context, significant reasoning. **Swapped 2026-08 on field data** — see below. |
 
 **`fast` re-anchored to a true cost rung (2026-07-02):** gemini-3-flash-preview was dropped —
 it priced *above* deepseek-v4-pro on both sides ($0.50/$3.00 vs $0.43/$0.87), so its only
@@ -230,10 +279,12 @@ offload lane). Context/prices verified on OpenRouter 2026-06-29.
 |------------|------|-------|-----|-------|
 | `opus` / `claude-opus-4.8` | 5.00 | 25.00 | 1M | Subscription only (Architect; Gate-2 re-spec). **Never via API/opencode.** |
 | `fable` / `claude-fable-5` | 10.00 | 50.00 | — | Adviser-escalation only (§ Orchestrator). **Policy-restricted from security work** — never review or adjudicate a `security: true` task |
-| `sonnet` / `claude-sonnet-4.6` | 3.00 | 15.00 | 1M | Subscription only (PM + Tech Lead default) |
+| `sonnet` | 2.00 | 10.00 | 1M | Subscription only (PM + Tech Lead default). **Floating alias** — the claude CLI resolves it to the current default Sonnet, so cost.jsonl records written as `sonnet` are not pinned to a version. |
+| `claude-sonnet-5` | 2.00 | 10.00 | 1M | Subscription only. Pinned. Observed 3/3 in the field 2026-08. |
+| `claude-sonnet-4.6` | 3.00 | 15.00 | 1M | Subscription only. Pinned, previous generation — keep listed so historical `sonnet`-era records and any pinned dispatch still validate. |
 | `haiku` / `claude-haiku-4-5` | 1.00 | 5.00 | 200K | Subscription only (commit subagent / mechanical steps) |
 | `openrouter/deepseek/deepseek-v4-pro` | 0.43 | 0.87 | 1M | **standard** primary; fast/heavy fallback — cheapest, top SWE-bench |
-| `openrouter/z-ai/glm-5.2` | 0.95 | 3.00 | 1M | **heavy** primary; standard fallback (~Opus-4.8 FrontierSWE) |
+| `openrouter/z-ai/glm-5.2` | 0.95 | 3.00 | 1M | **heavy fallback** + reviewer/critic family-diversity rung. Demoted from heavy primary 2026-08 — see § Field results |
 | `openrouter/qwen/qwen3-coder-flash` | 0.195 | 0.975 | 1M | **fast** primary — non-reasoning coder specialist (e2e confirmed 2026-07-02) |
 | `gpt-5.6-sol` / `-terra` / `-luna` | — | — | — | Codex backend, ChatGPT subscription — no per-token spend; tracked as weekly-quota burn proxy (tokens in cost.jsonl) |
 | `openrouter/google/gemini-3-flash-preview` | 0.50 | 3.00 | 1M | Dropped 2026-07-02 (priced above deepseek; latency-only advantage) |
@@ -242,6 +293,49 @@ offload lane). Context/prices verified on OpenRouter 2026-06-29.
 Aliases (`opus`/`sonnet`/`haiku`/`fable`) are what the Claude Code Agent tool accepts for the
 subscription-side planning roles; the `openrouter/...` slugs are what dispatch.sh records for
 OpenCode builds. Rows share a price across the aliases that resolve to the same model.
+
+---
+
+## Field results (307 dispatches, 2026-06-29 → 08-06)
+
+Rolled up from `hometastic-pm/logs/cost.jsonl` (64) + `gamedaytastic-pm/logs/cost.jsonl` (243).
+This is the evidence base the tier table above should be tuned against; re-run the roll-up in
+`framework/cost-report.sh` before changing a rung.
+
+| Primary | n | exit 0 | median duration | Reading |
+|---|---|---|---|---|
+| `gpt-5.6-terra` | 136 | 131 (96%) | 78–242 s | The workhorse. Cheap lane, fast, reliable. |
+| `openrouter/deepseek/deepseek-v4-pro` | 75 | 69 (92%) | 273–338 s | Confirmed `standard` primary; promoted to `heavy` primary. |
+| `gpt-5.6-sol@low` | 20 | 20 (100%) | 185 s | Best heavy-class rung observed. |
+| `sonnet` / `claude-sonnet-5` (claude backend) | 48 | 45 (94%) | 295 s | **One model, two names** — the CLI alias `sonnet` resolves to `claude-sonnet-5` (verified 2026-08-15), so records written under both slugs are the same lane. Works well; competes with the orchestrator's own window. |
+| `openrouter/z-ai/glm-5.2` | 12 | 6 (**50%**) | 1327–1607 s | **Demoted from heavy primary.** |
+
+**Why glm-5.2 was demoted.** 50% success at a ~22–27 minute median, against `sol@low` at
+100%/3 min and deepseek at 92%/5 min. It also accounts for the dataset's timeout maxima. Caveat
+worth keeping: n=12 is thin and heavy-tier tasks are selected for difficulty, so part of that
+rate is task hardness — but a rung that turns a failed task into a lost half-hour is a bad rung
+regardless of cause. It stays in the table as the heavy *fallback* and as the non-Anthropic,
+non-OpenAI rung for reviewer/critic family diversity, where slowness is tolerable and
+independence is the point.
+
+**`fast` tier — unresolved, and it cannot resolve itself.** `qwen3-coder-flash` (the configured
+`fast` primary) has **zero runs in all 307 dispatches**; the whole `fast` tier has 8, and those
+went to `luna` / `gemini-3-flash`. The standing plan of "let dispatches accumulate, then read
+the rescue rate" will never terminate, because nothing routes there — the observed tier split is
+standard 60 / heavy 17 / fast 8. Pick one and close it:
+
+- **Sample it deliberately** — force the next 10 genuinely simple tasks to `fast` and read the
+  result. This also tests the Tech Lead's tier classifier, which the 60/17/8 split suggests is
+  calibrated upward.
+- **Or drop `fast`** — if six weeks of real work produced nothing simple enough to route there,
+  the tier is theoretical and two rungs are easier to reason about.
+
+A tier classifier that never says "easy" is itself the finding.
+
+**Telemetry hygiene, same dataset.** `tier` was absent on 79% of dispatches and `verify-cmd` on
+86% of gamedaytastic's, so both this table and any tier-level cost attribution rest on a
+minority of runs. `dispatch.sh` now refuses a build dispatch with no verifier and warns on a
+missing tier; expect the next roll-up to be materially more trustworthy than this one.
 
 ---
 
