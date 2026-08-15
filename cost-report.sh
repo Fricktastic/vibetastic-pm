@@ -175,11 +175,25 @@ else:
               f"no cost_event with a burn_proxy reading (see state.md burn-gate audit rule)")
 print()
 
+# [0h] Partner-session records (role=partner, written by the Stop hook) are NOT builder
+# dispatches — they are the orchestrator's own burn. They must still land in the weekly-burn
+# roll-up above, because that is what the claude_window / codex_weekly gates read, but
+# listing them as builders would misattribute the framework's most expensive context.
+print("=== Orchestrator (partner) sessions ===")
+_partner = {k: v for k, v in agg.items() if v.get("role") == "partner"}
+if not _partner:
+    print("  (no partner records — is the Stop hook wired? see setup.sh)")
+for k, a in sorted(_partner.items()):
+    print(f"  {k}: sessions={a['runs']}  in={a['in']:,}  out={a['out']:,}  cache={a['cache']:,}")
+print()
+
 print("=== Builder dispatches (from logs/cost.jsonl) ===")
 if not agg:
     print("  (no records yet)")
 total = 0.0
 for model, a in sorted(agg.items()):
+    if a.get("role") == "partner":
+        continue          # [0h] reported above under Orchestrator (partner) sessions
     # Subscription backends (codex/claude) have no per-token spend — don't fake a $ figure.
     if model.startswith(("codex: ", "claude: ")):
         d, dollar = None, "(subscription — see weekly burn)"

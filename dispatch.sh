@@ -79,6 +79,40 @@ VERIFY_CMD="${5:-}"
 MAX_ATTEMPTS="${6:-3}"
 TIER="${7:-}"   # optional: task tier (fast|standard|heavy), recorded in cost telemetry only
 
+# --- [0c] Resolve the prompt file to an absolute path, once, before anything cds ---------
+# Backends disagreed about what a relative <prompt-file> means: run_opencode_* and
+# run_codex_fresh expand `$(cat "$PROMPT_FILE")` in the CALLER's cwd (they pass --dir/-C
+# instead of cd'ing), while run_claude_* expand it inside `( cd "$DIR" && … )` — so the same
+# relative argument resolved against the PM dir for two backends and against the target
+# project dir for the third, where it failed silently. Same class as issue #11 (the critic's
+# {{PLAN}} path). Resolve once, here, and the whole class is gone.
+case "$PROMPT_FILE" in
+  /*) ;;
+  *)  _pf_dir="$(cd "$(dirname "$PROMPT_FILE")" 2>/dev/null && pwd)"
+      [ -n "$_pf_dir" ] || { echo "[dispatch] prompt file directory not found: $(dirname "$PROMPT_FILE")" >&2; exit 2; }
+      PROMPT_FILE="$_pf_dir/$(basename "$PROMPT_FILE")" ;;
+esac
+[ -r "$PROMPT_FILE" ] || { echo "[dispatch] prompt file not readable: $PROMPT_FILE" >&2; exit 2; }
+
+# --- [0a] A build dispatch without a verifier is not a dispatch --------------------------
+# Field data (307 runs across hometastic + gamedaytastic): 86% of gamedaytastic dispatches
+# and 52% of hometastic's carried NO verify-cmd, so the self-correct loop never ran and the
+# tier/backend escalation ladder — driven entirely by exit 20 — fired 4 times in 307 runs.
+# Correctness silently moved into the orchestrator's context at peak cost. The verifier is
+# cheap and mechanical; forgetting it is not recoverable after the fact, so refuse rather
+# than warn. --read-only dispatches are exempt (they have no tree to verify).
+if [ -z "$VERIFY_CMD" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_VERIFY:-0}" != "1" ]; then
+  echo "[dispatch] refusing a build dispatch with no verify-cmd (arg 5)." >&2
+  echo "           Pass the project's verify command from PROJECT.md § Verify command," >&2
+  echo "           or set DISPATCH_ALLOW_NO_VERIFY=1 to override deliberately." >&2
+  exit 2
+fi
+# tier is telemetry-only, so warn rather than refuse — but it was missing on 79% of runs,
+# which is why cost-report.sh cannot attribute cost by tier today.
+if [ -z "$TIER" ] && ! $READ_ONLY; then
+  echo "[dispatch] warning: no tier (arg 7) — this run will not be attributable by tier in cost.jsonl." >&2
+fi
+
 # --- Backend selection (codex | claude | opencode) ---
 infer_backend() {
   case "$1" in
@@ -100,6 +134,28 @@ fi
 # fallback model can carry its own effort.
 model_of()  { echo "${1%%@*}"; }
 effort_of() { case "$1" in *@*) echo "${1##*@}" ;; *) echo "" ;; esac; }
+
+# --- [0f/B4] Validate model slugs against MODELS.md before spending a dispatch -----------
+# Four runs in the field died in 2-3 seconds on typo'd slugs — `deepseek/deepseek-v4-pro`
+# and `deepseek-v4-pro` (missing the openrouter/ prefix), `openrouter/x-ai/grok-code-fast-1`
+# (never in MODELS.md), `claude-sonnet-5` (MODELS.md defines sonnet = claude-sonnet-4.6).
+# Each was logged as an ordinary task failure, so it could increment failure_count toward a
+# Gate 2 that has nothing to do with the task. Exit 30 is the right code: "configuration
+# problem, not task problem" — the PM skips to the next backend without touching
+# failure_count. Under parallel fan-out a copy-pasted bad slug wastes N dispatches, not one.
+# MODELS.md renders every slug in backticks in its tables; a missing MODELS.md skips the check.
+MODELS_FILE="${MODELS_FILE:-$(dirname "$0")/MODELS.md}"
+validate_model_slug() {
+  local m; m="$(model_of "$1")"
+  [ -n "$m" ] || return 0
+  [ -r "$MODELS_FILE" ] || return 0          # framework copy missing — don't block the run
+  grep -qF -- "\`$m\`" "$MODELS_FILE" && return 0
+  echo "[dispatch] model slug '$m' is not listed in $MODELS_FILE." >&2
+  echo "           Fix the slug in PLAN.md (a typo'd slug fails in seconds and pollutes failure_count)." >&2
+  return 1
+}
+validate_model_slug "$MODEL" || exit 30
+[ -n "$FALLBACK_MODEL" ] && { validate_model_slug "$FALLBACK_MODEL" || exit 30; }
 
 # Logs anchor to the PM directory, not the caller's cwd: the task prompt always lives in
 # <pm-dir>/prompts/, so default LOG_DIR to the prompts dir's sibling logs/. This keeps
@@ -280,12 +336,14 @@ run_opencode_fresh() {
     --dir "$DIR" \
     --dangerously-skip-permissions \
     "$(cat "$PROMPT_FILE")" \
-    2>> "$LOG_FILE"
+    < /dev/null 2>> "$LOG_FILE"
 }
 
 run_opencode_continue() {
   local model="$1" message="$2"
-  # Continue the most recent session in DIR (dispatches run one at a time) with a new message.
+  # Continue the most recent session in DIR with a new message. DIR is the task's own
+  # worktree (--worktree), so opencode's per-directory session store makes "most recent
+  # session in DIR" unambiguous even with many dispatches in flight.
   "${TIMEOUT_PREFIX[@]}" "${BUILDER_ENV[@]}" opencode run \
     --continue \
     --model "$model" \
@@ -293,7 +351,7 @@ run_opencode_continue() {
     --dir "$DIR" \
     --dangerously-skip-permissions \
     "$message" \
-    2>> "$LOG_FILE"
+    < /dev/null 2>> "$LOG_FILE"
 }
 
 # --- codex backend ---
@@ -309,10 +367,14 @@ codex_effort_args() {
 }
 
 codex_postrun() {
-  # Append events to the main log, capture the thread id, echo the last agent message to
+  # Accumulate this turn's events, capture the thread id, echo the last agent message to
   # stdout so the PM sees the builder's report like it does with opencode.
+  # [0f/B5] The turn file used to be appended to BOTH $CODEX_EVENTS and $LOG_FILE and then
+  # left on disk, so every codex run stored its full event JSONL three times. Measured in
+  # the field: 221 orphaned .turn files, 25 MB of pure duplication, and a 91 MB logs/ dir.
+  # The events file is the machine-readable copy; $LOG_FILE is meant to stay human-readable.
+  # Set DISPATCH_KEEP_TURN_FILES=1 to retain the per-turn files while debugging a run.
   cat "$CODEX_EVENTS.turn" >> "$CODEX_EVENTS" 2>/dev/null
-  cat "$CODEX_EVENTS.turn" >> "$LOG_FILE" 2>/dev/null
   # Builder's report goes to stdout (like opencode's assistant output).
   python3 -c "
 import json,sys
@@ -331,6 +393,7 @@ for l in open(sys.argv[1]):
     if e.get('type')=='thread.started': tid=e.get('thread_id','')
 print(tid)" "$CODEX_EVENTS.turn" 2>/dev/null || true)"
   [ -n "$tid" ] && CODEX_THREAD_ID="$tid"
+  [ "${DISPATCH_KEEP_TURN_FILES:-0}" = "1" ] || rm -f "$CODEX_EVENTS.turn"
 }
 
 # Sandbox stays `workspace-write` (least privilege — no network-home-service widening), plus
@@ -361,7 +424,14 @@ codex_writable_roots_arg() {
   gc="$(git -C "$DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   [ -n "$gc" ] && roots+=("$gc")
   if [ -n "${CODEX_EXTRA_WRITABLE_ROOTS:-}" ]; then
-    local IFS=:
+    # [0f/B1] Split on colon AND space. PROJECT.md documents this var as
+    # "space/colon-separated" and its worked example uses a space, but this loop split on
+    # ":" only — so a space-separated value became ONE path containing a space, a directory
+    # that does not exist, and the grant silently did nothing. That is the grant issue #7
+    # was closed to provide, so #7 may never have taken effect in the field; it is also the
+    # most likely mechanical cause of issue #12 (builders substituting `swift parse` for a
+    # real build because they could not write the SwiftPM cache / DerivedData).
+    local IFS=': '
     for r in $CODEX_EXTRA_WRITABLE_ROOTS; do [ -n "$r" ] && roots+=("$r"); done
   fi
   [ ${#roots[@]} -eq 0 ] && return 0
@@ -369,16 +439,58 @@ codex_writable_roots_arg() {
   printf -- '-c\nsandbox_workspace_write.writable_roots=[%s]\n' "${json%,}"
 }
 
+# --- [0d / issue #10] First-event watchdog -----------------------------------------------
+# `codex exec` reads stdin when stdin is not a TTY, to append to the prompt. Invoked from a
+# non-interactive context whose stdin is an open pipe that never closes (Claude Code's Bash
+# tool today; `ssh host "cmd"` under the remote-builder phase), codex blocks forever BEFORE
+# the turn begins. The issue-#4 stall guard cannot see it: no event is ever emitted, and the
+# OS considers the process actively reading rather than idle. Field evidence: a critic
+# dispatch that ran 7200 s with 0 input and 0 output tokens, plus 5 zero-byte .turn files.
+#
+# Primary fix is `< /dev/null` on every codex invocation below. This watchdog is the belt to
+# that suspenders: if no event has been written after CODEX_FIRST_EVENT_TIMEOUT seconds the
+# turn never started, so kill it now instead of burning the full DISPATCH_TIMEOUT. Set the
+# timeout to 0 to disable.
+codex_watchdog() {
+  local pid="$1" secs="${CODEX_FIRST_EVENT_TIMEOUT:-60}"
+  [ "$secs" = "0" ] && return 0
+  sleep "$secs"
+  if kill -0 "$pid" 2>/dev/null && [ ! -s "$CODEX_EVENTS.turn" ]; then
+    echo "[dispatch] codex emitted no events in ${secs}s — turn never began (issue #10); aborting run." >&2
+    echo "[dispatch] --- codex first-event watchdog fired at $(date) ---" >> "$LOG_FILE"
+    kill -TERM "$pid" 2>/dev/null
+  fi
+}
+
+# Run a codex command in the background under the watchdog and return its exit code.
+# Backgrounding is what makes the watchdog possible; `wait` preserves the exit status
+# exactly as the foreground form did, so every caller's error handling is unchanged.
+# CODEX_RUN_CWD (optional) — run the command from this directory. `exec` in the subshell
+# means $! is codex's own pid, so the watchdog kills the right process. Redirections live
+# here rather than at the call sites so the watchdog's own message still reaches the real
+# stderr instead of being swallowed into $LOG_FILE.
+codex_supervised() {
+  : > "$CODEX_EVENTS.turn"
+  ( if [ -n "${CODEX_RUN_CWD:-}" ]; then cd "$CODEX_RUN_CWD" || exit 1; fi; exec "$@" ) \
+    < /dev/null > "$CODEX_EVENTS.turn" 2>> "$LOG_FILE" &
+  local cpid=$!
+  codex_watchdog "$cpid" &
+  local wpid=$!
+  wait "$cpid"; local ec=$?
+  kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+  return $ec
+}
+
 run_codex_fresh() {
   local spec="$1" args=()
   while IFS= read -r a; do args+=("$a"); done < <(codex_effort_args "$spec")
   while IFS= read -r a; do args+=("$a"); done < <(codex_writable_roots_arg)
-  "${TIMEOUT_PREFIX[@]}" "${BUILDER_ENV[@]}" codex exec \
+  CODEX_RUN_CWD="" codex_supervised \
+    "${TIMEOUT_PREFIX[@]}" "${BUILDER_ENV[@]}" codex exec \
     --json -C "$DIR" -s workspace-write --skip-git-repo-check \
     -c sandbox_workspace_write.network_access=true \
     -m "$(model_of "$spec")" "${args[@]}" \
-    "$(cat "$PROMPT_FILE")" \
-    > "$CODEX_EVENTS.turn" 2>> "$LOG_FILE"
+    "$(cat "$PROMPT_FILE")"
   local ec=$?
   codex_postrun
   return $ec
@@ -391,12 +503,12 @@ run_codex_continue() {
   while IFS= read -r a; do args+=("$a"); done < <(codex_writable_roots_arg)
   # `exec resume` takes no -C/-s and runs in the CALLER's cwd (verified e2e 2026-07-15 —
   # it does NOT restore the thread's original cwd), so cd into the target dir explicitly.
-  ( cd "$DIR" && "${TIMEOUT_PREFIX[@]}" "${BUILDER_ENV[@]}" codex exec resume "$CODEX_THREAD_ID" \
+  CODEX_RUN_CWD="$DIR" codex_supervised \
+    "${TIMEOUT_PREFIX[@]}" "${BUILDER_ENV[@]}" codex exec resume "$CODEX_THREAD_ID" \
       --json --skip-git-repo-check \
       -c sandbox_workspace_write.network_access=true \
       -m "$(model_of "$spec")" "${args[@]}" \
-      "$message" ) \
-    > "$CODEX_EVENTS.turn" 2>> "$LOG_FILE"
+      "$message"
   local ec=$?
   codex_postrun
   return $ec
@@ -432,7 +544,7 @@ run_claude_fresh() {
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
       "$(cat "$PROMPT_FILE")" ) \
-    > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
+    < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun
   return $ec
@@ -446,7 +558,7 @@ run_claude_continue() {
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
       "$message" ) \
-    > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
+    < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun
   return $ec
@@ -474,13 +586,30 @@ run_fresh_stall_guarded() {
   while :; do
     run_builder_fresh "$m" > "$STALL_OUT"; ec=$?
     cat "$STALL_OUT"   # pass the builder's report through to the PM on stdout, as before
-    if [ "$ec" -eq 0 ] || [ -s "$STALL_OUT" ] || [ "$tries" -ge "$STALL_RETRIES" ]; then
-      return "$ec"
+
+    # The builder spoke: its exit code means what it says.
+    [ -s "$STALL_OUT" ] && return "$ec"
+
+    # [0f/B3] It produced NOTHING. Previously an exit 0 here returned success, and with no
+    # verify-cmd configured dispatch.sh went straight to `finish 0` — so a run that did no
+    # work at all was recorded as a completed task and the PM, which is told to branch on
+    # the exit code, moved on. A silent run is an infra failure whatever it exited with:
+    # retry the same model (field evidence: an immediate re-dispatch of the same model
+    # succeeds), then report failure so the fallback and the PM error branch both engage.
+    if [ "$tries" -lt "$STALL_RETRIES" ]; then
+      tries=$((tries + 1))
+      STALL_RETRIES_USED=$((STALL_RETRIES_USED + 1))
+      echo "[dispatch] $m exited $ec with no output — infra/OpenRouter stall; immediate same-model retry ($tries/$STALL_RETRIES)." >&2
+      echo "[dispatch] --- $m silent-stall retry $tries at $(date) ---" >> "$LOG_FILE"
+      continue
     fi
-    tries=$((tries + 1))
-    STALL_RETRIES_USED=$((STALL_RETRIES_USED + 1))
-    echo "[dispatch] $m exited $ec with no output — infra/OpenRouter stall; immediate same-model retry ($tries/$STALL_RETRIES)." >&2
-    echo "[dispatch] --- $m silent-stall retry $tries at $(date) ---" >> "$LOG_FILE"
+
+    if [ "$ec" -eq 0 ]; then
+      echo "[dispatch] $m exited 0 but produced no output — treating as an infra failure, not a completed task." >&2
+      echo "[dispatch] --- $m empty-output exit 0 reclassified as failure at $(date) ---" >> "$LOG_FILE"
+      return 1
+    fi
+    return "$ec"
   done
 }
 

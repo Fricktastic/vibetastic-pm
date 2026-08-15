@@ -76,6 +76,16 @@ cat > .claude/settings.json <<EOF
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PM_DIR}/framework/scripts/log-partner-burn.py\""
+          }
+        ]
+      }
     ]
   }
 }
@@ -97,6 +107,12 @@ cat > PROJECT.md <<EOF
 project: ${PROJECT_NAME}
 setup_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 builder_backends: [${BACKENDS}]
+reviewer_backends: [opencode]
+critic_backends: [codex, opencode]
+codex_weekly_burn_threshold: 4000000
+claude_window_burn_threshold: null   # ungated until telemetry supports a number (issue #14)
+max_concurrent: {codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}
+max_concurrent_total: 6
 ---
 
 ## Project Paths

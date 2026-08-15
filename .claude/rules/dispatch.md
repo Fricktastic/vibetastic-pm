@@ -73,6 +73,22 @@ Read `framework/prompts/tech-lead.md`. Substitute:
 - `{{PLAN_SUMMARY}}` → one line per task: id, title, status, notes
 - `{{TARGET_PROJECT_PATH}}` → absolute path to `../<project-name>/`
 - `{{ERROR_OUTPUT}}` → full stderr/stdout from a failed task, or "none"
+- `{{SPEC_OUTPUT_PATH}}` → **absolute** path the agent must write the spec to:
+  `<pm-dir>/prompts/task-T0XX.md` (use the next free id; rename after PLAN.md registration
+  if it changed)
+
+**[0g] The Tech Lead writes the spec file itself — the orchestrator never holds the body.**
+Previously the agent returned the whole spec and the orchestrator re-emitted it through a
+`Write`, so every spec crossed the most expensive context in the system twice (~50k tokens
+in one observed session for four specs), rendered in the operator's terminal as an apparent
+uncommitted Swift diff, and passed through a hand-transcription step that silently
+HTML-escaped Swift generics and closure types.
+
+After the agent returns:
+1. Verify `{{SPEC_OUTPUT_PATH}}` exists and is non-empty. If not, that is a failed dispatch —
+   do **not** accept an inline spec as a substitute.
+2. Parse only the returned YAML block to register the task in PLAN.md.
+3. Never read the spec body into context. The critic and the builder both read it from disk.
 
 Spawn a fresh Agent with the rendered prompt.
 
@@ -102,25 +118,50 @@ rung also covers changes the Partner talked itself into conversationally — the
 path to the target code. Full rules: `framework/VERIFY.md` § Pre-build critique.
 
 1. **Render** `framework/prompts/critic.md`:
-   - `{{PLAN}}` → the task's prompt file (`prompts/task-T0XX.md`, or the extracted build-spec
-     section)
+   - `{{PLAN}}` → **absolute** path to the task's prompt file
+     (`<pm-dir>/prompts/task-T0XX.md`, or the extracted build-spec section). **Never
+     relative.** This dispatch runs from the target project directory, so a PM-relative path
+     does not resolve — and the critic then reviews what it can see and returns a confident
+     `REWORK`. Measured: 5 critic runs could not read their plan; all 5 returned REWORK, four
+     of them the same task inside twelve minutes (issue #11).
    - `{{VERIFY_TIER}}`, `{{SECURITY}}` → the task's flags from PLAN.md
    - `{{TARGET_PROJECT_PATH}}` → absolute path to `../<project-name>/`
+   - `{{PRIOR_FINDINGS}}` → on round 1, `none`. On round 2, the previous round's FINDINGS
+     block verbatim plus one clause each on how the re-spec answered it.
 2. **Dispatch read-only, family-diverse from the plan's author** (Tech Lead Sonnet or Partner
    Opus → route to the codex or opencode `standard` critic; `security: true` forces a capable
-   rung — see VERIFY.md). Same wrapper the Reviewer uses:
+   rung — see VERIFY.md). Take the first entry of `critic_backends` in `PROJECT.md` (default
+   `[codex, opencode]`) that satisfies the family-diversity rule; diversity wins over the
+   configured order. Same wrapper the Reviewer uses:
 
    ```bash
    bash framework/dispatch.sh --read-only <critic-model> ../<project-name>/ prompts/critic-T0XX.md 2>&1
    ```
 
 3. **Adjudicate (Partner):** read the verdict.
-   - **REWORK / any BLOCKING finding** → resolve before dispatch: re-spec via the Tech Lead, or
-     record an explicit user override (`critic_override` in TASK_LOG with finding + reason). Do
-     **not** dispatch the build with an unresolved BLOCKING finding — it is a gate violation.
-   - **ADVISORY** findings → log; fold in at discretion.
+   - **`ERROR`** → the critic could not read the plan. This is a **configuration failure, not
+     a finding**: fix the `{{PLAN}}` path and re-run. It does not count as a round and must
+     never be treated as REWORK.
+   - **`REWORK` / any `[BLOCKING-PLAN]` finding** → resolve before dispatch: re-spec via the
+     Tech Lead, or record an explicit user override (`critic_override` in TASK_LOG with
+     finding + reason). Do **not** dispatch the build with an unresolved `[BLOCKING-PLAN]`
+     finding — it is a gate violation.
+   - **`[BLOCKING-PREEXISTENT]`** → a real defect that this plan neither causes nor worsens.
+     **Register it as its own PLAN.md task** (pending, same read-write-cycle discipline) and
+     **proceed with this one.** It is not this task's blocker.
+   - **`[ADVISORY]`** findings → log; fold in at discretion.
    - `RECOMMENDED_VERIFY_TIER` higher than the stated tier → raise `verify_tier` on the task.
    - Append `critic_returned` to TASK_LOG. Only then proceed to the build dispatch below.
+
+**[0e] Round limit — two, then the operator.** A critic with no stopping rule does not
+converge: observed four-round REWORK loops on T024, T070 and T071, with later rounds
+surfacing pre-existing defects rather than plan defects. After **2 critic rounds on one
+task**, stop and escalate to the operator with both rounds' findings and your recommendation.
+Do not open round 3.
+
+This bound is what makes the critique gate safe to treat as a hard precondition for dispatch
+(including under parallel fan-out, where an unbounded critic stalls a task indefinitely
+instead of blocking it). Log `critic_escalated` with `rounds: 2` and the unresolved findings.
 
 ---
 
@@ -190,13 +231,25 @@ bash framework/dispatch.sh --worktree "<branch>" <tasks[n].model> ../<project-na
   live checkout, and don't need `--worktree` themselves.
 
 - 4th arg `fallback_model`: if empty, pass `""` so the verifier stays positionally correct.
-- 5th arg `verify-cmd`: the single-line verify command from `PROJECT.md`. dispatch.sh runs it
-  in the target dir after opencode writes files and, on failure, feeds the verifier output back
-  into the same opencode session and retries — entirely in bash, costing no PM tokens.
+- 5th arg `verify-cmd`: the single-line verify command from `PROJECT.md` § Verify command.
+  dispatch.sh runs it in the target dir after the builder writes files and, on failure, feeds
+  the verifier output back into the same builder session and retries — entirely in bash,
+  costing no PM tokens.
+  **Mandatory. Read it from `PROJECT.md` every dispatch; never omit it, never pass `""`.**
+  dispatch.sh now refuses a build dispatch without it (exit 2). Field data: 86% of one
+  project's dispatches and 52% of another's carried no verifier, so the self-correct loop
+  never ran and the whole tier/backend escalation ladder — which is driven by exit 20 — fired
+  4 times in 307 runs. What that actually means is that correctness silently moved into this
+  session, at peak cost: with no verifier, "did it work?" gets answered by the orchestrator
+  reading code or running the build by hand. `DISPATCH_ALLOW_NO_VERIFY=1` exists for
+  deliberate exceptions and must be justified in the TASK_LOG entry.
 - 6th arg: max verify attempts (default 3).
 - 7th arg `tier`: the task's current tier (`fast`/`standard`/`heavy`). Recorded in
   `logs/cost.jsonl` for cost telemetry only — it does not change dispatch behavior. Also append
   a `cost_event` to TASK_LOG before dispatching (see `state.md` → Cost telemetry).
+  **Always pass it.** It was missing on 79% of field dispatches, which is why `cost-report.sh`
+  cannot attribute cost by tier today and why the tier table in `MODELS.md` rests on a
+  minority of runs. dispatch.sh warns (does not refuse) when it is absent.
 
 - **codex + iOS/Xcode tasks** (`CODEX_EXTRA_WRITABLE_ROOTS`): on the codex backend the
   builder's in-sandbox `xcodebuild` is denied SwiftPM-cache and DerivedData writes, so it
@@ -253,7 +306,8 @@ exhausted before metered tokens** — that is why `builder_backends` defaults to
   gets one effort bump (sol@low → sol@medium), then one **burn-gated** bump
   (sol@medium → sol@high) before the backend counts as exhausted. The @high bump fires only
   if the current ISO-week burn proxy in `logs/cost.jsonl` is **below**
-  `codex_weekly_burn_threshold` (see `framework/MODELS.md` § Codex tier column); at/above it,
+  `codex_weekly_burn_threshold` — read from `PROJECT.md` frontmatter, falling back to the
+  framework default if the key is absent (`framework/MODELS.md` § Codex tier column); at/above it,
   skip @high and `backend_escalated` to the claude backend immediately. Log the skip reason
   in the escalation event. **Any `sol@high` dispatch must record the consulted burn-proxy
   reading in its `cost_event` (`burn_proxy:` — see `state.md`); an `@high` dispatch with no

@@ -58,8 +58,15 @@ After every agent return or OpenCode execution, before doing anything else:
 1. Read current `PLAN.md` (do not use a cached version)
 2. Apply the specific field updates for this task only
 3. Write `PLAN.md`
-4. Run `bash framework/scripts/plan-lint.sh` — non-zero exit means the write corrupted
-   PLAN.md's structure; fix it now, before anything reads the file
+4. Run `bash framework/scripts/plan-lint.sh` and branch on the exit code:
+   - **1 = structural corruption** — the write broke PLAN.md. Fix it now, before anything
+     reads the file. This is the hard rule.
+   - **3 = vocabulary drift only** (an unrecognised agent/status/tier value; structure is
+     fine). Not blocking. Fix at leisure, or widen the enum if the value is legitimate.
+   - **2 = the file could not be read.**
+   The split exists because a linter that is permanently red gets ignored: gamedaytastic's
+   PLAN.md reported 52 errors, every one vocabulary and none structural, which made the
+   old "non-zero means corruption" rule impossible to follow.
 5. Append to `TASK_LOG.md`
 
 Never batch multiple task updates into one write. Each task result gets its own read-write cycle.

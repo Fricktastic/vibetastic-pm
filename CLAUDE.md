@@ -53,8 +53,9 @@ defaults under the A1 partner model.
 | `framework/` | Read-only subtree of this repo |
 
 **Write discipline:** read the current file before every write. After every PLAN.md write,
-run `bash framework/scripts/plan-lint.sh` — non-zero exit means the write corrupted the
-structure; fix it before anything reads the file.
+run `bash framework/scripts/plan-lint.sh` — **exit 1 means the write corrupted the
+structure**; fix it before anything reads the file. Exit 3 is vocabulary drift only (an
+unrecognised agent/status/tier value) and does not block. See `.claude/rules/state.md`.
 
 ## Lifecycle gates (summary)
 

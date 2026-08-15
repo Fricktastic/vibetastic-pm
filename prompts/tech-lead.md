@@ -174,16 +174,18 @@ the way you did.
 
 ## Return Format
 
-Return your output as a single document structured exactly as follows:
+**Write the task spec to a file yourself; return only the metadata.**
+
+1. Write the full task spec (Sections 1–5 above, starting with the `## T00N — [Task Title]`
+   header) to **`{{SPEC_OUTPUT_PATH}}`** using your file tools. Nothing else goes in that file.
+2. Return, as your entire final message, the YAML block below plus at most three lines of
+   summary. **Do not reproduce the spec body in your response.**
 
 ```
-## T00N — [Task Title]
-
-[full task spec — Sections 1–5 above]
-
 <!-- TECH_LEAD_RESULT_START -->
 ```yaml
-task_title: "<title matching the section header above>"
+spec_path: "{{SPEC_OUTPUT_PATH}}"
+task_title: "<title matching the section header in the file>"
 branch_name: "<exact branch name from Section 1>"
 issue_refs: "<comma-separated issue numbers, or null>"
 depends_on: [<task ids that must be done first, or empty>]
@@ -193,8 +195,27 @@ security: <true | false>
 security_rationale: "<one sentence — which trigger applies, or why none does>"
 ```
 <!-- TECH_LEAD_RESULT_END -->
+
+<= 3 lines: what the task does and anything the orchestrator must decide.
 ```
 
-**Critical:** The task spec section header must use the next available task id from PLAN.md (PM will assign the final id — use a placeholder like `T00N` if unknown). The delimiter `<!-- TECH_LEAD_RESULT_START -->` must appear exactly once, on its own line. The PM splits on this delimiter — anything malformed after it will cause a parse error.
+**Why the spec goes to a file and not into your reply.** Returning the body made every spec
+transit the orchestrator's context twice — once as your result, once as the orchestrator's
+`Write` call — measured at ~50k tokens in a single session for four specs. It also rendered
+in the operator's terminal as what looked like a large uncommitted Swift diff, undermining
+the one check the lane rule depends on (that product code comes only from dispatched
+builders). And hand-transcribing your output introduced silent corruption: results came back
+HTML-escaped, so `&lt;` had to be unescaped by hand across Swift generics and closure types.
+Writing the file directly removes all three, because the text never round-trips through a
+model's output.
 
-Do not add preamble or meta-commentary. The task spec starts immediately with the `## T00N` header.
+**Critical:**
+- The task spec section header must use the next available task id from PLAN.md (the
+  orchestrator assigns the final id — use a placeholder like `T00N` if unknown).
+- `{{SPEC_OUTPUT_PATH}}` is an **absolute path**. Write exactly there; do not invent a
+  filename or a directory.
+- The delimiter `<!-- TECH_LEAD_RESULT_START -->` must appear exactly once, on its own line.
+- If you cannot write the file, say so plainly instead of returning the spec inline — a
+  failed write must not silently become the old double-transit behaviour.
+
+Do not add preamble or meta-commentary.

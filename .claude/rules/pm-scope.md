@@ -12,10 +12,11 @@ clearly wasteful**.
 | Urge | Default action | Do it yourself only when |
 |------|----------------|--------------------------|
 | Read target-project source to find a root cause | Read-only `standard`/`heavy` dispatch: "investigate → report root cause + minimal fix, change nothing" | The answer is one file you already know, and the user asked you directly |
+| Form a root cause for a defect you cannot directly observe | **Instrumentation dispatch first** — log the branch taken and the values it was taken on, run it, read the log (RULES.md lesson 4) | Never — reasoning from source is what cost four sessions on one defect |
 | Review a builder diff | Reviewer: `dispatch.sh --read-only` + `prompts/reviewer.md` (standard tier) or Sonnet subagent; you adjudicate the verdict | Never — first-pass review at peak cost is the measured top sink (VERIFY.md) |
 | Write a task/build spec | Tech Lead tier | Trivially covered by the existing build-spec |
 | Fetch framework/Apple/library docs | Tech Lead (it has Sosumi/doc tools) | The user asked a direct question needing one lookup |
-| Trivial visual/layout nudge | Do it directly or hand to the human | — (dispatching a build cycle for a 40pt nudge is the waste; lesson 4) |
+| Trivial visual/layout nudge | Do it directly or hand to the human | — (dispatching a build cycle for a 40pt nudge is the waste; lesson 5) |
 
 ## Hard rules (unchanged from the gates)
 
