@@ -140,7 +140,7 @@ EOF
 
 echo "✓ Wrote PROJECT.md"
 echo ""
-echo "Setup complete. This -pm directory is runtime plumbing — do NOT launch a Claude"
-echo "session here. Orchestration runs from the project's <project>-run partner workspace"
-echo "(A1 model): the partner drives framework/dispatch.sh against this directory and"
-echo "enforces framework/VERIFY.md as the merge gate. See framework/CLAUDE.md."
+echo "Setup complete. This -pm directory holds project state, logs, and artifacts, and is"
+echo "where you launch the orchestrator (A1 model): run 'claude' here and the partner drives"
+echo "framework/dispatch.sh against this directory and enforces framework/VERIFY.md as the"
+echo "merge gate. See framework/CLAUDE.md."

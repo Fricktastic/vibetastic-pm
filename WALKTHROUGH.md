@@ -2,12 +2,14 @@
 
 > **⚠️ Partially historical (2026-06-29 — A1 model).** This walkthrough describes the
 > original **standalone PM session** launched inside `<project>-pm/`. That session model is
-> **retired**: orchestration now runs from the project's `<project>-run` partner workspace,
-> which drives `framework/dispatch.sh` directly and enforces `framework/VERIFY.md` as the
-> merge gate — see `CLAUDE.md` (v2). The mechanics below (setup.sh, subtree layout,
-> SPEC/PLAN/TASK_LOG flow, Gate 1/Gate 2, dispatch/verify loop, tier escalation) are still
-> accurate; read "the PM" as "the partner-orchestrator" and ignore instructions to launch
-> `claude` in the `-pm/` directory. **Also historical: Gate 3.** Stage transitions no longer
+> **retired**: the standalone PM role is gone — orchestration is the partner session that
+> drives `framework/dispatch.sh` directly and enforces `framework/VERIFY.md` as the merge
+> gate — see `CLAUDE.md` (v2). A brief intermediate design (2026-06-29) ran the partner from
+> a separate `<project>-run` workspace; that split was **retired 2026-08-17** and the partner
+> session now runs in the `<project>-pm/` directory (where it launches with `claude`). The
+> mechanics below (setup.sh, subtree layout, SPEC/PLAN/TASK_LOG flow, Gate 1/Gate 2,
+> dispatch/verify loop, tier escalation) are still accurate; read "the PM" as "the
+> partner-orchestrator". **Also historical: Gate 3.** Stage transitions no longer
 > wait for "proceed" — they auto-advance with a posted summary (RULES.md Gate 3). Every
 > "type proceed" below is the old behavior. Model names in examples (Gemini Flash, Opus
 > Designer) are historical too — `framework/MODELS.md` is the source of truth. **Newer

@@ -160,7 +160,7 @@ validate_model_slug "$MODEL" || exit 30
 # Logs anchor to the PM directory, not the caller's cwd: the task prompt always lives in
 # <pm-dir>/prompts/, so default LOG_DIR to the prompts dir's sibling logs/. This keeps
 # cost.jsonl and run logs in one place no matter where the orchestrator invokes dispatch
-# from (e.g. the <project>-run partner workspace). OPENCODE_DISPATCH_LOG_DIR overrides.
+# from (e.g. a git worktree or any other cwd). OPENCODE_DISPATCH_LOG_DIR overrides.
 if [ -n "${OPENCODE_DISPATCH_LOG_DIR:-}" ]; then
   LOG_DIR="$OPENCODE_DISPATCH_LOG_DIR"
 else

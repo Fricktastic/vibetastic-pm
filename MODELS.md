@@ -16,8 +16,8 @@ anywhere else in the framework.**
 ## Orchestrator (the partner session — A1 model)
 
 There is no standalone PM session (retired 2026-06-29). The orchestrator is the partner
-session in the project's `<project>-run` workspace, typically on **Opus** because it also
-serves as the human's thinking partner. That is only affordable because the orchestrator
+session running in the project's `<project>-pm/` directory, typically on **Opus** because it
+also serves as the human's thinking partner. That is only affordable because the orchestrator
 **delegates**: spec-writing to the Tech Lead tier, first-pass diff review to the Reviewer
 (cheap, read-only), open-ended diagnosis to read-only `standard`/`heavy` dispatches. The
 measured failure mode is the partner absorbing those roles itself at Opus rates —

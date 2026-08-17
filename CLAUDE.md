@@ -12,12 +12,14 @@ OpenCode/OpenRouter (metered overflow) — with PLAN/TASK_LOG state, lifecycle g
 risk-tiered verify gate (`VERIFY.md`). Backend order lives in `PROJECT.md`
 (`builder_backends`); flat-rate capacity is exhausted before metered tokens.
 
-**Who orchestrates (A1 model, 2026-06-29):** the orchestrator is the **partner session in
-the project's `<project>-run` workspace** — the Claude session the human already talks to.
-There is **no separate interactive PM session**; the `<project>-pm/` directory is runtime
-plumbing (state, logs, artifacts, this framework as a read-only `framework/` subtree), not
-a place you launch Claude. The partner drives `dispatch.sh` directly, delegates spec and
-review work to cheap tiers, and enforces the gates.
+**Who orchestrates (A1 model, 2026-06-29; `-run` retired 2026-08-17):** the orchestrator is
+the **partner session running in the project's `<project>-pm/` directory** — the Claude
+session the human already talks to. There is **no separate interactive PM session**; the
+`<project>-pm/` directory holds the state, logs, artifacts, and this framework as a
+read-only `framework/` subtree, and it is also where the partner session runs. Raw
+byproducts stay in `logs/`/`artifacts/`, never the main thread. The partner drives
+`dispatch.sh` directly, delegates spec and review work to cheap tiers, and enforces the
+gates.
 
 Read `framework/RULES.md` before orchestrating. `VERIFY.md` defines the merge gate.
 `MODELS.md` is the single source of truth for model/tier selection. The `.claude/rules/`
