@@ -72,6 +72,131 @@ else
 fi
 rm -rf "$LIFECYCLE_TMP"
 
+echo "[selftest] dispatch captures human reports across fake backend turns"
+# These fake CLIs make the capture/session assertions hermetic: no credentials, network, or
+# real model invocation. They deliberately emit the same JSON payload shapes dispatch parses.
+DISPATCH_TMP="$(mktemp -d)"
+DISPATCH_BIN="$DISPATCH_TMP/bin"
+DISPATCH_PROJECT="$DISPATCH_TMP/project"
+mkdir -p "$DISPATCH_BIN" "$DISPATCH_PROJECT"
+git -C "$DISPATCH_PROJECT" init -q
+printf 'fake task\n' > "$DISPATCH_TMP/task-T998.md"
+
+cat > "$DISPATCH_BIN/codex" <<'SH'
+#!/bin/bash
+if [[ " $* " == *" resume "* ]]; then
+  printf '%s\n' "$*" >> "$FAKE_CALLS"
+  touch "$FAKE_VERIFY_FLAG"
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resume report"}}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}'
+else
+  printf '%s\n' '{"type":"thread.started","thread_id":"thread-selftest"}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"fresh first report"}}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"fresh second report"}}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+fi
+SH
+cat > "$DISPATCH_BIN/claude" <<'SH'
+#!/bin/bash
+if [[ " $* " == *" --resume "* ]]; then
+  printf '%s\n' "$*" >> "$FAKE_CALLS"
+  touch "$FAKE_VERIFY_FLAG"
+  printf '%s\n' '{"session_id":"claude-selftest","result":"claude resume report","usage":{"input_tokens":2,"output_tokens":3}}'
+else
+  printf '%s\n' '{"session_id":"claude-selftest","result":"claude fresh report","usage":{"input_tokens":1,"output_tokens":1}}'
+fi
+SH
+cat > "$DISPATCH_BIN/opencode" <<'SH'
+#!/bin/bash
+printf 'call\n' >> "$FAKE_STALL_CALLS"
+printf 'fake opencode diagnostic\n' >&2
+exit 0
+SH
+chmod +x "$DISPATCH_BIN/codex" "$DISPATCH_BIN/claude" "$DISPATCH_BIN/opencode"
+
+CODEX_LOGS="$DISPATCH_TMP/codex-logs"
+CODEX_CALLS="$DISPATCH_TMP/codex-calls"
+CODEX_FLAG="$DISPATCH_TMP/codex-verified"
+PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CODEX_CALLS" FAKE_VERIFY_FLAG="$CODEX_FLAG" \
+  CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" \
+  bash dispatch.sh --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
+  '' "test -f $CODEX_FLAG" 2 > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
+got=$?
+CODEX_LOG="$(find "$CODEX_LOGS" -name '*.log' -type f | head -n 1)"
+if [ "$got" = 0 ] \
+  && grep -q "codex events: ${CODEX_LOG%.log}.codex-events.jsonl" "$DISPATCH_TMP/codex.stderr" \
+  && python3 - "$CODEX_LOG" "$DISPATCH_TMP/codex.stdout" "$CODEX_CALLS" \
+  "${CODEX_LOG%.log}.codex-events.jsonl" <<'PY'
+import sys
+log, out, calls, events = map(open, sys.argv[1:])
+log, out, calls, events = (f.read() for f in (log, out, calls, events))
+assert log.count('turn 1 stdout') == 1 and log.count('turn 2 stdout') == 1
+assert log.index('fresh first report') < log.index('fresh second report') < log.index('resume report')
+assert out.index('fresh first report') < out.index('fresh second report') < out.index('resume report')
+assert 'resume thread-selftest' in calls
+assert '"type":' not in log
+assert events.count('"thread_id":"thread-selftest"') == 1
+PY
+then
+  pass "codex multi-turn human capture, multi-message order, and session resume"
+else
+  fail "codex multi-turn capture/session propagation (dispatch exit $got)"
+fi
+
+CODEX_READONLY_LOGS="$DISPATCH_TMP/codex-readonly-logs"
+PATH="$DISPATCH_BIN:$PATH" CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_READONLY_LOGS" \
+  bash dispatch.sh --read-only --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
+  > /dev/null 2> "$DISPATCH_TMP/codex-readonly.stderr"
+got=$?
+CODEX_READONLY_LOG="$(find "$CODEX_READONLY_LOGS" -name '*.log' -type f | head -n 1)"
+if [ "$got" = 0 ] && grep -q 'fresh first report' "$CODEX_READONLY_LOG"; then
+  pass "codex read-only log contains the assistant report"
+else
+  fail "codex read-only stdout capture (dispatch exit $got)"
+fi
+
+CLAUDE_LOGS="$DISPATCH_TMP/claude-logs"
+CLAUDE_CALLS="$DISPATCH_TMP/claude-calls"
+CLAUDE_FLAG="$DISPATCH_TMP/claude-verified"
+PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CLAUDE_CALLS" FAKE_VERIFY_FLAG="$CLAUDE_FLAG" \
+  OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" \
+  bash dispatch.sh --backend claude claude-sonnet-4.6 "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
+  '' "test -f $CLAUDE_FLAG" 2 > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
+got=$?
+CLAUDE_LOG="$(find "$CLAUDE_LOGS" -name '*.log' -type f | head -n 1)"
+if [ "$got" = 0 ] \
+  && grep -q "claude results: ${CLAUDE_LOG%.log}.claude-results.jsonl" "$DISPATCH_TMP/claude.stderr" \
+  && python3 - "$CLAUDE_LOG" "$CLAUDE_CALLS" "${CLAUDE_LOG%.log}.claude-results.jsonl" <<'PY'
+import sys
+log, calls, results = (open(p).read() for p in sys.argv[1:])
+assert log.index('claude fresh report') < log.index('claude resume report')
+assert 'resume claude-selftest' in calls
+assert '"session_id"' not in log
+assert results.count('"session_id":"claude-selftest"') == 2
+PY
+then
+  pass "claude capture keeps JSONL sibling-only and preserves session resume"
+else
+  fail "claude capture/session propagation (dispatch exit $got)"
+fi
+
+STALL_LOGS="$DISPATCH_TMP/stall-logs"
+STALL_CALLS="$DISPATCH_TMP/stall-calls"
+PATH="$DISPATCH_BIN:$PATH" FAKE_STALL_CALLS="$STALL_CALLS" \
+  OPENCODE_DISPATCH_LOG_DIR="$STALL_LOGS" OPENCODE_DISPATCH_STALL_RETRIES=1 \
+  bash dispatch.sh --read-only --backend opencode openrouter/deepseek/deepseek-v4-pro \
+  "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" > /dev/null 2> "$DISPATCH_TMP/stall.stderr"
+got=$?
+STALL_LOG="$(find "$STALL_LOGS" -name '*.log' -type f | head -n 1)"
+if [ "$got" = 1 ] && [ "$(wc -l < "$STALL_CALLS" | tr -d ' ')" = 2 ] \
+  && grep -q 'empty-output exit 0 reclassified as failure' "$STALL_LOG" \
+  && [ "$(grep -c 'fake opencode diagnostic' "$STALL_LOG")" = 2 ]; then
+  pass "empty fresh output retries, reclassifies, and retains stderr diagnostics"
+else
+  fail "empty-fresh stall guard (dispatch exit $got)"
+fi
+rm -rf "$DISPATCH_TMP"
+
 echo "[selftest] plan-lint handles a real live PLAN without crashing"
 # Absolute paths on purpose: relative ones do not resolve inside a git worktree, where the
 # [ -r ] guard silently turned a skipped check into a pass and gave false confidence.
