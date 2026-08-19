@@ -1,34 +1,33 @@
 # HANDOFF — vibetastic-pm (framework repo)
 
-**Last session:** 2026-08-18 · **Branch:** `main` @ `0ef41bd`, **pushed** (origin in sync).
+**Last session:** 2026-08-19 · **Branch:** `main` @ `c6ae7f8`, **pushed** (origin in sync).
 Working tree clean apart from this file.
 
-**Stage:** framework maintenance. Items 1 and 2 of a 3-item state-integrity program are done,
-merged and field-proven. **Item 3 is deliberately blocked on fresh gamedaytastic data** — see
-"Next action" below. Do not start it early; the reason is substantive, not scheduling.
+**Stage:** framework maintenance. The 3-item state-integrity program: items 1 and 2 are done,
+merged and field-proven. **Item 3 is now UNBLOCKED** — the data it was waiting on exists as of
+2026-08-19. A fourth item (T074, log capture) was completed this session outside that program.
 
 ---
 
 ## Next action
 
-**Wait for gamedaytastic to complete 2–3 real tasks under the current framework, then write
-item 3.** Nothing else here is pending.
+**Write item 3: normalize the critic/review event schema.** A canonical event shape recorded in
+`.claude/rules/state.md` and `VERIFY.md`, plus a linter for new TASK_LOG entries.
 
-When that data exists, item 3 is: **normalize the critic/review event schema** — a canonical
-event shape written into `.claude/rules/state.md` and `VERIFY.md`, plus a linter for new
-TASK_LOG entries.
+**Why it was blocked, and why it no longer is.** Measured on gamedaytastic: 22 `critic_returned`
+events across **17 distinct key sets**, split `task_id`/`task_ids` and `log`/`logs`, plus ad-hoc
+names like `critic_r3_returned`. But `critic_r3_returned` is an artefact of a *pre-round-limit*
+framework — the `[0e]` two-round cap makes a round 3 impossible now. Writing the schema against
+that corpus would have enshrined a shape the current rules can no longer produce. It waited for
+events emitted under current rules; those now exist.
 
-**Why it waits.** Measured on gamedaytastic: 22 `critic_returned` events across **17 distinct
-key sets**, split `task_id`/`task_ids` and `log`/`logs`, plus ad-hoc names like
-`critic_r3_returned`. But `critic_r3_returned` is an artefact of a *pre-round-limit* framework —
-the `[0e]` two-round cap (already shipped, unexercised until 2026-08-19) makes a round 3
-impossible. Writing the schema against that corpus would enshrine a shape the current rules can
-no longer produce. TASK_LOG is append-only by rule, so this is forward-only: no migration is
-possible, which makes getting the schema right the first time the whole job.
+**The corpus to build the schema from** (all under current rules):
+- gamedaytastic T073 — 2 critic rounds, ending in `critic_escalated` (2-round limit).
+- vibetastic T074 (this session) — 2 critic rounds (REWORK → PROCEED) and 1 reviewer pass
+  (APPROVE), i.e. the first clean convergence-inside-the-cap on record, plus the adjudication.
 
-**What to collect from those runs:** the actual key sets emitted by `critic_returned`,
-`reviewer_returned`, `review_adjudicated`, and `critic_escalated` under current rules. Two
-fresh critic runs already exist from 2026-08-19 (T073 rounds 1 and 2) — start there.
+TASK_LOG is append-only by rule, so this is forward-only: no migration is possible, which makes
+getting the schema right the first time the whole job.
 
 ---
 
@@ -54,6 +53,24 @@ count, exit, duration. Start record is written **before** argument validation an
 from an **EXIT trap**, so early exits (2 = no verifier, 30 = backend unavailable) and signals
 are covered — previously those left no telemetry at all. `cost.jsonl` schema and write site are
 untouched.
+
+**Item 4 (unplanned) — `dispatch.sh` builder-turn capture** (`5971f48`, merged `c6ae7f8`)
+Triggered by a gamedaytastic report that a critic audit trail was lost. It was not lost, but the
+framework said it was: `$LOG_FILE` only ever received the builder's **stderr**, so on the quiet
+backends (codex, claude) it was near-empty — a 39-byte log reading `Reading additional input
+from stdin...` while the run's full REWORK verdict sat unreferenced in the `.lastout` sibling.
+Worse, the **verify-resume turns were captured nowhere at all**; only the fresh run's stdout hit
+`$STALL_OUT`. `finish()` then printed that empty file as "full log" and tailed it on failure, so
+the "failures are never silent" contract was hollow on two of three backends.
+- `capture_builder_turn()` records every fresh **and** resume turn under a numbered header.
+  Redirect-then-`cat`, **never a pipe** — a pipeline would strand `CODEX_THREAD_ID` /
+  `CLAUDE_SESSION_ID` in a subshell and break the verify-resume loop.
+- `claude_postrun` no longer appends raw result JSON to the human log (it duplicated
+  `$CLAUDE_RESULTS`); `finish()` now names the JSONL siblings.
+- `selftest.sh` gained a **hermetic fake-backend harness** — fake `codex`/`claude`/`opencode` on
+  PATH — covering multi-turn capture, multi-message ordering, session-id propagation, JSONL
+  non-duplication, read-only capture, and the `[0f/B3]` empty-output stall retry. This was a
+  critic finding: the old selftest could not have detected any of these regressions.
 
 **Supporting — `scripts/selftest.sh`** (`fffbab7`, `a2de4ad`)
 The framework repo's **first verify command**, and `PROJECT.md` to declare it. Checks shell/python
@@ -86,8 +103,13 @@ critic dispatches, with `role: read-only` correctly inferred.
 ## Known issues, unfixed
 
 - **`git push` from a session that has run `eval "$(~/.ssh/gh-agent-token.sh)"` gets 403** —
-  the agent bot lacks write access to `Timeteo/vibetastic-pm`. Push over SSH instead:
-  `git push git@github.com:Timeteo/vibetastic-pm.git main`. This bit once and cost a round trip.
+  the agent bot (`fricktastic-agent[bot]`) lacks write access to `Timeteo/vibetastic-pm`. Bit
+  again on 2026-08-19. Two workarounds, both confirmed: push over SSH
+  (`git push git@github.com:Timeteo/vibetastic-pm.git main`), or use the operator's own gh
+  credentials —
+  `unset GH_TOKEN GITHUB_TOKEN; GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0='!gh auth git-credential' git push origin main`.
+  The real fix is upstream of the framework: grant the bot write access, or drop the eval from
+  the `lifecycle.md` startup step. Until then it will keep costing a round trip every session.
 - `cost-report.sh` has **no machine-readable mode**. Any consumer must parse human stdout.
   Add `--json` before anything depends on it.
 - `logs/` has **no rotation**. gamedaytastic is at ~1,065 files / 102 MB.
@@ -109,6 +131,28 @@ TASK_LOG (out of scope; that project's orchestrator owns those). Its `TASK_LOG.m
 `prompts/task-T073.md` and `prompts/critic-T073.md` were left **uncommitted on purpose** for
 that session to review. T073 sits at an unresolved `critic_escalated` (2-round limit, 3 open
 BLOCKING findings). **Do not resume T073 from here.**
+
+## Process note — the critic earned its keep on T074
+
+Worth remembering when tempted to skip the pre-build critique on a "small" change. The Partner
+authored T074's spec directly (delegation would have re-derived analysis already in context) and
+routed it to a **family-diverse** codex critic. Round 1 returned REWORK with three findings, all
+verified correct against the source:
+1. The spec said "final `agent_message`", but `codex_postrun` prints **every** message in a turn
+   — the builder would have silently dropped intermediate output.
+2. `scripts/selftest.sh` — the verify command — was too weak to detect a broken capture, a lost
+   session id, or a stall-guard regression. This forced the fake-backend harness into scope.
+3. `claude_postrun` was *already* dumping raw JSON into the human log: the exact duplication the
+   task existed to remove, unnoticed until the critic read for it.
+Round 2: PROCEED, no findings. Reviewer (deepseek, read-only): APPROVE. Two rounds, converged
+inside the `[0e]` cap.
+
+## Known behaviour worth a future task
+
+`LOG_DIR` is derived from the **prompt file's** directory, not the PM directory. A prompt parked
+in `/tmp` writes its run logs to `/tmp/logs/`; specs kept in `logs/specs/` produce `logs/logs/`.
+Harmless but it scatters the audit trail wherever a prompt happens to live. Not fixed — out of
+T074's scope, deliberately.
 
 ## Prior context still live
 
