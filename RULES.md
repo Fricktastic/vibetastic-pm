@@ -39,7 +39,8 @@ The PM orchestrator is the **sole writer** to all state files. Subagents receive
 | RULES.md | Human (setup) | PM, all agents |
 | TASK_LOG.md | PM (append-only) | PM (recovery) |
 | HANDOFF.md | PM (sole writer, overwritten in place) | PM (next session, read first at startup) |
-| PROPOSALS.md | PM (append-only) | Maintainer (harvest) |
+| PROPOSALS.md | PM (append-only, **fallback only** — `gh` unreachable) | Maintainer (archive) |
+| GitHub issues (`Timeteo/vibetastic-pm`) | PM (`gh issue create`) | Maintainer (triage) |
 | prompts/design-spec.md | PM (from Designer output) | Architect, Tech Lead |
 | prompts/build-spec.md | PM (from Architect output, Stage 2 only — never modified after) | Tech Lead |
 | prompts/task-T0XX.md | PM (awk extract for Architect tasks; direct write for Tech Lead tasks) | OpenCode |
@@ -217,30 +218,52 @@ caught, (3) rewrites `HANDOFF.md`, and (4) confirms **"safe to clear"** (or name
 what is still in flight if it is not). This is the user's signal that they are about to clear
 context; the PM's job is to make the clear lossless.
 
-## Self-Improvement Capture — the framework proposes, the maintainer disposes (2026-07-17)
+## Self-Improvement Capture — the framework proposes, the maintainer disposes (2026-07-17, revised 2026-08-19)
 
 The PM runs the framework in the field but **never edits the framework itself** (`framework/`
 is a read-only subtree). When it observes a framework defect in the field — a repeated tier
 failure, a rule that forces a bad outcome, a stall, an escalation that telemetry later shows
 was mispriced — it does not work around it silently and it does not patch the framework. It
-records the observation in `PROPOSALS.md` for a maintainer to adjudicate.
+**files a GitHub issue against the framework repo** (`Timeteo/vibetastic-pm`) for a
+maintainer to adjudicate.
 
-`PROPOSALS.md` lives in the `-pm/` directory (the **writable** side — **not** `framework/`).
-It is **append-only**; the PM adds a structured entry:
-
-```markdown
-### <ISO8601> · <project-name>
+```bash
+gh issue create --repo Timeteo/vibetastic-pm \
+  --title "<component>: <one-line defect>" \
+  --body "$(cat <<'EOF'
+- **Project:** <project-name>
 - **Observed problem:** <what went wrong, one or two sentences>
 - **Evidence:** <TASK_LOG event ids / cost.jsonl line refs / log file paths — a concrete pointer>
 - **Suggested change:** <the framework change that would prevent it — a proposal, not a patch>
+EOF
+)"
 ```
 
-Periodic maintainer sessions (like the one that wrote this section) harvest `PROPOSALS.md`
-across all projects together with `cost-report.sh` output, and decide what graduates into
-the framework. The division is deliberate: **the framework proposes, the maintainer
-disposes** — field sessions surface evidence, a maintainer with cross-project view decides
-what becomes a rule. This keeps the framework from accreting one-off local fixes while still
-capturing every real defect the moment it's seen.
+**Who files.** The **orchestrator** files, always. Builders dispatched via `dispatch.sh
+--worktree` run with `gh` unauthenticated and `remote.origin.pushurl` poisoned by design —
+they *cannot* file, and must not be asked to. A builder's framework observation reaches the
+issue tracker through its dispatch return: the orchestrator reads it, judges it, files it.
+
+**Fallback when `gh` fails** (no auth, no network — see issue #20): append the same four
+fields to `PROPOSALS.md` in the `-pm/` directory (the **writable** side — **not**
+`framework/`), append-only, and note in the TASK_LOG entry that the issue is unfiled. Never
+drop the observation because the tracker was unreachable. `PROPOSALS.md` is otherwise
+**retired** — existing files are archives, not queues; do not harvest them as live input.
+
+```markdown
+### <ISO8601> · <project-name>   <!-- fallback only -->
+- **Observed problem:** …
+- **Evidence:** …
+- **Suggested change:** …
+```
+
+Maintainer sessions triage the issue queue together with `cost-report.sh` output and decide
+what graduates into the framework. The division is deliberate: **the framework proposes, the
+maintainer disposes** — field sessions surface evidence, a maintainer with cross-project view
+decides what becomes a rule. Issues give that harvest for free: cross-project by
+construction, deduplicated, closable, and linkable from `TASK_LOG.md`. This keeps the
+framework from accreting one-off local fixes while still capturing every real defect the
+moment it's seen.
 
 ## Operating lessons (hard-won 2026-06-29)
 

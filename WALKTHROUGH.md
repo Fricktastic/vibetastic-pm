@@ -15,7 +15,7 @@
 > Designer) are historical too — `framework/MODELS.md` is the source of truth. **Newer
 > mechanics** (reviewer family diversity, `security` flag, codex burn-gated `sol@high`,
 > Opus/Fable orchestrator guidance, write-through state + `HANDOFF.md`/`checkpoint`,
-> `PROPOSALS.md`) are collected in **§14** and are not reflected in the older sections.
+> framework-defect issues) are collected in **§14** and are not reflected in the older sections.
 
 ## TL;DR
 
@@ -395,13 +395,16 @@ state matches its understanding, flushes anything missing, and confirms **"safe 
 A fresh session reads `HANDOFF.md` **first** at startup and treats needing to re-explore as a
 logged failure signal. Use `checkpoint` before clearing context at cache expiry.
 
-**Self-improvement capture — `PROPOSALS.md`.** The PM runs the framework but never edits it
-(read-only subtree). When it observes a framework defect in the field — a repeated tier
-failure, a rule forcing a bad outcome, a stall, a mispriced escalation — it appends a
-structured entry to `PROPOSALS.md` (writable `-pm/` side): date, project, observed problem,
-evidence pointer (TASK_LOG event ids / cost.jsonl lines), suggested change. Maintainer sessions
-harvest it across projects alongside `cost-report.sh` output. **The framework proposes, the
-maintainer disposes.**
+**Self-improvement capture — file a GitHub issue.** The PM runs the framework but never edits
+it (read-only subtree). When it observes a framework defect in the field — a repeated tier
+failure, a rule forcing a bad outcome, a stall, a mispriced escalation — it files an issue on
+the framework repo (`gh issue create --repo Timeteo/vibetastic-pm`) carrying project, observed
+problem, evidence pointer (TASK_LOG event ids / cost.jsonl lines), and suggested change. The
+**orchestrator** files it; worktree builders run `gh` unauthenticated by design and cannot.
+If `gh` is unreachable, fall back to appending the same fields to `PROPOSALS.md` on the
+writable `-pm/` side and note the issue is unfiled — `PROPOSALS.md` is otherwise retired.
+Maintainer sessions triage the queue alongside `cost-report.sh` output. **The framework
+proposes, the maintainer disposes.**
 
 ---
 
