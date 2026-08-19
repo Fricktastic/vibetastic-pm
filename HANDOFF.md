@@ -1,11 +1,12 @@
 # HANDOFF — vibetastic-pm (framework repo)
 
-**Last session:** 2026-08-19 · **Branch:** `main` @ `c6ae7f8`, **pushed** (origin in sync).
+**Last session:** 2026-08-19 · **Branch:** `main` @ `c070e33`, **pushed** (origin in sync).
 Working tree clean apart from this file.
 
 **Stage:** framework maintenance. The 3-item state-integrity program: items 1 and 2 are done,
 merged and field-proven. **Item 3 is now UNBLOCKED** — the data it was waiting on exists as of
-2026-08-19. A fourth item (T074, log capture) was completed this session outside that program.
+2026-08-19. Two items outside that program also shipped this session: T074 (builder-turn log
+capture) and the rule-mechanization pair ([0h] + the plan-lint hook).
 
 ---
 
@@ -75,6 +76,36 @@ the "failures are never silent" contract was hollow on two of three backends.
   non-duplication, read-only capture, and the `[0f/B3]` empty-output stall retry. This was a
   critic finding: the old selftest could not have detected any of these regressions.
 
+**Item 5 (unplanned) — rule mechanization: `[0h]` + the plan-lint hook** (`c070e33`)
+Prompted by a challenge from the gamedaytastic session ("excessive process for a one-line
+change") and by the general question of whether prose rules drift.
+
+- **`[0h]` in `.claude/rules/dispatch.md`** (pointer as `RULES.md` lesson 5): a well-diagnosed
+  bug may skip re-deriving its root cause, but the gate is the **type of evidence** — an
+  observed runtime artifact (device log, instrumentation dispatch, a test pinning the branch
+  *and* the values) — never reasoning from source, and never the author's confidence, which is
+  self-certifying. The critique's placement/blast-radius pass never collapses; **diff size is
+  never a process input**.
+- **`scripts/plan-lint-hook.py`** — `PostToolUse` on `Write|Edit`, gating files named `PLAN.md`.
+  Mirrors plan-lint's `[0b]` taxonomy: exit 1 STRUCTURAL blocks (hook exit 2, linter output fed
+  back to the model), exit 3 vocabulary drift does not, malformed input never blocks. Six
+  selftest cases pin the mapping.
+
+**The organizing idea, worth keeping:** a rule that lives only in prose drifts, so move the
+mechanizable ones into the two places that cannot — `dispatch.sh` argument validation, and
+hooks over tool calls. The precedent is already in the repo: the verify-command rule was prose
+while **86% of dispatches ignored it**, became `exit 2`, and stopped being ignorable. `tier` is
+the control group — still only a warning, still missing on **79%** of dispatches (issue #19).
+What hooks *cannot* reach is every judgment rule (delegate-don't-do, adjudicate the verdict,
+Gate 1/2 no-self-approval); those are the ones that actually decay, and mechanizing three rules
+must not make the other twelve feel covered.
+
+**Two bugs found this session, same class:** the T074 log gap and a bug in this hook (it walked
+up from the script to guess the pm dir, overshot in this repo, and silently linted nothing while
+appearing installed). Both were **silent swallows** — a failure path that returned success. The
+hook one surfaced only because a fixture that should have blocked returned 0. Worth suspecting
+this class first.
+
 **Supporting — `scripts/selftest.sh`** (`fffbab7`, `a2de4ad`)
 The framework repo's **first verify command**, and `PROJECT.md` to declare it. Checks shell/python
 syntax, asserts plan-lint's exit code against 6 fixtures in `tests/fixtures/`, and asserts a
@@ -102,6 +133,22 @@ critic dispatches, with `role: read-only` correctly inferred.
   never closed with `---`, so plan-lint degrades to linting the whole file.
 - **A browser cannot wake a conversational Claude session.** Any "inbox file the orchestrator
   drains" design is inert — the decision sits unread while the UI claims it was submitted.
+
+## Proposed enhancements — filed as issues 2026-08-19
+
+Captured as GitHub issues on `Timeteo/vibetastic-pm` (this repo's convention), not as prose
+here, so they survive HANDOFF rewrites. Read the issue bodies — each carries its evidence.
+
+| # | Proposal | Note |
+|---|---|---|
+| **#15** | `dispatch.sh` refuses a build dispatch without `--worktree` | The other half of the mechanization split; **highest value of the six** — it protects the live checkout, and it propagates via the subtree unlike a hook |
+| **#16** | `setup.sh` runs once, so framework hooks never reach onboarded projects | Structural: the whole hook layer is un-upgradable in the field. Blocks leaning on hooks for anything important |
+| **#17** | `LOG_DIR` follows the prompt file, scattering run logs | Found during T074, deliberately out of its scope |
+| **#18** | Mechanize the critic gate after item 3 normalizes the event schema | A second reason to do item 3; note it inherits #16's propagation problem |
+| **#19** | Promote the missing-`tier` warning to a refusal | Telemetry quality only; lower priority than #15 |
+| **#20** | Startup step installs a token that can't push (403) | Maintainer decision — grant the bot write access, or drop the eval from `lifecycle.md` |
+
+Suggested order: **#15, then #16** (it gates how much weight hooks can carry), then the rest.
 
 ## Known issues, unfixed
 
