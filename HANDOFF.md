@@ -136,7 +136,7 @@ critic dispatches, with `role: read-only` correctly inferred.
 
 ## Proposed enhancements — filed as issues 2026-08-19
 
-Captured as GitHub issues on `Timeteo/vibetastic-pm` (this repo's convention), not as prose
+Captured as GitHub issues on `Fricktastic/vibetastic-pm` (this repo's convention), not as prose
 here, so they survive HANDOFF rewrites. Read the issue bodies — each carries its evidence.
 
 | # | Proposal | Note |
@@ -153,13 +153,17 @@ Suggested order: **#15, then #16** (it gates how much weight hooks can carry), t
 ## Known issues, unfixed
 
 - **`git push` from a session that has run `eval "$(~/.ssh/gh-agent-token.sh)"` gets 403** —
-  the agent bot (`fricktastic-agent[bot]`) lacks write access to `Timeteo/vibetastic-pm`. Bit
-  again on 2026-08-19. Two workarounds, both confirmed: push over SSH
-  (`git push git@github.com:Timeteo/vibetastic-pm.git main`), or use the operator's own gh
-  credentials —
-  `unset GH_TOKEN GITHUB_TOKEN; GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0='!gh auth git-credential' git push origin main`.
-  The real fix is upstream of the framework: grant the bot write access, or drop the eval from
-  the `lifecycle.md` startup step. Until then it will keep costing a round trip every session.
+  the agent bot (`fricktastic-agent[bot]`) has no write access to this repo. **Partly fixed
+  2026-08-19:** the repo was transferred `Timeteo/vibetastic-pm` → `Fricktastic/vibetastic-pm`,
+  so it now sits in the same org as every project repo. **One manual step remains and only an
+  org owner can do it:** the app installation (id `135198764`) is *selected-repos*, not
+  all-repos — it currently lists 5 repos and not this one. Add `Fricktastic/vibetastic-pm` at
+  github.com/organizations/Fricktastic/settings/installations/135198764. The API route
+  (`PUT /user/installations/135198764/repositories/1246657036`) returns 403 for a non-owner.
+  Until that is done, push with the operator's own credentials:
+  `env -u GH_TOKEN -u GITHUB_TOKEN git push origin main`.
+  Note the failing push returns shell exit 0 through a pipe — a session that does not read the
+  output will believe it succeeded.
 - `cost-report.sh` has **no machine-readable mode**. Any consumer must parse human stdout.
   Add `--json` before anything depends on it.
 - `logs/` has **no rotation**. gamedaytastic is at ~1,065 files / 102 MB.

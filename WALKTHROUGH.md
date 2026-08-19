@@ -59,7 +59,7 @@ mkdir my-app
 mkdir my-app-pm && cd my-app-pm && git init
 
 # Add vibetastic-pm as a named remote so future pulls are one command
-git remote add framework https://github.com/Timeteo/vibetastic-pm.git
+git remote add framework https://github.com/Fricktastic/vibetastic-pm.git
 
 # Pull vibetastic-pm framework files into a framework/ subdirectory
 git subtree add --prefix framework framework main --squash
@@ -398,7 +398,7 @@ logged failure signal. Use `checkpoint` before clearing context at cache expiry.
 **Self-improvement capture — file a GitHub issue.** The PM runs the framework but never edits
 it (read-only subtree). When it observes a framework defect in the field — a repeated tier
 failure, a rule forcing a bad outcome, a stall, a mispriced escalation — it files an issue on
-the framework repo (`gh issue create --repo Timeteo/vibetastic-pm`) carrying project, observed
+the framework repo (`gh issue create --repo Fricktastic/vibetastic-pm`) carrying project, observed
 problem, evidence pointer (TASK_LOG event ids / cost.jsonl lines), and suggested change. The
 **orchestrator** files it; worktree builders run `gh` unauthenticated by design and cannot.
 If `gh` is unreachable, fall back to appending the same fields to `PROPOSALS.md` on the

@@ -12,7 +12,7 @@ critic_backends: [codex, opencode]
 |-----|------|
 | PM directory | `/Users/tim/Developer/vibetastic-pm` |
 | Code directory | `/Users/tim/Developer/vibetastic-pm` |
-| Issue repo | `Timeteo/vibetastic-pm` |
+| Issue repo | `Fricktastic/vibetastic-pm` |
 
 <!-- This repo is the framework SOURCE, not a framework-managed project. PM dir and code dir
      are the same path, and PLAN.md / TASK_LOG.md at the repo root are the shipped TEMPLATES

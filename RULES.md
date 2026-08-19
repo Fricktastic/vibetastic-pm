@@ -40,7 +40,7 @@ The PM orchestrator is the **sole writer** to all state files. Subagents receive
 | TASK_LOG.md | PM (append-only) | PM (recovery) |
 | HANDOFF.md | PM (sole writer, overwritten in place) | PM (next session, read first at startup) |
 | PROPOSALS.md | PM (append-only, **fallback only** — `gh` unreachable) | Maintainer (archive) |
-| GitHub issues (`Timeteo/vibetastic-pm`) | PM (`gh issue create`) | Maintainer (triage) |
+| GitHub issues (`Fricktastic/vibetastic-pm`) | PM (`gh issue create`) | Maintainer (triage) |
 | prompts/design-spec.md | PM (from Designer output) | Architect, Tech Lead |
 | prompts/build-spec.md | PM (from Architect output, Stage 2 only — never modified after) | Tech Lead |
 | prompts/task-T0XX.md | PM (awk extract for Architect tasks; direct write for Tech Lead tasks) | OpenCode |
@@ -224,11 +224,11 @@ The PM runs the framework in the field but **never edits the framework itself** 
 is a read-only subtree). When it observes a framework defect in the field — a repeated tier
 failure, a rule that forces a bad outcome, a stall, an escalation that telemetry later shows
 was mispriced — it does not work around it silently and it does not patch the framework. It
-**files a GitHub issue against the framework repo** (`Timeteo/vibetastic-pm`) for a
+**files a GitHub issue against the framework repo** (`Fricktastic/vibetastic-pm`) for a
 maintainer to adjudicate.
 
 ```bash
-gh issue create --repo Timeteo/vibetastic-pm \
+gh issue create --repo Fricktastic/vibetastic-pm \
   --title "<component>: <one-line defect>" \
   --body "$(cat <<'EOF'
 - **Project:** <project-name>
