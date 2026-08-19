@@ -73,8 +73,10 @@ fi
 rm -rf "$LIFECYCLE_TMP"
 
 echo "[selftest] plan-lint handles a real live PLAN without crashing"
-for live in ../gamedaytastic-pm/PLAN.md ../hometastic-pm/PLAN.md; do
-  [ -r "$live" ] || continue
+# Absolute paths on purpose: relative ones do not resolve inside a git worktree, where the
+# [ -r ] guard silently turned a skipped check into a pass and gave false confidence.
+for live in /Users/tim/Developer/gamedaytastic-pm/PLAN.md /Users/tim/Developer/hometastic-pm/PLAN.md; do
+  if [ ! -r "$live" ]; then printf '  skip %s (not present)\n' "$live"; continue; fi
   bash scripts/plan-lint.sh "$live" >/dev/null 2>&1; got=$?
   if [ "$got" -le 3 ]; then pass "$live (exit $got)"; else fail "$live (crashed, exit $got)"; fi
 done
