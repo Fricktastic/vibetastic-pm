@@ -1,75 +1,117 @@
 # HANDOFF — vibetastic-pm (framework repo)
 
-**Stage:** framework maintenance. Branch `phase-0-field-lessons`, 3 commits ahead of `main`,
-**not yet merged or pushed**.
+**Last session:** 2026-08-18 · **Branch:** `main` @ `0ef41bd`, **pushed** (origin in sync).
+Working tree clean apart from this file.
 
-## Done this session (2026-08-15)
+**Stage:** framework maintenance. Items 1 and 2 of a 3-item state-integrity program are done,
+merged and field-proven. **Item 3 is deliberately blocked on fresh gamedaytastic data** — see
+"Next action" below. Do not start it early; the reason is substantive, not scheduling.
 
-Phase 0 of a planned 4-phase rework. Specs, patches and rationale live in
-`~/Developer/vibe-rework/` — read `NEXT.md` there first, then `SPEC-00-field-lessons.md`.
+---
 
-Evidence base: 307 real dispatches (hometastic 64, gamedaytastic 243) + `PROPOSALS.md` +
-open issues #9–#14.
+## Next action
 
-- `3d4d825` PROJECT.md tunable frontmatter keys (incl. the previously-uncommitted 2026-07-31 work)
-- `8d014c4` Phase 0 — dispatch.sh, plan-lint.sh, critic/tech-lead prompts, rules, partner-burn hook
-- `c75aa48` MODELS.md — § Field results, glm-5.2 demotion, Sonnet 5 alias + pricing
+**Wait for gamedaytastic to complete 2–3 real tasks under the current framework, then write
+item 3.** Nothing else here is pending.
 
-Verified before commit: all patches `git apply --check` clean; `bash -n` on every script;
-`plan-lint.sh` on gamedaytastic's real PLAN.md went **52 errors → OK (74 tasks)** while still
-exiting 1 on three synthetic corruptions; `cost-report.sh` output on the real 243-record
-cost.jsonl unchanged except the new partner section; codex smoke dispatch passed with the
-watchdog both disabled and live, leaving no `.turn` files.
+When that data exists, item 3 is: **normalize the critic/review event schema** — a canonical
+event shape written into `.claude/rules/state.md` and `VERIFY.md`, plus a linter for new
+TASK_LOG entries.
 
-## Facts established (don't re-derive)
+**Why it waits.** Measured on gamedaytastic: 22 `critic_returned` events across **17 distinct
+key sets**, split `task_id`/`task_ids` and `log`/`logs`, plus ad-hoc names like
+`critic_r3_returned`. But `critic_r3_returned` is an artefact of a *pre-round-limit* framework —
+the `[0e]` two-round cap (already shipped, unexercised until 2026-08-19) makes a round 3
+impossible. Writing the schema against that corpus would enshrine a shape the current rules can
+no longer produce. TASK_LOG is append-only by rule, so this is forward-only: no migration is
+possible, which makes getting the schema right the first time the whole job.
 
-- **`HANDOFF.md`'s old claim that the tracker was empty was wrong.** Six issues are open:
-  #9 (critic convergence), #10 (codex stdin hang — **fixed here**), #11 (critic {{PLAN}}
-  path — **fixed here**), #12 (parsing ≠ type-checking), #13 (external iOS sim verification
-  = SPEC-02), #14 (route review to claude — **deliberately not done**, see below).
-- `sonnet` is a **floating CLI alias** and resolves to `claude-sonnet-5` (verified
-  2026-08-15). The 45 `sonnet` + 3 `claude-sonnet-5` records are one lane: 48 runs, 94%.
-- **`reviewer_backends` stays `[opencode]`.** A mid-session patch flipped it to
-  `[claude, opencode]`; that contradicted the existing prose in `MODELS.md` and `VERIFY.md`,
-  which defer the flip to the **2026-08-17** telemetry review. Reverted. W31 alone shows 44
-  claude-backend runs *before* any review traffic — the field data supports the deferral.
-  The plumbing (`claude_window_burn_threshold`, `claude_review` lane, partner-burn hook)
-  landed; only the default did not move.
-- **`PROPOSALS.md` had 7 entries and 0 adoptions.** Phase 0 resolves or partly resolves all
-  seven. They have **not** been marked harvested yet.
-- The framework subtree is byte-identical across vibetastic / hometastic / gamedaytastic —
-  **but neither project has pulled Phase 0 yet**, so both still run the old framework.
-- `gh` write needs USER auth: `unset GH_TOKEN GITHUB_TOKEN` first. Push branches yourself.
-- **Do not run git in these folders from a Cowork device-bridge session** — it cannot unlink
-  `.git/index.lock` and will wedge the repo. Use a local shell.
+**What to collect from those runs:** the actual key sets emitted by `critic_returned`,
+`reviewer_returned`, `review_adjudicated`, and `critic_escalated` under current rules. Two
+fresh critic runs already exist from 2026-08-19 (T073 rounds 1 and 2) — start there.
 
-## NEXT ACTION
+---
 
-1. Merge `phase-0-field-lessons` → `main` and push.
-2. `git subtree pull` into **gamedaytastic-pm only**. Leave hometastic on the old framework
-   for a week — that is a free A/B on identical projects.
-3. Expect the first build dispatch after the pull to **fail with exit 2** if the orchestrator
-   omits the verify command. That is the intended behaviour, not a regression.
-4. After a week: re-run `cost-report.sh` and check the `verify_passed: null` and `tier: None`
-   rates first. They were 86% and 79%.
-5. Close #10 and #11 with commit refs; comment partial progress on #9 and #12; mark the
-   `PROPOSALS.md` entries harvested.
-6. Then Phase 1 (herdr) — `vibe-rework/SPEC-01-herdr-panes.md`. Confirm the stdout format of
-   `herdr workspace create` / `herdr pane create` before the first real dispatch.
+## Done this session — the state-integrity program
 
-The **SessionStart hook** (the old next action) is deliberately deferred: Phase 1's persistent
-panes make roughly half of it moot. The `SessionEnd`/`Stop` write-side hook for the
-hometastic `handoff_gap` is unaffected and still worth doing — note a `Stop` hook now exists
-for partner-burn telemetry, so that wiring is already in `setup.sh`.
+Both items came from two adversarial design critiques (codex `gpt-5.6-sol@medium`, read-only)
+run against live corpora. Full outputs are gone with the session; conclusions are below.
 
-## Open data threads
+**Item 1 — `plan-lint.sh` hardening** (`d4607d4`)
+Now rejects two defect classes as STRUCTURAL that previously passed while breaking every
+YAML-based consumer:
+- `depends_on: [[T055]]` — Obsidian wikilink syntax; YAML reads it as a list of lists. The old
+  regex stripped brackets and extracted the id happily. **28 of 76 gamedaytastic tasks** had a
+  silently wrong dependency graph.
+- Illegal YAML escapes in double-quoted scalars — Swift's `\.dismiss` in a `notes:` field made
+  hometastic's entire 1,549-line PLAN.md unparseable while plan-lint reported `OK (89 tasks)`.
+Stays regex-based; **no PyYAML dependency** (deliberate — stock macOS python3 may lack it).
 
-- **`fast` tier cannot resolve itself.** `qwen3-coder-flash`: zero runs in 307 dispatches;
-  the whole tier has 8. Either force the next 10 simple tasks to `fast`, or drop the tier.
-  The observed 60/17/8 split suggests the Tech Lead's tier classifier is calibrated upward.
-- **glm-5.2 demotion rests on n=12** (6/12, 22–27 min median). Revisit if the next roll-up
-  disagrees; two-line revert in `MODELS.md`.
-- **Untested in the field:** the `{{SPEC_OUTPUT_PATH}}` Tech Lead contract (nothing enforces
-  the injection mechanically) and `log-partner-burn.py`'s payload field names (it writes
-  nothing rather than something wrong if they've moved — if `cost-report.sh` keeps saying
-  "no partner records", dump the Stop payload and adjust the probe).
+**Item 2 — run-lifecycle telemetry** (`740b63e`)
+`dispatch.sh` now emits `run_start` / `run_finish` to `logs/runs.jsonl`: `run_id` (threaded into
+the log filename), pid, role, backend, tier, branch, worktree, `base_sha`/`head_sha`, commit
+count, exit, duration. Start record is written **before** argument validation and finish comes
+from an **EXIT trap**, so early exits (2 = no verifier, 30 = backend unavailable) and signals
+are covered — previously those left no telemetry at all. `cost.jsonl` schema and write site are
+untouched.
+
+**Supporting — `scripts/selftest.sh`** (`fffbab7`, `a2de4ad`)
+The framework repo's **first verify command**, and `PROJECT.md` to declare it. Checks shell/python
+syntax, asserts plan-lint's exit code against 6 fixtures in `tests/fixtures/`, and asserts a
+matched run_start/run_finish pair on an early exit. Two fixtures encode the real defects above.
+
+**Field-proven, not just tested:** gamedaytastic's `logs/runs.jsonl` has 4 rows from two real
+critic dispatches, with `role: read-only` correctly inferred.
+
+---
+
+## Facts established — do not re-derive
+
+- **Corpus selection.** `gamedaytastic-pm` is the reference corpus: live, exercises the current
+  framework (`backend` on 217/245 cost rows, 22 critic events, `verify_tier` on 96% of tasks).
+  `hometastic-pm` is the **drift** test case — stale since 2026-07-17, predates `backend`
+  entirely, and its PLAN.md is the illegal-escape specimen. A parser must survive both.
+- **`tier` is genuinely thin** (51/245 cost rows) and partly *correctly* null: read-only
+  reviewer/critic dispatches emit no tier. Don't "fix" that by backfilling.
+- **Per-run tier cannot be reconstructed from PLAN.md** — retries and escalations run at a
+  different tier than the task's final value.
+- **Single-writer is policy, not concurrency control.** Two orchestrator sessions can both read,
+  both write, both pass plan-lint, and one silently wins. Read-before-write is not CAS. This is
+  unfixed and is the largest known structural gap.
+- **Only the frontmatter is YAML**, not the whole PLAN.md file. hometastic's frontmatter is
+  never closed with `---`, so plan-lint degrades to linting the whole file.
+- **A browser cannot wake a conversational Claude session.** Any "inbox file the orchestrator
+  drains" design is inert — the decision sits unread while the UI claims it was submitted.
+
+## Known issues, unfixed
+
+- **`git push` from a session that has run `eval "$(~/.ssh/gh-agent-token.sh)"` gets 403** —
+  the agent bot lacks write access to `Timeteo/vibetastic-pm`. Push over SSH instead:
+  `git push git@github.com:Timeteo/vibetastic-pm.git main`. This bit once and cost a round trip.
+- `cost-report.sh` has **no machine-readable mode**. Any consumer must parse human stdout.
+  Add `--json` before anything depends on it.
+- `logs/` has **no rotation**. gamedaytastic is at ~1,065 files / 102 MB.
+- Nothing consumes `runs.jsonl` yet. `cost-report.sh` was not extended to read it.
+
+## Deferred by decision — the UI layer
+
+A UI was investigated and **deliberately deferred behind these framework fixes**. Conclusion:
+build a read-mostly renderer over the file contract, never a second writer. Order when it
+resumes: `pm-status --json` adapter → OS notifications → dashboard → gates **display-only** →
+dependency/branch/PR DAG last. Reject: the inbox pattern (see above), a canvas of terminals
+(builders are non-interactive), and localhost-without-auth once any action exists.
+
+## Scope note
+
+This session **overstepped into gamedaytastic-pm** — it pulled the subtree (in scope), then
+also wrote its PLAN.md, wrote T073's spec, dispatched two critic rounds, and appended to its
+TASK_LOG (out of scope; that project's orchestrator owns those). Its `TASK_LOG.md`,
+`prompts/task-T073.md` and `prompts/critic-T073.md` were left **uncommitted on purpose** for
+that session to review. T073 sits at an unresolved `critic_escalated` (2-round limit, 3 open
+BLOCKING findings). **Do not resume T073 from here.**
+
+## Prior context still live
+
+`~/Developer/vibe-rework/` — read `NEXT.md`, then the phase specs. Phase 0 is merged.
+Open issues: #9 (critic convergence), #12 (parsing ≠ type-checking), #13 (external iOS sim
+verification), #14 (route review to claude — deliberately not done). #10 and #11 are fixed.
