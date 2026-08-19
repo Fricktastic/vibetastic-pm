@@ -57,8 +57,6 @@
 # Output capture: opencode assistant output stays on stdout. Full opencode + verifier logs
 # go to a per-run logfile under logs/. On any non-zero exit the log tail is echoed to stderr
 # so failures are never silent. The logfile path is always printed to stderr.
-eval "$(~/.ssh/gh-agent-token.sh)"
-
 READ_ONLY=false
 WORKTREE_BRANCH=""
 BACKEND=""
@@ -78,6 +76,81 @@ FALLBACK_MODEL="${4:-}"
 VERIFY_CMD="${5:-}"
 MAX_ATTEMPTS="${6:-3}"
 TIER="${7:-}"   # optional: task tier (fast|standard|heavy), recorded in cost telemetry only
+
+# --- Run lifecycle telemetry -------------------------------------------------------------
+# cost.jsonl stays completion-only and schema-stable.  This separate stream makes an
+# invocation visible while running and joins it to its log, including validation failures.
+RUN_START_EPOCH="$(date +%s)"
+RUN_TS_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_PROMPT="$(basename "${PROMPT_FILE:-unknown}")"
+RUN_ROLE=build; $READ_ONLY && RUN_ROLE=read-only
+RUN_TASK_ID=""
+case "$RUN_PROMPT" in task-T[0-9]*) RUN_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -n 's/^task-\(T[0-9][0-9]*\).*$/\1/p')" ;; esac
+if [ -z "$BACKEND" ]; then
+  case "$MODEL" in
+    gpt-*|codex-*) RUN_BACKEND=codex ;;
+    claude-*|sonnet|opus|haiku|fable) RUN_BACKEND=claude ;;
+    *) RUN_BACKEND=opencode ;;
+  esac
+else RUN_BACKEND="$BACKEND"; fi
+RUN_DIR="$(cd "$DIR" 2>/dev/null && pwd || printf '%s' "$DIR")"
+RUN_BRANCH="$WORKTREE_BRANCH"
+[ -n "$RUN_BRANCH" ] || RUN_BRANCH="$(git -C "$RUN_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+RUN_WORKTREE=""
+if [ -n "$WORKTREE_BRANCH" ]; then
+  RUN_WORKTREE="$(git -C "$RUN_DIR" worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/${WORKTREE_BRANCH}" '/^worktree /{p=substr($0,10)} $0==b{print p; exit}')"
+  [ -n "$RUN_WORKTREE" ] || RUN_WORKTREE="$(dirname "$RUN_DIR")/$(basename "$RUN_DIR")-worktrees/$(basename "${PROMPT_FILE%.md}")"
+fi
+RUN_REPO_PATH="$RUN_DIR"
+RUN_BASE_SHA="$(git -C "$RUN_DIR" rev-parse HEAD 2>/dev/null || true)"
+
+# Derive the log location lexically, before prompt readability validation can exit.
+if [ -n "${OPENCODE_DISPATCH_LOG_DIR:-}" ]; then LOG_DIR="$OPENCODE_DISPATCH_LOG_DIR"
+else
+  # Resolve via cd so "." and other unnormalised dirnames collapse before taking the parent.
+  # A purely lexical $(pwd)/$(dirname ...) yields ".../prompts/." whose parent is ".../prompts",
+  # putting logs one level too deep whenever the caller's cwd IS the prompts dir.
+  RUN_PROMPT_DIR="$(cd "$(dirname "$PROMPT_FILE")" 2>/dev/null && pwd)"
+  if [ -z "$RUN_PROMPT_DIR" ]; then
+    case "$PROMPT_FILE" in /*) RUN_PROMPT_DIR="$(dirname "$PROMPT_FILE")" ;; *) RUN_PROMPT_DIR="$(pwd)/$(dirname "$PROMPT_FILE")" ;; esac
+  fi
+  LOG_DIR="$(dirname "$RUN_PROMPT_DIR")/logs"
+fi
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_FILE="${LOG_DIR}/$(basename "${PROMPT_FILE%.md}")-${RUN_ID}.log"
+RUNS_FILE="${LOG_DIR}/runs.jsonl"
+RUN_VERIFY_PASSED=null
+RUN_FINISH_EMITTED=false
+
+# Python is already a framework dependency and correctly escapes every free-form value.
+# Build the whole object first, then append it once so readers never see a partial object.
+run_json() {
+  python3 -c 'import json,sys
+keys=sys.argv[1].split(","); o={}
+for k,v in zip(keys,sys.argv[2:]):
+ o[k]=None if v=="__NULL__" else (int(v) if k in ("pid","duration_s","exit","commits") else (None if v=="null" else v=="true") if k=="verify_passed" else v)
+print(json.dumps(o,separators=(",",":")))' "$@"
+}
+RUN_START_ROW="$(run_json 'event,run_id,ts_start,pid,role,prompt,task_id,model,backend,tier,dir,branch,worktree,base_sha,log' run_start "$RUN_ID" "$RUN_TS_START" "$$" "$RUN_ROLE" "$RUN_PROMPT" "${RUN_TASK_ID:-__NULL__}" "${MODEL:-__NULL__}" "${RUN_BACKEND:-__NULL__}" "${TIER:-__NULL__}" "${RUN_DIR:-__NULL__}" "${RUN_BRANCH:-__NULL__}" "${RUN_WORKTREE:-__NULL__}" "${RUN_BASE_SHA:-__NULL__}" "$(basename "$LOG_FILE")")"
+[ -n "$RUN_START_ROW" ] && printf '%s\n' "$RUN_START_ROW" >> "$RUNS_FILE" 2>/dev/null || true
+
+emit_run_finish() {
+  $RUN_FINISH_EMITTED && return 0
+  RUN_FINISH_EMITTED=true
+  local code="$1" end_epoch head_sha commits row
+  end_epoch="$(date +%s)"
+  head_sha="$(git -C "$RUN_REPO_PATH" rev-parse HEAD 2>/dev/null || true)"
+  commits=""
+  if [ -n "$RUN_BASE_SHA" ] && [ -n "$head_sha" ]; then commits="$(git -C "$RUN_REPO_PATH" rev-list --count "${RUN_BASE_SHA}..${head_sha}" 2>/dev/null || true)"; fi
+  row="$(run_json 'event,run_id,ts_end,duration_s,exit,verify_passed,head_sha,commits' run_finish "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((end_epoch - RUN_START_EPOCH))" "$code" "$RUN_VERIFY_PASSED" "${head_sha:-__NULL__}" "${commits:-__NULL__}")"
+  [ -n "$row" ] && printf '%s\n' "$row" >> "$RUNS_FILE" 2>/dev/null || true
+}
+trap 'code=$?; emit_run_finish "$code"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+eval "$(~/.ssh/gh-agent-token.sh)"
 
 # --- [0c] Resolve the prompt file to an absolute path, once, before anything cds ---------
 # Backends disagreed about what a relative <prompt-file> means: run_opencode_* and
@@ -161,20 +234,12 @@ validate_model_slug "$MODEL" || exit 30
 # <pm-dir>/prompts/, so default LOG_DIR to the prompts dir's sibling logs/. This keeps
 # cost.jsonl and run logs in one place no matter where the orchestrator invokes dispatch
 # from (e.g. a git worktree or any other cwd). OPENCODE_DISPATCH_LOG_DIR overrides.
-if [ -n "${OPENCODE_DISPATCH_LOG_DIR:-}" ]; then
-  LOG_DIR="$OPENCODE_DISPATCH_LOG_DIR"
-else
-  PROMPT_DIR="$(cd "$(dirname "$PROMPT_FILE")" 2>/dev/null && pwd)"
-  LOG_DIR="${PROMPT_DIR:+$(dirname "$PROMPT_DIR")/logs}"
-  LOG_DIR="${LOG_DIR:-logs}"
-fi
 mkdir -p "$LOG_DIR"
 # Per-run uniqueness (issue #5): the second-granularity timestamp alone collides when the same
 # prompt is dispatched twice within one second (tier escalation, retries) and the fixed
 # verifier-output path collides across concurrent --worktree dispatches. Suffix the PID so the
 # logfile — and every temp path derived from it below (verifier output, captured builder
 # output, per-backend event/result files) — is unique per invocation.
-LOG_FILE="${LOG_DIR}/$(basename "${PROMPT_FILE%.md}")-$(date +%Y%m%d-%H%M%S)-$$.log"
 VERIFY_OUT="${LOG_FILE%.log}.verify.out"   # per-run, not the old shared ${LOG_DIR}/.verify.out
 STALL_OUT="${LOG_FILE%.log}.lastout"       # captured builder stdout, used by the stall guard
 
@@ -239,6 +304,7 @@ if [ -n "$WORKTREE_BRANCH" ]; then
   fi
   DIR="$WT_PATH"
   DIR_ABS="$WT_PATH"
+  RUN_REPO_PATH="$WT_PATH"
   echo "[dispatch] worktree: $WT_PATH (branch ${WORKTREE_BRANCH})" >&2
 
   # Builders must not push or open PRs (issue #3) — the PM owns PR opening (dispatch.md).
@@ -705,9 +771,11 @@ attempt=1
 while true; do
   ATTEMPTS_USED="$attempt"
   if run_verify; then
+    RUN_VERIFY_PASSED=true
     echo "[dispatch] verify passed on attempt $attempt/$MAX_ATTEMPTS." >&2
     finish 0
   fi
+  RUN_VERIFY_PASSED=false
 
   if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
     echo "[dispatch] verify still failing after $MAX_ATTEMPTS attempts — escalation needed." >&2

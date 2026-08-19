@@ -65,6 +65,58 @@ if not tasks_m:
     print(f"plan-lint: {path}: no tasks: section in frontmatter", file=sys.stderr)
     sys.exit(1)
 
+# Double-quoted YAML scalars have a deliberately small escape vocabulary. A live PLAN.md
+# contained Swift's @Environment(\.dismiss) in notes:, where \. makes the whole YAML
+# document unparseable even though this regex linter previously accepted it. Check the
+# simple one-line scalars we support so authors use a legal escape, single quotes, or a
+# block scalar for code-heavy text.
+simple_escapes = set('0abtnvfre"\\N_LP/ ')
+in_tasks = False
+current_task = None
+for line_no, line in enumerate(fm.splitlines(), 1):
+    if re.match(r"^tasks:\s*$", line):
+        in_tasks = True
+        continue
+    if in_tasks:
+        task_id_match = re.match(r"^\s+- id:\s*(\S+)", line)
+        if task_id_match:
+            current_task = task_id_match.group(1).strip("\"'")
+    scalar_match = re.match(
+        r'^\s*(?P<field>[A-Za-z_][A-Za-z0-9_-]*):\s*"'
+        r'(?P<value>(?:[^"\\]|\\.)*)"', line)
+    if not scalar_match:
+        continue
+    value = scalar_match.group("value")
+    i = 0
+    while i < len(value):
+        if value[i] != "\\":
+            i += 1
+            continue
+        if i + 1 == len(value):
+            escape, width = "\\", 1
+        else:
+            escape = value[i + 1]
+            width = 2
+            required_digits = {"x": 2, "u": 4, "U": 8}.get(escape)
+            if required_digits is not None:
+                digits = value[i + 2:i + 2 + required_digits]
+                width += required_digits
+                if len(digits) != required_digits or not re.fullmatch(r"[0-9A-Fa-f]+", digits):
+                    escape = "\\" + escape + digits
+                else:
+                    i += width
+                    continue
+            elif escape in simple_escapes:
+                i += width
+                continue
+            else:
+                escape = "\\" + escape
+        context = current_task or f"line {line_no}"
+        errors.append(
+            f"{context}: {scalar_match.group('field')} contains illegal YAML escape "
+            f"'{escape}'; use a legal YAML escape or a single-quoted/block scalar")
+        i += width
+
 chunks = re.split(r"(?m)^(?=\s+- id:)", tasks_m.group(1))
 tasks = {}
 order = []
@@ -114,9 +166,16 @@ if not tasks:
     errors.append("tasks: section contains no parseable '- id:' entries")
 
 # depends_on: existence + cycle detection
+# A live corpus used Obsidian wikilinks as [[T055]]. YAML accepts that as a list of lists,
+# but consumers expect a flat list of task IDs; spotting it before bracket stripping keeps the
+# dependency graph from being silently corrupted.
 deps = {}
 for tid, t in tasks.items():
     raw = t.get("depends_on") or "[]"
+    if raw.startswith("[") and "[" in raw[1:]:
+        errors.append(
+            f"{tid}: depends_on has nested-list value '{raw}'; use a flat list like "
+            "[T001, T002] (or []) — [[T001]] is not valid")
     ids = [d.strip().strip("\"'") for d in raw.strip("[]").split(",") if d.strip()]
     deps[tid] = ids
     for d in ids:
