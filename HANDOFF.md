@@ -152,18 +152,14 @@ Suggested order: **#15, then #16** (it gates how much weight hooks can carry), t
 
 ## Known issues, unfixed
 
-- **`git push` from a session that has run `eval "$(~/.ssh/gh-agent-token.sh)"` gets 403** —
-  the agent bot (`fricktastic-agent[bot]`) has no write access to this repo. **Partly fixed
-  2026-08-19:** the repo was transferred `Timeteo/vibetastic-pm` → `Fricktastic/vibetastic-pm`,
-  so it now sits in the same org as every project repo. **One manual step remains and only an
-  org owner can do it:** the app installation (id `135198764`) is *selected-repos*, not
-  all-repos — it currently lists 5 repos and not this one. Add `Fricktastic/vibetastic-pm` at
-  github.com/organizations/Fricktastic/settings/installations/135198764. The API route
-  (`PUT /user/installations/135198764/repositories/1246657036`) returns 403 for a non-owner.
-  Until that is done, push with the operator's own credentials:
-  `env -u GH_TOKEN -u GITHUB_TOKEN git push origin main`.
-  Note the failing push returns shell exit 0 through a pipe — a session that does not read the
-  output will believe it succeeded.
+- ~~**`git push` 403 under the agent bot**~~ — **FIXED 2026-08-19.** The repo was transferred
+  `Timeteo/vibetastic-pm` -> `Fricktastic/vibetastic-pm` and added to app installation
+  `135198764`. `fricktastic-agent[bot]` now pushes here; verified with a real push, not a
+  dry-run. Issue #20 closed. Caveat worth remembering: `eval "$(~/.ssh/gh-agent-token.sh)"`
+  exports only into the shell invocation that runs it — a later Bash call is a fresh shell and
+  silently falls back to the operator's own credentials, which makes a token test look like it
+  passed when it never ran. Put the eval and the push in the *same* invocation. Also: a failing
+  `git push` returns shell exit 0 through a pipe.
 - `cost-report.sh` has **no machine-readable mode**. Any consumer must parse human stdout.
   Add `--json` before anything depends on it.
 - `logs/` has **no rotation**. gamedaytastic is at ~1,065 files / 102 MB.
