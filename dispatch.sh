@@ -54,9 +54,9 @@
 #   30  backend unavailable — CLI not installed/authenticated; PM skips to the next backend
 #       in PROJECT.md builder_backends (no failure_count increment)
 #
-# Output capture: opencode assistant output stays on stdout. Full opencode + verifier logs
-# go to a per-run logfile under logs/. On any non-zero exit the log tail is echoed to stderr
-# so failures are never silent. The logfile path is always printed to stderr.
+# Output capture: every builder's assistant output stays on stdout and is also recorded in the
+# per-run human-readable logfile. Backend diagnostics and verifier output go there too. On any
+# non-zero exit the log tail is echoed to stderr so failures are never silent.
 READ_ONLY=false
 WORKTREE_BRANCH=""
 BACKEND=""
@@ -433,7 +433,7 @@ codex_effort_args() {
 }
 
 codex_postrun() {
-  # Accumulate this turn's events, capture the thread id, echo the last agent message to
+  # Accumulate this turn's events, capture the thread id, and echo every agent message to
   # stdout so the PM sees the builder's report like it does with opencode.
   # [0f/B5] The turn file used to be appended to BOTH $CODEX_EVENTS and $LOG_FILE and then
   # left on disk, so every codex run stored its full event JSONL three times. Measured in
@@ -588,7 +588,6 @@ CLAUDE_SESSION_ID=""
 
 claude_postrun() {
   cat "$CLAUDE_RESULTS.turn" >> "$CLAUDE_RESULTS" 2>/dev/null
-  cat "$CLAUDE_RESULTS.turn" >> "$LOG_FILE" 2>/dev/null
   python3 -c "
 import json,sys
 try: r=json.load(open(sys.argv[1]))
@@ -633,6 +632,23 @@ run_claude_continue() {
 run_builder_fresh()    { "run_${BACKEND}_fresh" "$@"; }
 run_builder_continue() { "run_${BACKEND}_continue" "$@"; }
 
+# Run a builder turn in THIS shell, save its human report, then replay it to both the run log
+# and the caller's stdout. Do not turn this into `| tee`: codex_postrun/claude_postrun set the
+# session id used by verify resumes, and a pipeline would strand that state in a subshell.
+# The caller chooses the output path; the fresh stall guard deliberately reuses STALL_OUT so
+# each silent retry overwrites the prior attempt and `[ -s "$STALL_OUT" ]` remains meaningful.
+TURN_NUMBER=0
+capture_builder_turn() {
+  local model="$1" out="$2" ec
+  shift 2
+  TURN_NUMBER=$((TURN_NUMBER + 1))
+  echo "[dispatch] --- $model turn $TURN_NUMBER stdout ($(date)) ---" >> "$LOG_FILE"
+  "$@" > "$out"; ec=$?
+  cat "$out" >> "$LOG_FILE"
+  cat "$out"
+  return "$ec"
+}
+
 # --- Silent-stall guard (issue #4) ---
 # Intermittent OpenRouter/init stalls: the builder loads config, logs `init`, then produces
 # NO assistant/tool output and exits non-zero ~60s later. The old flow then burned the
@@ -650,8 +666,7 @@ STALL_RETRIES="${OPENCODE_DISPATCH_STALL_RETRIES:-1}"
 run_fresh_stall_guarded() {
   local m="$1" tries=0 ec
   while :; do
-    run_builder_fresh "$m" > "$STALL_OUT"; ec=$?
-    cat "$STALL_OUT"   # pass the builder's report through to the PM on stdout, as before
+    capture_builder_turn "$m" "$STALL_OUT" run_builder_fresh "$m"; ec=$?
 
     # The builder spoke: its exit code means what it says.
     [ -s "$STALL_OUT" ] && return "$ec"
@@ -696,6 +711,8 @@ finish() {
     tail -n 40 "$LOG_FILE" >&2
   fi
   echo "[dispatch] full log: $LOG_FILE" >&2
+  [ -f "$CODEX_EVENTS" ] && echo "[dispatch] codex events: $CODEX_EVENTS" >&2
+  [ -f "$CLAUDE_RESULTS" ] && echo "[dispatch] claude results: $CLAUDE_RESULTS" >&2
   exit "$code"
 }
 
@@ -786,6 +803,13 @@ while true; do
   FEEDBACK="$(printf 'The verification command failed. Fix the code so it passes, then stop.\n\nCommand:\n%s\n\nOutput (tail):\n%s\n' \
     "$VERIFY_CMD" "$(tail -c 8000 "$VERIFY_OUT")")"
 
-  run_builder_continue "$ACTIVE_MODEL" "$FEEDBACK" || finish 1
+  # Unlike STALL_OUT this is only a relay file, not a stall signal; remove it immediately so
+  # the human log and the machine-readable aggregate remain the run's retained records.
+  CONTINUE_OUT="${LOG_FILE%.log}.turnout"
+  capture_builder_turn "$ACTIVE_MODEL" "$CONTINUE_OUT" \
+    run_builder_continue "$ACTIVE_MODEL" "$FEEDBACK"
+  continue_ec=$?
+  rm -f "$CONTINUE_OUT"
+  [ "$continue_ec" -eq 0 ] || finish 1
   attempt=$((attempt + 1))
 done
