@@ -23,6 +23,9 @@ events emitted under current rules; those now exist.
 
 **The corpus to build the schema from** (all under current rules):
 - gamedaytastic T073 — 2 critic rounds, ending in `critic_escalated` (2-round limit).
+  **Read its `TASK_LOG.md` entries only. Do not touch the task, its PLAN.md, or its prompts** —
+  T073 is that project's orchestrator's to resume, and this repo already overstepped there once
+  (see "Scope note" below). You need the event *shapes*, not the task.
 - vibetastic T074 (this session) — 2 critic rounds (REWORK → PROCEED) and 1 reviewer pass
   (APPROVE), i.e. the first clean convergence-inside-the-cap on record, plus the adjudication.
 
