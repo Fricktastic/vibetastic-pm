@@ -49,6 +49,32 @@ for entry in $FIXTURES; do
   else fail "$name (expected exit $want, got $got)"; fi
 done
 
+echo "[selftest] plan-lint PostToolUse hook maps exit codes to hook behaviour"
+# The hook is the mechanical half of the "run plan-lint after every PLAN.md write" rule
+# (.claude/rules/state.md).  Its whole value is the exit-code mapping: STRUCTURAL must block
+# (hook exit 2, feeding the linter output back to the model), vocabulary drift must NOT
+# ([0b] — a permanently red linter gets ignored), and nothing may ever block unrelated work.
+# It resolves plan-lint.sh as a SIBLING; an earlier revision walked up from the hook to guess
+# the pm dir, which overshot in this repo and silently linted nothing while looking installed.
+HOOK_TMP="$(mktemp -d)"
+hook_case() {  # fixture, expected hook exit, label
+  cp "tests/fixtures/$1" "$HOOK_TMP/PLAN.md"
+  printf '{"tool_input":{"file_path":"%s/PLAN.md"}}' "$HOOK_TMP" \
+    | python3 scripts/plan-lint-hook.py >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$2" ]; then pass "$3"; else fail "$3 (expected hook exit $2, got $got)"; fi
+}
+hook_case plan-missing-field.md   2 "structural corruption blocks the write (hook exit 2)"
+hook_case plan-nested-depends.md  2 "nested depends_on blocks the write"
+hook_case plan-vocab.md           0 "vocabulary drift does not block"
+hook_case plan-good.md            0 "a clean PLAN.md is silent"
+printf '{"tool_input":{"file_path":"%s/dispatch.sh"}}' "$PWD" \
+  | python3 scripts/plan-lint-hook.py >/dev/null 2>&1
+if [ $? = 0 ]; then pass "a non-PLAN.md write is ignored"; else fail "a non-PLAN.md write was not ignored"; fi
+printf 'not json' | python3 scripts/plan-lint-hook.py >/dev/null 2>&1
+if [ $? = 0 ]; then pass "malformed hook input never blocks"; else fail "malformed hook input blocked the call"; fi
+rm -rf "$HOOK_TMP"
+
 echo "[selftest] dispatch records lifecycle for an early exit"
 # A missing verifier is rejected before backend or network work.  Use a private log directory
 # so this assertion neither depends on nor mutates the framework's real telemetry.

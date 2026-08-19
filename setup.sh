@@ -75,6 +75,15 @@ cat > .claude/settings.json <<EOF
             "command": "python3 \"${PM_DIR}/framework/scripts/log-agent-spawn.py\""
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PM_DIR}/framework/scripts/plan-lint-hook.py\""
+          }
+        ]
       }
     ],
     "Stop": [

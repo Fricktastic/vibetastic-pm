@@ -58,7 +58,13 @@ After every agent return or OpenCode execution, before doing anything else:
 1. Read current `PLAN.md` (do not use a cached version)
 2. Apply the specific field updates for this task only
 3. Write `PLAN.md`
-4. Run `bash framework/scripts/plan-lint.sh` and branch on the exit code:
+4. Run `bash framework/scripts/plan-lint.sh` and branch on the exit code. A `PostToolUse`
+   hook (`framework/scripts/plan-lint-hook.py`, wired by setup.sh) also runs this
+   automatically on every Write/Edit whose target is named `PLAN.md`, and **blocks on
+   exit 1** — so a structural break surfaces even if this step is skipped. Existing
+   projects set up before the hook shipped do not have it: check `.claude/settings.json`
+   for a `Write|Edit` PostToolUse entry and add it by hand if absent. Run the linter
+   yourself regardless; the hook is a backstop, not a substitute.
    - **1 = structural corruption** — the write broke PLAN.md. Fix it now, before anything
      reads the file. This is the hard rule.
    - **3 = vocabulary drift only** (an unrecognised agent/status/tier value; structure is

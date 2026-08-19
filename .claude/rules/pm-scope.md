@@ -16,7 +16,7 @@ clearly wasteful**.
 | Review a builder diff | Reviewer: `dispatch.sh --read-only` + `prompts/reviewer.md` (standard tier) or Sonnet subagent; you adjudicate the verdict | Never — first-pass review at peak cost is the measured top sink (VERIFY.md) |
 | Write a task/build spec | Tech Lead tier | Trivially covered by the existing build-spec |
 | Fetch framework/Apple/library docs | Tech Lead (it has Sosumi/doc tools) | The user asked a direct question needing one lookup |
-| Trivial visual/layout nudge | Do it directly or hand to the human | — (dispatching a build cycle for a 40pt nudge is the waste; lesson 5) |
+| Trivial visual/layout nudge | Do it directly or hand to the human | — (dispatching a build cycle for a 40pt nudge is the waste; lesson 6) |
 
 ## Hard rules (unchanged from the gates)
 

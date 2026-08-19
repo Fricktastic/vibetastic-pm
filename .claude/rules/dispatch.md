@@ -159,6 +159,32 @@ surfacing pre-existing defects rather than plan defects. After **2 critic rounds
 task**, stop and escalate to the operator with both rounds' findings and your recommendation.
 Do not open round 3.
 
+**[0h] Collapsing rounds — evidence type, not confidence.** A well-diagnosed bug should not pay
+the full toll, but "I already know the root cause" is self-certifying and must never be the
+gate. Type the evidence instead:
+
+- **Observed runtime evidence** — a device/console log, an instrumentation dispatch, or a
+  failing test that pins the branch taken *and* the values it was taken on. Either the artifact
+  exists and is cited in the task spec, or it does not.
+- **Reasoning from source** — however convincing, and regardless of how confident the author is.
+  This never qualifies. It is what cost four sessions on one defect (RULES.md lesson 4).
+
+With observed evidence in hand, the spec **skips re-deriving the root cause**: state it in one
+paragraph, cite the artifact, and move to the change. Do not commission a diagnosis dispatch to
+confirm what the log already proves.
+
+**What never collapses:** the pre-build critique's placement and blast-radius pass. It answers a
+different question than diagnosis — *given the right root cause, is this the right edit, and what
+working behavior does it endanger?* Field evidence (gamedaytastic T073, a one-line fix on a
+shared audio path): round 1 caught that the plan's acceptance criteria required no regression
+test and that Apple Music's pause-time snapshot was at risk; round 2 caught that the guard as
+specified would land in the shared writer `updateProgress(seconds:)` and break that snapshot plus
+trim-relative `seek(to:)`, and that an existing test would go red. The root cause was never in
+doubt in either round. A one-line diff is not a small change when the line sits in shared state.
+
+**Corollary — diff size is not a process input.** It is unknowable when the spec is written and
+uncorrelated with blast radius. Route on `verify_tier` and `security`, as the gates already do.
+
 This bound is what makes the critique gate safe to treat as a hard precondition for dispatch
 (including under parallel fan-out, where an unbounded critic stalls a task indefinitely
 instead of blocking it). Log `critic_escalated` with `rounds: 2` and the unresolved findings.
