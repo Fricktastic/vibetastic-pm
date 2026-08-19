@@ -49,6 +49,29 @@ for entry in $FIXTURES; do
   else fail "$name (expected exit $want, got $got)"; fi
 done
 
+echo "[selftest] dispatch records lifecycle for an early exit"
+# A missing verifier is rejected before backend or network work.  Use a private log directory
+# so this assertion neither depends on nor mutates the framework's real telemetry.
+LIFECYCLE_TMP="$(mktemp -d)"
+printf 'selftest prompt\n' > "$LIFECYCLE_TMP/task-T999.md"
+OPENCODE_DISPATCH_LOG_DIR="$LIFECYCLE_TMP/logs" \
+  bash dispatch.sh test-model "$LIFECYCLE_TMP" "$LIFECYCLE_TMP/task-T999.md" \
+  >/dev/null 2>&1
+got=$?
+if [ "$got" = 2 ] && python3 - "$LIFECYCLE_TMP/logs/runs.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+starts = {r["run_id"] for r in rows if r.get("event") == "run_start"}
+finishes = {r["run_id"] for r in rows if r.get("event") == "run_finish" and r.get("exit") == 2}
+assert len(starts) == 1 and starts == finishes
+PY
+then
+  pass "early exit has matched run_start/run_finish"
+else
+  fail "early exit lifecycle record (dispatch exit $got)"
+fi
+rm -rf "$LIFECYCLE_TMP"
+
 echo "[selftest] plan-lint handles a real live PLAN without crashing"
 for live in ../gamedaytastic-pm/PLAN.md ../hometastic-pm/PLAN.md; do
   [ -r "$live" ] || continue
