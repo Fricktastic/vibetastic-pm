@@ -17,13 +17,27 @@ Include enough detail to reconstruct what happened without reading PLAN.md. On f
 
 ### Cost telemetry (`cost_event`)
 
-Two of the three telemetry streams are mechanical — no orchestrator discipline required:
-OpenCode dispatches are recorded by dispatch.sh into `logs/cost.jsonl`, and every Agent tool
-spawn is recorded by the `PostToolUse` hook (`framework/scripts/log-agent-spawn.py`, wired by
-setup.sh) into `logs/agent-spawns.jsonl`. The manual `cost_event` below adds what the hook
-cannot know: the **role** (Designer vs Tech Lead vs Reviewer) and task attribution. Append
-one after every subagent spawn and before each `dispatch.sh` call; if you forget, the hook
-log still catches the spawn, just without role attribution.
+Three of the four telemetry streams are mechanical — no orchestrator discipline required:
+
+| Stream | Written by | Lands in |
+|---|---|---|
+| Dispatched work | `dispatch.sh` | `logs/cost.jsonl` |
+| Agent tool spawns | `PostToolUse` hook, `scripts/log-agent-spawn.py` | `logs/agent-spawns.jsonl` |
+| **Orchestrator's own burn** | `Stop` hook, `scripts/log-partner-burn.py` | `logs/cost.jsonl` (`role: partner`) |
+| Role + task attribution | **you**, via `cost_event` below | `TASK_LOG.md` |
+
+The manual `cost_event` adds what the hooks cannot know: the **role** (Designer vs Tech Lead
+vs Reviewer) and task attribution. Append one after every subagent spawn and before each
+`dispatch.sh` call; if you forget, the hook log still catches the spawn, just without role
+attribution.
+
+**The partner stream is the largest one.** Until 2026-08-20 it did not exist in practice —
+the hook was wired but silently wrote nothing (issue #30), and reconstructing it from session
+transcripts put the orchestrator at **~71% of every token the system had consumed**. Both burn
+gates read `cost.jsonl`, so for five days they ran on a proxy missing its dominant term. If
+`logs/telemetry-errors.log` appears or grows, a stream has stopped writing — read it, do not
+ignore it. `scripts/backfill-partner-burn.py` replays historical sessions from transcripts
+(dry run by default; `--apply` to write).
 
 ```markdown
 ### <ISO8601> · cost_event
@@ -45,7 +59,8 @@ while making a skipped check impossible to hide: an `@high` dispatch whose `cost
 carries no `burn_proxy` figure is an **auditable violation**, and `cost-report.sh` can flag
 it mechanically. `burn_proxy` is `null`/omitted for every other dispatch.
 
-Run `bash framework/cost-report.sh` to roll up `logs/cost.jsonl` + `logs/agent-spawns.jsonl`
+Run `bash framework/cost-report.sh` to roll up `logs/cost.jsonl` (dispatches **and**
+`role: partner` orchestrator turns) + `logs/agent-spawns.jsonl`
 + these `cost_event` entries against the `MODELS.md` Pricing table — the evidence base for tuning tiers (cheapest model that
 clears the bar; escalate on proof).
 
