@@ -33,8 +33,10 @@ defaults under the A1 partner model.
 
 - **Conductor, not laborer.** The main thread holds intent, decisions, and a lean running
   state — never raw byproducts. Raw logs go to `logs/`/`artifacts/`.
-- **Background the long pole.** Builder dispatches run as background processes; only a
-  summary (verify result, PR link, notable findings) returns to the thread.
+- **Background the long pole.** Builder dispatches run via the **Bash tool with
+  `run_in_background: true`** — never shell `&`/`nohup`/`disown`, which detach from harness
+  tracking and leave the orchestrator parked forever (see `.claude/rules/dispatch.md`). Only
+  a summary (verify result, PR link, notable findings) returns to the thread.
 - **Builders run isolated.** Always dispatch build tasks with `--worktree <branch>` — the
   builder works in a per-task git worktree, never the live checkout (see
   `.claude/rules/dispatch.md`).

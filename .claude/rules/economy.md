@@ -19,7 +19,10 @@ OpenCode. Be economical with both output and tool calls so budget goes to implem
 - Don't re-probe what a prior call already answered (e.g. re-reading PLAN.md you just read this turn).
 - One read-write cycle per task result (see `state.md`) — that rule already minimizes writes; don't add extra reads around it.
 - Pass full context to a subagent once rather than spawning, getting a partial answer, and re-spawning.
-- No background monitor loops or `while … sleep` shells — check state once when needed.
+- No background monitor loops or `while … sleep` shells — check state once when needed. This
+  is safe **because** a dispatch backgrounded with `run_in_background: true` is harness-tracked
+  and re-invokes the session when it exits, so polling is redundant rather than merely wasteful.
+  If you ever feel you need to poll, the dispatch was detached wrong — fix the dispatch.
 
 ## When unsure
 

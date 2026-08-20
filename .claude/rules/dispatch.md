@@ -235,6 +235,26 @@ Dispatch:
 bash framework/dispatch.sh --worktree "<branch>" <tasks[n].model> ../<project-name>/ "${TASK_PROMPT}" "<tasks[n].fallback_model>" "<verify-cmd>" 3 "<tasks[n].tier>" 2>&1
 ```
 
+**Issue this through the Bash tool with `run_in_background: true`. Never `&`, `nohup`, or
+`disown`.** Both forms are "a background process" in the plain-English sense, and they behave
+nothing alike:
+
+| Form | What happens when the dispatch finishes |
+|---|---|
+| Bash tool, `run_in_background: true` | The harness tracks the process and **re-invokes the session on exit**. The dispatch loop continues on its own. |
+| Shell `&` / `nohup` / `disown` | The process is **detached and untracked**. Nothing ever wakes the session. The orchestrator parks until the operator types. |
+
+The failure is silent and self-reinforcing: a parked orchestrator and a legitimately gated one
+look identical to the operator, whose only recourse either way is to ask "is it done?". Field
+symptom (gamedaytastic, 2026-08-19): the orchestrator dispatched a build and sat idle until
+prompted, for a task with no gate in front of it. `CLAUDE.md` had named the goal
+("background the long pole") since 2026-07-02 without ever naming the mechanism, and
+`economy.md` forbids polling — so a detached dispatch left no legal way to make progress.
+
+Corollary: if you find yourself wanting to poll for a dispatch's completion, that is the
+signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monitor loop
+(`.claude/rules/economy.md`).
+
 - `--worktree <branch>`: **always pass it for build tasks.** The builder runs in an isolated
   git worktree (`../<project-name>-worktrees/task-T0XX/`) on `<branch>`, never in the live
   checkout — the human's uncommitted work is untouchable and parallel dispatches can't
