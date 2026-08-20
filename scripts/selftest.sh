@@ -223,6 +223,71 @@ else
 fi
 rm -rf "$DISPATCH_TMP"
 
+echo "[selftest] partner-burn hook records orchestrator usage"
+# The whole cost of issue #30 was that this hook's failure and success looked identical from
+# outside: it read usage off the Stop payload (which carries none), silently wrote nothing for
+# five days, and no check existed to notice.  These assertions fail if it ever stops writing.
+BURN_TMP="$(mktemp -d)"
+cp tests/fixtures/transcript-partner.jsonl "$BURN_TMP/t.jsonl"
+burn_hook() {  # session_id, transcript path
+  printf '{"session_id":"%s","transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' \
+    "$1" "$2" "$BURN_TMP" \
+    | OPENCODE_DISPATCH_LOG_DIR="$BURN_TMP/logs" python3 scripts/log-partner-burn.py >/dev/null 2>&1
+}
+burn_hook s1 "$BURN_TMP/t.jsonl"
+if [ -s "$BURN_TMP/logs/cost.jsonl" ] && python3 - "$BURN_TMP/logs/cost.jsonl" <<'PYCHK'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1, rows
+r = rows[0]
+assert r["role"] == "partner" and r["backend"] == "claude"
+# Sidechain (subagent) turns belong to agent-spawns.jsonl and must not be counted here:
+# the fixture's sidechain turn carries 999s in every field.
+assert r["input_tokens"] == 15 and r["output_tokens"] == 150, r
+assert r["cache_read_tokens"] == 3000 and r["cache_creation_tokens"] == 75, r
+assert r["reasoning_tokens"] == 10, r
+PYCHK
+then pass "records a session's usage, excluding sidechain turns"
+else fail "partner-burn wrote no usable record"; fi
+
+burn_hook s1 "$BURN_TMP/t.jsonl"
+if [ "$(wc -l < "$BURN_TMP/logs/cost.jsonl")" -eq 1 ]; then
+  pass "an unchanged transcript adds nothing (no cumulative double-count)"
+else
+  fail "partner-burn re-counted an unchanged transcript"
+fi
+
+cat >> "$BURN_TMP/t.jsonl" <<'JSONTURN'
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":9,"cache_read_input_tokens":300,"cache_creation_input_tokens":0}}}
+JSONTURN
+burn_hook s1 "$BURN_TMP/t.jsonl"
+if python3 - "$BURN_TMP/logs/cost.jsonl" <<'PYDELTA'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 2, rows
+assert (rows[1]["input_tokens"], rows[1]["output_tokens"]) == (1, 9), rows[1]
+PYDELTA
+then pass "a grown transcript logs only the delta"
+else fail "partner-burn delta accounting"; fi
+
+burn_hook s2 "tests/fixtures/transcript-no-usage.jsonl"
+if [ "$(wc -l < "$BURN_TMP/logs/cost.jsonl")" -eq 2 ] \
+  && grep -q 'carried no usage' "$BURN_TMP/logs/telemetry-errors.log"; then
+  pass "a transcript with no usage writes no zeros, but leaves a diagnostic"
+else
+  fail "partner-burn silent-failure guard"
+fi
+
+burn_hook s3 "$BURN_TMP/does-not-exist.jsonl"
+if grep -q 'no readable transcript_path' "$BURN_TMP/logs/telemetry-errors.log"; then
+  pass "a missing transcript is recorded as a telemetry error"
+else
+  fail "partner-burn did not report a missing transcript"
+fi
+printf 'not json' | OPENCODE_DISPATCH_LOG_DIR="$BURN_TMP/logs" python3 scripts/log-partner-burn.py >/dev/null 2>&1
+if [ $? = 0 ]; then pass "malformed hook input never fails the session"; else fail "partner-burn blocked on malformed input"; fi
+rm -rf "$BURN_TMP"
+
 echo "[selftest] plan-lint handles a real live PLAN without crashing"
 # Absolute paths on purpose: relative ones do not resolve inside a git worktree, where the
 # [ -r ] guard silently turned a skipped check into a pass and gave false confidence.
