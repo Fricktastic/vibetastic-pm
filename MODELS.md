@@ -229,33 +229,65 @@ Escalation in `.claude/rules/dispatch.md`).
 
 | Tier | Model | Fallback | Confirmed | Use When |
 |------|-------|----------|-----------|----------|
-| `fast` | `openrouter/qwen/qwen3-coder-flash` | `openrouter/deepseek/deepseek-v4-pro` | yes (e2e 2026-07-02) | Simple bug fix, isolated change, clear root cause, no API surface changes |
-| `standard` | `openrouter/deepseek/deepseek-v4-pro` | `openrouter/z-ai/glm-5.2` | yes (e2e 2026-06-29) | Multi-file feature, new patterns, moderate complexity |
-| `heavy` | `openrouter/deepseek/deepseek-v4-pro` | `openrouter/z-ai/glm-5.2` | yes | Complex architecture, new subsystems, large context, significant reasoning. **Swapped 2026-08 on field data** — see below. |
+| `fast` | `openrouter/deepseek/deepseek-v4-flash-0731` | `openrouter/z-ai/glm-5` | **yes (bake-off 2026-08-22)** | Simple bug fix, isolated change, clear root cause, no API surface changes |
+| `standard` | `openrouter/minimax/minimax-m3` | `openrouter/moonshotai/kimi-k2.6` | **yes (bake-off 2026-08-22)** | Multi-file feature, new patterns, moderate complexity |
+| `heavy` | `openrouter/moonshotai/kimi-k2.6` | `openrouter/deepseek/deepseek-v4-pro-0813` | **yes (bake-off 2026-08-22)** | Complex architecture, new subsystems, large context, significant reasoning |
 
-**`fast` re-anchored to a true cost rung (2026-07-02):** gemini-3-flash-preview was dropped —
-it priced *above* deepseek-v4-pro on both sides ($0.50/$3.00 vs $0.43/$0.87), so its only
-advantage was wall-clock latency, which Tim ruled immaterial. `qwen3-coder-flash`
-($0.195/$0.975, 1M ctx) replaces it: coding-specialist, ~55% cheaper than deepseek on input,
-and — decisive given the gemini-3.5-flash stall history — a **non-reasoning** model, so the
-reasoning-stall failure mode can't occur. **E2e-confirmed 2026-07-02**: multi-file task
-through dispatch.sh, verify passed attempt 1, 39s, $0.016 billed, no stall.
+### Bake-off, 2026-08-22 — the first time these tiers rested on evidence
 
-All three primaries have **1M context** (not "low-context flash" — verified on OpenRouter
-2026-06-29) and were tested end-to-end through opencode (`opencode run` completed a multi-file
-task, exit 0). `deepseek-v4-pro` is both the cheapest and strongest SWE-bench model here, so it
-anchors `standard`; `glm-5.2` (different family, ~Opus-4.8 FrontierSWE) is the `heavy` last
-non-Anthropic attempt before bouncing to subscription.
+Six models, one identical task (write `scripts/models-check.sh` to a 64-line spec), each in
+its own worktree, verifier `bash -n scripts/models-check.sh && bash scripts/selftest.sh`.
+Correctness was judged against ground truth computed independently, not against the verifier.
 
-`deepseek-v4-flash` was removed earlier (it failed on every run). **`gemini-3.5-flash` was
-removed as a primary (2026-06-29):** it is a reasoning model that, on large task prompts, spends
-its whole token budget in `reasoning` and emits no content/tool-call — the root cause of the
-hour-long opencode stall in `hometastic-pm/logs/task-T052-20260628-094058.log` (verify-exhaust →
-needless escalation to the old API-Opus heavy tier). `reasoning:{effort:low}` fixes it via the
-raw OpenRouter API but did not take through opencode's `provider.models[*].options` passthrough,
-so the reasoning models are simply not used as primaries. The reasoning-effort (`--variant`)
-knob was also removed earlier: it broke the gemini tiers and opencode provides no per-model
-validation for it.
+| model | exit | attempts | wall | billed | output correct |
+|---|---|---|---|---|---|
+| `qwen/qwen3-coder-flash` *(old `fast`)* | **20 — failed** | 3 | 248s | $0.194 | no — 4 of 14 slugs |
+| `deepseek/deepseek-v4-flash-0731` | 0 | 2 | 379s | **$0.075** | no — $/token vs $/Mtok unit bug |
+| `deepseek/deepseek-v4-pro` *(old `standard`/`heavy`)* | 0 | 2 | 595s | $0.164 | yes |
+| `deepseek/deepseek-v4-pro-0813` | 0 | 2 | 290s | $0.385 | yes |
+| **`minimax/minimax-m3`** | 0 | **1** | **231s** | $0.160 | **yes** |
+| **`moonshotai/kimi-k2.6`** | 0 | **1** | 348s | $0.207 | **yes** |
+
+**Why `fast` changed.** `qwen3-coder-flash` lost on every axis: it failed the verifier after 3
+attempts, cost *more* than the models that passed, and dismissed the red suite ("unrelated to
+my script — my script is working properly") rather than investigating. It is also
+**Alibaba-single-provider** and was unreachable for hours on 2026-08-22 under an account data
+policy, a failure invisible for six weeks because the `fast` rung had never once been
+dispatched. Its documented price was wrong too — tiered pricing raises it to $0.325/$1.625
+above 32K prompt tokens and $0.52/$2.60 above 128K, which every real dispatch clears.
+`deepseek-v4-flash-0731` replaces it: cheapest run measured, 30 providers, 79.0% SWE-V.
+
+**Why `standard`/`heavy` changed.** The old rung, unpinned `deepseek-v4-pro`, scores **73.6%**
+— the 80.6% this doc credited it with belongs to the separate `-0813` GA slug. It works, but
+`minimax-m3` and `kimi-k2.6` both scored higher, ran correct on the **first attempt** (the only
+two that did), and cost less than `-0813`.
+
+**Two lessons that outrank the benchmark.** (1) `v4-flash-0731` has the *highest* SWE-bench
+score of the three cheap models and shipped the buggy script; `minimax-m3` explicitly reasoned
+its way around the same trap. SWE-bench did not predict this workload. (2) Provider redundancy
+predicted reachability better than any capability number: the single-provider rung is the one
+that broke, and `minimax-m3` lost its first run to an upstream idle timeout (passing cleanly on
+retry — which is what the fallback column is for).
+
+**Family diversity is preserved and now cheaper:** `fast` deepseek → `standard` minimax →
+`heavy` moonshot, each a different family, with glm and deepseek-pro as cross-family fallbacks.
+`glm-5` replaces `glm-5.2` as the `fast` fallback — cheaper ($0.60/$1.92 vs $0.97/$3.04), 11
+providers, and the only GLM on any coding leaderboard (77.8%); `glm-5.2`/`5.3` are unbenchmarked.
+
+**Superseded (2026-07-02 → 2026-08-22).** The prior `fast` rationale — gemini-3-flash-preview
+dropped for pricing above deepseek, `qwen3-coder-flash` adopted as a cheaper *non-reasoning*
+coding specialist — is retired by the bake-off above. Two of its premises did not survive:
+qwen's price was the small-prompt band only, and its e2e "confirmed" status decayed silently
+into unreachable. The non-reasoning preference it encoded came from the gemini-3.5-flash stall
+(a reasoning model that spent its whole budget in `reasoning` and emitted no content — the
+hour-long stall in `hometastic-pm/logs/task-T052-20260628-094058.log`). That concern is
+**not** retired: it is why `reasoning:{effort}` is still never passed through opencode. But all
+three current rungs are reasoning models and **none stalled** across 7 bake-off runs, so
+"reasoning model" alone is no longer treated as disqualifying. Watch for it; don't presume it.
+
+`deepseek-v4-flash` (the pre-0731 release) was removed earlier for failing on every run, and
+scores 73.7%. `deepseek-v4-flash-0731` is a re-post-trained revision at 79.0% — a different
+model, confirmed working. `gemini-3.5-flash` remains unused as a primary.
 
 **Slug format note:** Anthropic model slugs on OpenRouter use dots for version numbers
 (`claude-opus-4.8`, `claude-sonnet-4.6`). Hyphens cause "model not found" errors.
@@ -350,6 +382,10 @@ Models to evaluate for future tier assignments. Move to the table above once con
 | `openrouter/qwen/qwen3.7-plus` | standard | $0.32/$1.28, 1M ctx — newest Qwen general line; only marginally cheaper than deepseek, no reason to swap today |
 | `openrouter/deepseek/deepseek-v4-flash-0731` | **fast** | **$0.08/$0.18, 1.31M ctx, 79.0% SWE-bench Verified** (2026-08-22 leaderboard). Beats the incumbent `fast` on price, context *and* measured capability — within 1.6 pts of v4-pro-0813 at a fifth of the input cost. Two flags: it is a **reasoning model** (the stall-risk class the `fast` rung was deliberately anchored away from), and an *earlier* `deepseek-v4-flash` was removed for failing on every run. `0731` is a re-post-trained revision, not that model. **Field test before adopting.** |
 | `openrouter/deepseek/deepseek-v4-pro-0813` | standard / heavy | $1.19/$3.56, 1.05M ctx, **80.6% SWE-bench Verified** — the GA release. See the slug-drift note below. |
+| `openrouter/minimax/minimax-m3` | standard / heavy | **80.5% SWE-bench Verified**, $0.30/$1.20, 1.05M ctx, 13 providers, no tiered pricing. Near-top capability at a third of `v4-pro-0813`'s price. Non-DeepSeek, so it also restores family diversity on the ladder. **Field test 2026-08-22.** |
+| `openrouter/moonshotai/kimi-k2.6` | standard / heavy | **80.2% SWE-bench Verified**, $0.54/$2.28, 262K ctx, 19 providers. Note `kimi-k3` ($3.00/$15.00) is **not** worth evaluating — K2.6 matches its tier at a sixth the price. **Field test 2026-08-22.** |
+| `openrouter/thinkingmachines/inkling-small` | standard | 80.2% SWE-V, $0.45/$1.20, 1.05M ctx — but only **3 provider endpoints**. Single-point-of-failure risk; see the qwen incident below. Not tested. |
+| `openrouter/z-ai/glm-5` | heavy fallback | 77.8% SWE-V, $0.60/$1.92 — **cheaper than the configured `glm-5.2` fallback ($0.97/$3.04), and the only GLM on any coding leaderboard.** `glm-5.2` and `glm-5.3` are both unbenchmarked, so the current fallback may be a downgrade. Not tested. |
 
 (`qwen-2.5-coder-32b-instruct` removed 2026-07-02 — obsolete: $0.66/$1.00, 128K ctx; beaten
 on every axis by the qwen3.x line.)

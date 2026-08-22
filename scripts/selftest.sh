@@ -415,7 +415,7 @@ else
   gate_case 0 codex    gpt-5.6-sol@medium  heavy    false "a within-rung effort bump still matches heavy"
   gate_case 0 claude   sonnet              standard false "claude standard + sonnet is allowed"
   gate_case 2 claude   sonnet              heavy    false "claude heavy + sonnet is refused (heavy=opus)"
-  gate_case 0 opencode openrouter/deepseek/deepseek-v4-pro standard false "opencode standard resolves"
+  gate_case 0 opencode openrouter/minimax/minimax-m3       standard false "opencode standard resolves"
   gate_case 2 opencode openrouter/google/gemini-2.5-flash  fast false "a retired model is not a live rung"
   # missing tier (issue #19 — was a warning, missing on 78% of runs)
   gate_case 2 codex    gpt-5.6-terra       ""       false "a build dispatch with no tier is refused"
@@ -489,19 +489,22 @@ fi
 # investigate.sh carries its own tier->model table; MODELS.md is the source of truth, so
 # assert they agree. Without this the two drift silently — the read-only lane passes no
 # tier, so dispatch.sh's issue-#41 check never sees this pairing.
-for pair in "codex:fast:gpt-5.6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-5.6-sol"; do
+for pair in "codex:fast:gpt-5.6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-5.6-sol" \
+            "opencode:fast:openrouter/deepseek/deepseek-v4-flash-0731" "opencode:standard:openrouter/minimax/minimax-m3" "opencode:heavy:openrouter/moonshotai/kimi-k2.6"; do
   be="${pair%%:*}"; rest="${pair#*:}"; tr_="${rest%%:*}"; want="${rest#*:}"
   got="$(python3 -c "
 import re,sys
+tier,section=sys.argv[1],sys.argv[2]
 lines=open('MODELS.md').read().splitlines()
-start=next(i for i,l in enumerate(lines) if l.strip()=='### Codex tier column')
+start=next(i for i,l in enumerate(lines) if l.strip()==section)
+depth=section.count('#')
 for l in lines[start+1:]:
-    if l.startswith('#') and (len(l)-len(l.lstrip('#')))<=3: break
-    m=re.match(r'\|\s*\`'+sys.argv[1]+r'\`\s*\|\s*\`([^\`]+)\`',l)
+    if l.startswith('#') and (len(l)-len(l.lstrip('#')))<=depth: break
+    m=re.match(r'\|\s*\`'+tier+r'\`\s*\|\s*\`([^\`]+)\`',l)
     if m: print(m.group(1).split('@')[0]); break
-" "$tr_" 2>/dev/null)"
+" "$tr_" "$([ "$be" = codex ] && echo '### Codex tier column' || echo '## OpenCode Tiers')" 2>/dev/null)"
   if [ "$got" = "$want" ] && grep -q "$want" investigate.sh; then
-    pass "investigate.sh $be/$tr_ agrees with MODELS.md ($want)"
+    pass "investigate.sh $be/$tr_ agrees with MODELS.md"
   else
     fail "investigate.sh $be/$tr_ drifted from MODELS.md (MODELS.md says '$got')"
   fi

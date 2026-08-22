@@ -84,8 +84,9 @@ case "$BACKEND:$TIER" in
   codex:heavy)       MODEL=gpt-5.6-sol@low ;;
   claude:fast|claude:standard) MODEL=sonnet ;;
   claude:heavy)      MODEL=opus ;;
-  opencode:fast)     MODEL=openrouter/qwen/qwen3-coder-flash ;;
-  opencode:*)        MODEL=openrouter/deepseek/deepseek-v4-pro ;;
+  opencode:fast)     MODEL=openrouter/deepseek/deepseek-v4-flash-0731 ;;
+  opencode:heavy)    MODEL=openrouter/moonshotai/kimi-k2.6 ;;
+  opencode:*)        MODEL=openrouter/minimax/minimax-m3 ;;
   *)                 MODEL=gpt-5.6-terra; BACKEND=codex ;;
 esac
 
