@@ -90,6 +90,23 @@ After the agent returns:
 2. Parse only the returned YAML block to register the task in PLAN.md.
 3. Never read the spec body into context. The critic and the builder both read it from disk.
 
+**This is now mechanical.** A `PreToolUse` hook (`framework/scripts/spec-body-guard.py`,
+wired by setup.sh) **blocks** a whole-file `Read` or `cat` of `prompts/task-T*.md` /
+`prompts/critic-T*.md`. It exists because the rule above was correct, stated its own
+rationale, and was violated **217 times** on gamedaytastic — ~367K tokens, **37% of
+everything the orchestrator ingested**, the single largest line item in partner burn
+(issue #39). Instruction-based discipline degrades over a long session; this is the same
+lesson that produced `plan-lint-hook.py`.
+
+Still allowed, because steps 1–2 need them: `test -s` / `wc -c` existence checks, `grep`,
+`awk`, `sed -n` YAML extraction, and `head`/`tail`/`Read limit` up to 60 lines. Deliberate
+exceptions: `SPEC_BODY_GUARD_OFF=1`, justified in the TASK_LOG entry — same convention as
+`DISPATCH_ALLOW_NO_VERIFY=1`.
+
+Projects onboarded before the hook shipped do not have it (issue #16): check
+`.claude/settings.json` for a `PreToolUse` entry matching `Read|Bash` and add it by hand if
+absent.
+
 Spawn a fresh Agent with the rendered prompt.
 
 After return, parse on delimiter `<!-- TECH_LEAD_RESULT_START -->`:

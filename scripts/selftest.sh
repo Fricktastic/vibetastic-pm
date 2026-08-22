@@ -342,6 +342,40 @@ vwarn_case "xcodegen generate && xcodebuild -scheme App build" warn  "bare xcode
 vwarn_case "xcodebuild build-for-testing -scheme App"          quiet "build-for-testing is silent"
 vwarn_case "swift build"                                       quiet "non-Xcode verify-cmd is silent"
 
+echo "[selftest] spec-body-guard enforces dispatch.md [0g] (issue #39)"
+guard_case() {  # expected exit, hook stdin json, label
+  printf '%s' "$2" | python3 scripts/spec-body-guard.py >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$1" ]; then pass "$3"; else fail "$3 (expected exit $1, got $got)"; fi
+}
+# blocked: whole-body reads of a task/critic spec
+guard_case 2 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/task-T065.md"}}'              "Read of a whole task spec is blocked"
+guard_case 2 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/critic-T071.md"}}'            "Read of a whole critic spec is blocked"
+guard_case 2 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/task-T065.md","limit":500}}'  "Read with an unbounded limit is blocked"
+guard_case 2 '{"tool_name":"Bash","tool_input":{"command":"cat prompts/task-T065.md"}}'               "cat of a task spec is blocked"
+guard_case 2 '{"tool_name":"Bash","tool_input":{"command":"head -n 400 prompts/task-T065.md"}}'       "an oversized head is blocked"
+# allowed: everything [0g] steps 1-2 actually need
+guard_case 0 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/task-T065.md","limit":30}}'   "a bounded Read is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"test -s prompts/task-T065.md"}}'           "the non-empty check is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"sed -n /TECH_LEAD_RESULT_START/,$p prompts/task-T065.md"}}' "YAML extraction is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"grep -n verify_tier prompts/task-T065.md"}}' "grep is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"tail -n 40 prompts/task-T065.md"}}'        "a bounded tail is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"bash framework/dispatch.sh --worktree b m ../x/ prompts/task-T065.md"}}' "dispatching the spec is allowed"
+guard_case 0 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/build-spec.md"}}'             "build-spec.md is not a task spec"
+guard_case 0 '{"tool_name":"Read","tool_input":{"file_path":"/p/PLAN.md"}}'                           "PLAN.md is untouched"
+guard_case 0 '{"tool_name":"Edit","tool_input":{"file_path":"/p/prompts/task-T065.md"}}'              "a non-Read/Bash tool is ignored"
+guard_case 0 'not json'                                                                               "malformed hook input never blocks"
+if SPEC_BODY_GUARD_OFF=1 sh -c 'printf "%s" "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/p/prompts/task-T065.md\"}}" | python3 scripts/spec-body-guard.py' >/dev/null 2>&1
+then pass "SPEC_BODY_GUARD_OFF=1 permits a deliberate exception"
+else fail "SPEC_BODY_GUARD_OFF=1 did not permit the read"; fi
+
+# The hook is worthless unwired: setup.sh must actually install it as a PreToolUse hook.
+if grep -q 'spec-body-guard.py' setup.sh && grep -q '"PreToolUse"' setup.sh; then
+  pass "setup.sh wires spec-body-guard as a PreToolUse hook"
+else
+  fail "setup.sh does not wire spec-body-guard — the gate would look installed and enforce nothing"
+fi
+
 echo
 if [ "$FAIL" = 0 ]; then echo "[selftest] PASS"; else echo "[selftest] FAIL"; fi
 exit "$FAIL"
