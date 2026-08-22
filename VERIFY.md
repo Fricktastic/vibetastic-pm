@@ -26,9 +26,47 @@ and state it in the task prompt.
 | **R1 — integration boundary** | JSON decode/encode, HTTP, service calls, persistence, config parsing | R0 **+ real-path integration test**: a representative **real payload** through the **production code path** |
 | **R2 — UI / user-visible data path** | views, tiles, anything whose correctness is visual or depends on live data rendering | R1 **+ "run the app and look"**: build, launch, drive to the state, screenshot, orchestrator inspects |
 
-Mechanical checks (build, tests, R1 fixtures) run inside `dispatch.sh`'s verify loop via
-the verify-cmd argument. R2 app-runs and the diff review are orchestrator steps after the
-dispatch returns green.
+### Who runs what — and what a green dispatch actually means
+
+Mechanical checks run inside `dispatch.sh`'s verify loop via the verify-cmd argument **only
+to the extent that project's verify-cmd covers them**. A green dispatch means "the verify-cmd
+exited 0" and nothing more. It does not mean tests ran.
+
+| Check | Runs where | Owner |
+|---|---|---|
+| Compile (incl. the **test target**) | `dispatch.sh` verify loop, out-of-sandbox | verify-cmd in `PROJECT.md` |
+| R1 fixture / integration test | verify loop **iff** the verify-cmd invokes it | verify-cmd |
+| **Test execution** (unit + simulator) | after the dispatch, on a real simulator/device | **orchestrator** |
+| R2 app-run + screenshot | after the dispatch | orchestrator |
+| Diff review | after the dispatch returns green | orchestrator (cheap first pass) |
+
+**Builders cannot execute simulator-dependent tests.** CoreSimulatorService is a Mach
+service, not a filesystem path, so no `workspace-write` grant can reach it — see
+`.claude/rules/dispatch.md` § codex + iOS/Xcode tasks. `dispatch.sh` injects a preamble
+telling the builder this outright, so it neither flails against the denial nor invents a
+result (issue #37).
+
+> **Standing rule: a builder's claim about test results is never evidence.** Not "tests
+> pass", not a flake table, not a baseline run count, not a mutation score. If the
+> orchestrator did not run the suite, the suite did not run. Field case (gamedaytastic
+> T077): a test-only task returned exit 0 with `verify passed on attempt 1/3` and a report
+> containing a 10-run flake table — while the test target did not compile at all, because
+> the verify-cmd was the app scheme's `build`. See issue #36.
+
+**Corollary for the verify-cmd:** it must compile the test target, not just the app. On iOS
+that is `xcodebuild build-for-testing`, which compiles tests without booting a simulator —
+sim-independent *and* test-covering are not in conflict.
+
+**Why test execution is not a dispatch lane** (decision, issue #37). Every other loud job —
+spec, review, critique, diagnosis — is delegated to a cheap tier, so a "Test Runner" agent
+lane looks like the consistent move. It was measured and rejected: across 35 gamedaytastic
+partner transcripts, hand-run `xcodebuild`/`xcrun`/`simctl` accounted for 177 calls but only
+~25K tokens — **2.4%** of everything the orchestrator ingested. Running a suite is
+deterministic; an agent adds cost without adding capability. So the command lives in
+`PROJECT.md § Test command` and the orchestrator shells out to it directly.
+
+Revisit only if **triage** of failures becomes the expensive part — that is judgment work and
+would earn a lane. Simply running the suite never will.
 
 ---
 

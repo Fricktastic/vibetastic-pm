@@ -19,6 +19,7 @@ fi
 PROJECT_NAME="$1"
 CODE_DIR="$2"
 ISSUE_REPO="$3"
+TEST_CMD="${TEST_CMD:-}"
 VERIFY_CMD="${4:-}"
 PM_DIR="$(pwd)"
 
@@ -136,10 +137,32 @@ max_concurrent_total: 6
 
 <!-- Single-line command run in the code directory after each OpenCode task. Exit 0 = the
      task didn't break the project. Passed to dispatch.sh as the verifier; on failure the loop
-     feeds its output back to the model and retries. Leave the code block empty to disable. -->
+     feeds its output back to the model and retries. Leave the code block empty to disable.
+
+     It must COMPILE THE TEST TARGET, not just the app — on iOS use
+     `xcodebuild build-for-testing`, never a bare `build` (issue #36).
+
+     THIS IS NOT A TEST RUN. Builders cannot execute simulator-dependent tests
+     (CoreSimulatorService is a Mach service no sandbox grant provides). Running the suite is
+     the orchestrator's job, on a real simulator/device — framework/VERIFY.md § Who runs what. -->
 
 \`\`\`
 ${VERIFY_CMD}
+\`\`\`
+
+## Test command
+
+<!-- Single-line command that RUNS the suite on a real simulator/device, from the code
+     directory. This is the orchestrator's command, not the builder's — dispatch.sh never
+     runs it. It lives here so that every session has one canonical answer to "how do I run
+     the tests" instead of re-deriving it from scratch (issue #37: 27 of 35 gamedaytastic
+     partner transcripts re-derived the sandbox/test story independently).
+
+     Pin the destination explicitly — an unpinned destination picks a different simulator per
+     machine and per Xcode update. Leave empty if the project has no runnable suite. -->
+
+\`\`\`
+${TEST_CMD}
 \`\`\`
 
 ## Notes

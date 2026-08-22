@@ -180,6 +180,20 @@ if [ -z "$VERIFY_CMD" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_VERIFY:-0}" !=
   echo "           or set DISPATCH_ALLOW_NO_VERIFY=1 to override deliberately." >&2
   exit 2
 fi
+# --- [issue #36/#37] A verify-cmd that cannot compile the tests -------------------------
+# `xcodebuild ... build` never compiles the test target, so a test file that does not build
+# sails through as "verify passed" (gamedaytastic T077: exit 0, attempt 1/3, test target
+# broken). `build-for-testing` compiles tests without booting a simulator — sim-independent
+# and test-covering at once. Warn only: some projects legitimately have no test target, and
+# the shape check cannot tell.
+case "$VERIFY_CMD" in
+  *build-for-testing*|*" test "*|*" test") ;;
+  *xcodebuild*)
+    echo "[dispatch] warning: verify-cmd runs xcodebuild without 'build-for-testing' — it will" >&2
+    echo "           NOT compile the test target, so a broken test file verifies green." >&2
+    echo "           See framework/VERIFY.md § Who runs what (issue #36)." >&2 ;;
+esac
+
 # tier is telemetry-only, so warn rather than refuse — but it was missing on 79% of runs,
 # which is why cost-report.sh cannot attribute cost by tier today.
 if [ -z "$TIER" ] && ! $READ_ONLY; then
@@ -201,6 +215,74 @@ esac
 if ! command -v "$([ "$BACKEND" = opencode ] && echo opencode || echo "$BACKEND")" >/dev/null 2>&1; then
   echo "[dispatch] backend unavailable: $BACKEND CLI not on PATH" >&2
   exit 30
+fi
+
+# --- [issue #37] Builder-facing preamble: who runs the tests -----------------------------
+# The sandbox limitation below was documented in exactly two places, both of which only the
+# ORCHESTRATOR reads (this file's comments, and .claude/rules/dispatch.md). `grep -rn
+# CoreSimulator prompts/` returned zero hits, so the builder was never told. The result, on
+# gamedaytastic: the builder hits an opaque CoreSimulator denial, flails or fabricates a
+# test result (issue #12), and a fresh orchestrator session re-derives a constraint the repo
+# has known since July — measured in 27 of 35 partner transcripts. Telling the builder is
+# cheap; leaving it in orchestrator-only prose has not worked.
+#
+# Two claims, aimed at two different failure modes:
+#   1. codex only  — the denial is EXPECTED. Do not work around it, do not fail on it.
+#   2. all backends — a builder's claim about test results is never evidence (VERIFY.md).
+# Read-only dispatches (reviewer, critic) build nothing and are exempt.
+prompt_preamble() {
+  local shape=""
+  case "$VERIFY_CMD $PROMPT_TASK_HINT" in
+    *xcodebuild*|*xcodegen*|*.xcodeproj*|*.xcworkspace*|*simctl*|*xcrun*) shape="xcode" ;;
+  esac
+  [ -n "$shape" ] || return 0
+  $READ_ONLY && return 0
+
+  echo "## Verification boundary (injected by dispatch.sh — read before you plan)"
+  echo
+  if [ "$BACKEND" = codex ]; then
+    cat <<'PREAMBLE_CODEX'
+You are running inside a `workspace-write` sandbox. Simulator-dependent tests **cannot run
+here**: CoreSimulatorService is a Mach service, not a filesystem path, so no writable-root
+grant can provide it. An `xcodebuild test` / `xcrun simctl` denial is **expected, is not
+your fault, and is not a task failure**.
+
+Do not attempt to work around it — not by relaxing the sandbox, not by shelling out
+differently, not by substituting `swift parse` or a syntax check for a real build. If you
+need compile-level confidence, use `xcodebuild build-for-testing`, which compiles the test
+target without booting a simulator.
+
+PREAMBLE_CODEX
+  fi
+  cat <<'PREAMBLE_ALL'
+Test **execution** is not yours. It happens outside your sandbox: dispatch.sh runs the
+project's verify command in the parent shell after your turn and feeds any failure back to
+you for correction, and the orchestrator runs the real suite on real hardware.
+
+Therefore: **never report a test result you did not personally observe.** Do not write
+"tests pass", do not produce a flake table, a baseline run count, or a mutation check unless
+you actually executed those runs and can quote the output. If you could not run something,
+say so plainly and state what you did verify instead. An unverifiable claim in your report is
+worse than no claim — downstream gates treat your report as evidence.
+PREAMBLE_ALL
+  echo
+  echo "---"
+  echo
+}
+
+# Hint used only for shape detection above — the task prompt's own text. Read once; the
+# preamble itself is composed after backend/read-only resolution.
+PROMPT_TASK_HINT="$(head -c 20000 "$PROMPT_FILE" 2>/dev/null || true)"
+PROMPT_PREAMBLE="$(prompt_preamble)"
+# $( ) strips trailing newlines, so re-insert the blank line the preamble ends with —
+# otherwise the "---" rule runs straight into the task's first heading.
+if [ -n "$PROMPT_PREAMBLE" ]; then
+  PROMPT_TEXT="${PROMPT_PREAMBLE}"$'\n\n'"$(cat "$PROMPT_FILE")"
+else
+  PROMPT_TEXT="$(cat "$PROMPT_FILE")"
+fi
+if [ -n "$PROMPT_PREAMBLE" ]; then
+  echo "[dispatch] injected Xcode verification-boundary preamble (backend=$BACKEND)" >&2
 fi
 
 # codex model slugs may carry an effort suffix (gpt-5.6-sol@low) — parsed per call so the
@@ -401,7 +483,7 @@ run_opencode_fresh() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
-    "$(cat "$PROMPT_FILE")" \
+    "$PROMPT_TEXT" \
     < /dev/null 2>> "$LOG_FILE"
 }
 
@@ -556,7 +638,7 @@ run_codex_fresh() {
     --json -C "$DIR" -s workspace-write --skip-git-repo-check \
     -c sandbox_workspace_write.network_access=true \
     -m "$(model_of "$spec")" "${args[@]}" \
-    "$(cat "$PROMPT_FILE")"
+    "$PROMPT_TEXT"
   local ec=$?
   codex_postrun
   return $ec
@@ -608,7 +690,7 @@ run_claude_fresh() {
       -p --output-format json \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
-      "$(cat "$PROMPT_FILE")" ) \
+      "$PROMPT_TEXT" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun
