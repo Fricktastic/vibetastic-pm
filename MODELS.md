@@ -348,12 +348,37 @@ Models to evaluate for future tier assignments. Move to the table above once con
 | `openrouter/openai/gpt-5.4` | standard | 73.9% coding score, cheaper than 5.5 — non-Anthropic alt if a tier needs swapping |
 | `openrouter/qwen/qwen3.5-flash-02-23` | fast (budget floor) | $0.065/$0.26, 1M ctx — 3× cheaper than qwen3-coder-flash, but a **reasoning model** (the stall-risk class); only adopt after a stall-free e2e test |
 | `openrouter/qwen/qwen3.7-plus` | standard | $0.32/$1.28, 1M ctx — newest Qwen general line; only marginally cheaper than deepseek, no reason to swap today |
+| `openrouter/deepseek/deepseek-v4-flash-0731` | **fast** | **$0.08/$0.18, 1.31M ctx, 79.0% SWE-bench Verified** (2026-08-22 leaderboard). Beats the incumbent `fast` on price, context *and* measured capability — within 1.6 pts of v4-pro-0813 at a fifth of the input cost. Two flags: it is a **reasoning model** (the stall-risk class the `fast` rung was deliberately anchored away from), and an *earlier* `deepseek-v4-flash` was removed for failing on every run. `0731` is a re-post-trained revision, not that model. **Field test before adopting.** |
+| `openrouter/deepseek/deepseek-v4-pro-0813` | standard / heavy | $1.19/$3.56, 1.05M ctx, **80.6% SWE-bench Verified** — the GA release. See the slug-drift note below. |
 
 (`qwen-2.5-coder-32b-instruct` removed 2026-07-02 — obsolete: $0.66/$1.00, 128K ctx; beaten
 on every axis by the qwen3.x line.)
 
 (`deepseek-v4-pro` and `glm-5.2` were promoted into the active tiers on 2026-06-29 — see OpenCode
 Tiers. `glm-5.2` actual OpenRouter price is $0.95/$3.00, 1M ctx.)
+
+**Slug drift — `deepseek-v4-pro` is the 0423 preview, not the GA release (found 2026-08-22).**
+OpenRouter resolves the unpinned `deepseek/deepseek-v4-pro` to **"DeepSeek V4 Pro 0423"**
+($0.41/$0.83). The **80.6% SWE-bench Verified** figure this doc credits it with belongs to
+`deepseek-v4-pro-0813`, the GA release, which is a separate slug at **$1.19/$3.56** — 3× the
+price. The active `standard`/`heavy` rung has therefore been running the April preview on a
+justification the GA model earned. Not necessarily wrong (the preview may be fine, and it is
+far cheaper), but the stated reason was unsound. Resolve by field test, not by assumption.
+
+**Catalog check, 2026-08-22** (live `openrouter/api/v1/models`, 421 models, 147 released since
+April): every incumbent is still listed and priced as documented, except
+**`openrouter/x-ai/grok-code-fast-1`, which is delisted entirely** — it appears in field logs
+as a 1-run, 2-second failure and was never in a tier. `glm-5.3` ($1.40/$4.40) is newer than the
+configured `glm-5.2` ($0.97/$3.04) but pricier and absent from the coding leaderboards — no
+reason to move. `gemini-3.7-flash` has fallen to $0.38/$1.88 (from 3.5-flash's $1.50/$9.00) but
+is the same reasoning family whose stall cost an hour in hometastic.
+
+**Standing caveat on this whole table.** `MODELS.md` says "cheapest model that clears the bar;
+escalate on proof". Per issue #41 the escalation ladder fired **zero** times in 307+ field
+dispatches, and the opencode lane ran **15 builder dispatches (~$2)** in gamedaytastic's entire
+history — the `fast` rung has *never* been dispatched at all. These tiers are untested opinion
+regardless of which models occupy them. Weight benchmark evidence accordingly, and prefer a
+real e2e run.
 
 ---
 
