@@ -393,6 +393,14 @@ else
     ( BACKEND="$2"; MODEL="$3"; TIER="$4"; READ_ONLY="$5"
       LOG_DIR="$GATE_TMP/logs"; MODELS_FILE="$PWD/MODELS.md"
       PROMPT_FILE="$GATE_TMP/prompts/task-T001.md"
+      # The gate block honours two ambient escape hatches (DISPATCH_ALLOW_NO_TIER,
+      # DISPATCH_ALLOW_UNLADDERED_HIGH). These cases assert the DEFAULT refusing behaviour, so
+      # an exported override must not leak in — with DISPATCH_ALLOW_NO_TIER=1 in the caller's
+      # shell the "no tier is refused" case exits 0 instead of 2 and the suite goes green while
+      # testing nothing. Observed for real: every dispatch in the 2026-08-22 OpenRouter tier
+      # bake-off set that variable, and three of the four builders independently diagnosed it.
+      # The #34 pattern in this file's own code.
+      unset DISPATCH_ALLOW_NO_TIER DISPATCH_ALLOW_UNLADDERED_HIGH
       model_of()  { echo "${1%%@*}"; }
       effort_of() { case "$1" in *@*) echo "${1##*@}" ;; *) echo "" ;; esac; }
       . "$GATE_TMP/gate.sh" ) >/dev/null 2>&1
