@@ -146,7 +146,7 @@ CODEX_FLAG="$DISPATCH_TMP/codex-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CODEX_CALLS" FAKE_VERIFY_FLAG="$CODEX_FLAG" \
   CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" \
   bash dispatch.sh --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
-  '' "test -f $CODEX_FLAG" 2 > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
+  '' "test -f $CODEX_FLAG" 2 standard > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
 got=$?
 CODEX_LOG="$(find "$CODEX_LOGS" -name '*.log' -type f | head -n 1)"
 if [ "$got" = 0 ] \
@@ -187,7 +187,7 @@ CLAUDE_FLAG="$DISPATCH_TMP/claude-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CLAUDE_CALLS" FAKE_VERIFY_FLAG="$CLAUDE_FLAG" \
   OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" \
   bash dispatch.sh --backend claude claude-sonnet-4.6 "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
-  '' "test -f $CLAUDE_FLAG" 2 > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
+  '' "test -f $CLAUDE_FLAG" 2 standard > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
 got=$?
 CLAUDE_LOG="$(find "$CLAUDE_LOGS" -name '*.log' -type f | head -n 1)"
 if [ "$got" = 0 ] \
@@ -374,6 +374,62 @@ if grep -q 'spec-body-guard.py' setup.sh && grep -q '"PreToolUse"' setup.sh; the
   pass "setup.sh wires spec-body-guard as a PreToolUse hook"
 else
   fail "setup.sh does not wire spec-body-guard — the gate would look installed and enforce nothing"
+fi
+
+echo "[selftest] tier ladder + sol@high burn gate (issue #41)"
+# The gate block runs before any backend work, so drive it in isolation rather than paying for
+# a real dispatch. Extract by MARKER PAIR: bounding it on /^fi$/ truncated at the first block
+# and silently left three gates untested — a check that cannot fail (#34).
+GATE_BLOCK="$(awk '/^# --- \[issue #41\] The escalation ladder/,/^# --- \[issue #41\] end of ladder/' dispatch.sh)"
+if [ -z "$GATE_BLOCK" ] || ! printf '%s' "$GATE_BLOCK" | grep -q 'burn gate'; then
+  fail "the issue-#41 gate block markers are missing from dispatch.sh — gate checks did not run"
+else
+  GATE_TMP="$(mktemp -d)"; mkdir -p "$GATE_TMP/prompts" "$GATE_TMP/logs"
+  echo task > "$GATE_TMP/prompts/task-T001.md"
+  printf -- '---\ncodex_weekly_burn_threshold: 4000000\n---\n' > "$GATE_TMP/PROJECT.md"
+  printf '%s\n' "$GATE_BLOCK" > "$GATE_TMP/gate.sh"
+  gate_case() {  # want_exit, backend, model, tier, read_only, label
+    local got
+    ( BACKEND="$2"; MODEL="$3"; TIER="$4"; READ_ONLY="$5"
+      LOG_DIR="$GATE_TMP/logs"; MODELS_FILE="$PWD/MODELS.md"
+      PROMPT_FILE="$GATE_TMP/prompts/task-T001.md"
+      model_of()  { echo "${1%%@*}"; }
+      effort_of() { case "$1" in *@*) echo "${1##*@}" ;; *) echo "" ;; esac; }
+      . "$GATE_TMP/gate.sh" ) >/dev/null 2>&1
+    got=$?
+    if [ "$got" = "$1" ]; then pass "$6"; else fail "$6 (expected exit $1, got $got)"; fi
+  }
+  # tier must select the model (11 field runs contradicted MODELS.md)
+  gate_case 2 codex    gpt-5.6-sol@high    standard false "tier standard + sol@high is refused"
+  gate_case 0 codex    gpt-5.6-terra       standard false "tier standard + terra is allowed"
+  gate_case 2 codex    gpt-5.6-terra       fast     false "tier fast + terra is refused"
+  gate_case 0 codex    gpt-5.6-luna        fast     false "tier fast + luna is allowed"
+  gate_case 0 codex    gpt-5.6-sol@medium  heavy    false "a within-rung effort bump still matches heavy"
+  gate_case 0 claude   sonnet              standard false "claude standard + sonnet is allowed"
+  gate_case 2 claude   sonnet              heavy    false "claude heavy + sonnet is refused (heavy=opus)"
+  gate_case 0 opencode openrouter/deepseek/deepseek-v4-pro standard false "opencode standard resolves"
+  gate_case 2 opencode openrouter/google/gemini-2.5-flash  fast false "a retired model is not a live rung"
+  # missing tier (issue #19 — was a warning, missing on 78% of runs)
+  gate_case 2 codex    gpt-5.6-terra       ""       false "a build dispatch with no tier is refused"
+  gate_case 0 codex    gpt-5.6-terra       ""       true  "a read-only dispatch needs no tier"
+  # sol@high is the terminal rung, and it is burn-gated
+  gate_case 2 codex    gpt-5.6-sol@high    heavy    true  "read-only never reaches sol@high"
+  gate_case 2 codex    gpt-5.6-sol@high    heavy    false "a first-attempt sol@high is refused"
+  GATE_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":"%s","backend":"codex","prompt":"task-T001.md","exit":20,"input_tokens":100}\n' \
+    "$GATE_NOW" > "$GATE_TMP/logs/cost.jsonl"
+  gate_case 0 codex    gpt-5.6-sol@high    heavy    false "sol@high opens after a prior exit 20, under threshold"
+  printf '{"ts":"%s","backend":"codex","prompt":"task-T001.md","exit":20,"input_tokens":9000000}\n' \
+    "$GATE_NOW" > "$GATE_TMP/logs/cost.jsonl"
+  gate_case 30 codex   gpt-5.6-sol@high    heavy    false "sol@high is skipped (exit 30) above the burn threshold"
+  rm -rf "$GATE_TMP"
+fi
+
+# burn_proxy must reach the telemetry row, or the audit stays discipline-based.
+if grep -q '"burn_proxy":%s' dispatch.sh && grep -q '${BURN_PROXY:-null}' dispatch.sh; then
+  pass "dispatch.sh stamps burn_proxy into cost.jsonl"
+else
+  fail "dispatch.sh does not stamp burn_proxy — the sol@high audit would stay manual"
 fi
 
 echo
