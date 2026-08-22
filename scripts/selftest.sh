@@ -432,6 +432,74 @@ else
   fail "dispatch.sh does not stamp burn_proxy — the sol@high audit would stay manual"
 fi
 
+echo "[selftest] investigate.sh — the one-command diagnosis lane (issue #42)"
+INV_TMP="$(mktemp -d)"
+mkdir -p "$INV_TMP/framework" "$INV_TMP/target"
+cp investigate.sh "$INV_TMP/framework/"
+cp -r prompts "$INV_TMP/framework/"
+printf 'echo "ARGS: $*"\n' > "$INV_TMP/framework/dispatch.sh"
+echo "known so far" > "$INV_TMP/ctx.txt"
+
+inv() { ( cd "$INV_TMP" && bash framework/investigate.sh "$@" 2>&1 ); }
+inv_exit() { ( cd "$INV_TMP" && bash framework/investigate.sh "$@" >/dev/null 2>&1 ); echo $?; }
+
+# argument handling
+[ "$(inv_exit)" = 2 ]                             && pass "no args prints usage and exits 2"     || fail "no args did not exit 2"
+[ "$(inv_exit "$INV_TMP/nope" q)" = 2 ]           && pass "a missing code dir is refused"        || fail "a missing code dir was accepted"
+[ "$(inv_exit "$INV_TMP/target" q "" bogus)" = 2 ] && pass "an invalid tier is refused"           || fail "an invalid tier was accepted"
+[ "$(inv_exit "$INV_TMP/target" q "$INV_TMP/nope.txt")" = 2 ] && pass "an unreadable context file is refused" || fail "an unreadable context file was accepted"
+
+# it must dispatch READ-ONLY — this lane can never modify the target project
+if inv "$INV_TMP/target" "why does it flicker" | grep -q -- '--read-only'; then
+  pass "the dispatch is read-only"
+else
+  fail "investigate.sh dispatched WITHOUT --read-only — a diagnosis lane must never write"
+fi
+
+# backend comes from PROJECT.md, tier resolves to a model
+printf -- '---\nbuilder_backends: [claude, opencode]\n---\n' > "$INV_TMP/PROJECT.md"
+inv "$INV_TMP/target" "q" "" heavy | grep -q -- '--backend claude opus' \
+  && pass "PROJECT.md backend + heavy resolves to claude opus" \
+  || fail "backend/tier resolution ignored PROJECT.md"
+printf -- '---\nbuilder_backends: [codex, claude]\n---\n' > "$INV_TMP/PROJECT.md"
+inv "$INV_TMP/target" "q" "" fast | grep -q 'gpt-5.6-luna' \
+  && pass "codex + fast resolves to luna" || fail "codex fast did not resolve to luna"
+
+# the context file must actually reach the rendered prompt
+inv "$INV_TMP/target" "why does it flicker" "$INV_TMP/ctx.txt" >/dev/null
+if grep -rq 'known so far' "$INV_TMP/prompts/" 2>/dev/null; then
+  pass "the context file is rendered into the prompt"
+else
+  fail "the context file never reached the prompt"
+fi
+if grep -rq 'why does it flicker' "$INV_TMP/prompts/" 2>/dev/null; then
+  pass "the question is rendered into the prompt"
+else
+  fail "the question never reached the prompt"
+fi
+
+# investigate.sh carries its own tier->model table; MODELS.md is the source of truth, so
+# assert they agree. Without this the two drift silently — the read-only lane passes no
+# tier, so dispatch.sh's issue-#41 check never sees this pairing.
+for pair in "codex:fast:gpt-5.6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-5.6-sol"; do
+  be="${pair%%:*}"; rest="${pair#*:}"; tr_="${rest%%:*}"; want="${rest#*:}"
+  got="$(python3 -c "
+import re,sys
+lines=open('MODELS.md').read().splitlines()
+start=next(i for i,l in enumerate(lines) if l.strip()=='### Codex tier column')
+for l in lines[start+1:]:
+    if l.startswith('#') and (len(l)-len(l.lstrip('#')))<=3: break
+    m=re.match(r'\|\s*\`'+sys.argv[1]+r'\`\s*\|\s*\`([^\`]+)\`',l)
+    if m: print(m.group(1).split('@')[0]); break
+" "$tr_" 2>/dev/null)"
+  if [ "$got" = "$want" ] && grep -q "$want" investigate.sh; then
+    pass "investigate.sh $be/$tr_ agrees with MODELS.md ($want)"
+  else
+    fail "investigate.sh $be/$tr_ drifted from MODELS.md (MODELS.md says '$got')"
+  fi
+done
+rm -rf "$INV_TMP"
+
 echo
 if [ "$FAIL" = 0 ]; then echo "[selftest] PASS"; else echo "[selftest] FAIL"; fi
 exit "$FAIL"
