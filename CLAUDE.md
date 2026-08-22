@@ -41,6 +41,10 @@ defaults under the A1 partner model.
   builder works in a per-task git worktree, never the live checkout (see
   `.claude/rules/dispatch.md`).
 - **State on disk, not in context.** PLAN.md / TASK_LOG.md are read on demand.
+- **Never hold a task-spec body.** `prompts/task-T0XX.md` is written by the Tech Lead and
+  read from disk by the critic and the builder — the orchestrator only ever needs its YAML
+  block. A `PreToolUse` hook enforces this; reading them anyway was 37% of orchestrator
+  token intake (`.claude/rules/dispatch.md` [0g], issue #39).
 - **Delegate the loud work.** Spec-writing → Tech Lead tier; first-pass diff review →
   Reviewer (read-only cheap dispatch); open-ended diagnosis → read-only `standard`/`heavy`
   dispatch. The orchestrator adjudicates verdicts and makes judgment calls; it does not
