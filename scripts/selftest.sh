@@ -146,7 +146,7 @@ CODEX_FLAG="$DISPATCH_TMP/codex-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CODEX_CALLS" FAKE_VERIFY_FLAG="$CODEX_FLAG" \
   CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" \
   bash dispatch.sh --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
-  '' "test -f $CODEX_FLAG" 2 > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
+  '' "test -f $CODEX_FLAG" 2 standard > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
 got=$?
 CODEX_LOG="$(find "$CODEX_LOGS" -name '*.log' -type f | head -n 1)"
 if [ "$got" = 0 ] \
@@ -187,7 +187,7 @@ CLAUDE_FLAG="$DISPATCH_TMP/claude-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CLAUDE_CALLS" FAKE_VERIFY_FLAG="$CLAUDE_FLAG" \
   OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" \
   bash dispatch.sh --backend claude claude-sonnet-4.6 "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
-  '' "test -f $CLAUDE_FLAG" 2 > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
+  '' "test -f $CLAUDE_FLAG" 2 standard > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
 got=$?
 CLAUDE_LOG="$(find "$CLAUDE_LOGS" -name '*.log' -type f | head -n 1)"
 if [ "$got" = 0 ] \
@@ -341,6 +341,175 @@ vwarn_case() {  # verify_cmd, expect(warn|quiet), label
 vwarn_case "xcodegen generate && xcodebuild -scheme App build" warn  "bare xcodebuild build warns"
 vwarn_case "xcodebuild build-for-testing -scheme App"          quiet "build-for-testing is silent"
 vwarn_case "swift build"                                       quiet "non-Xcode verify-cmd is silent"
+
+echo "[selftest] spec-body-guard enforces dispatch.md [0g] (issue #39)"
+guard_case() {  # expected exit, hook stdin json, label
+  printf '%s' "$2" | python3 scripts/spec-body-guard.py >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$1" ]; then pass "$3"; else fail "$3 (expected exit $1, got $got)"; fi
+}
+# blocked: whole-body reads of a task/critic spec
+guard_case 2 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/task-T065.md"}}'              "Read of a whole task spec is blocked"
+guard_case 2 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/critic-T071.md"}}'            "Read of a whole critic spec is blocked"
+guard_case 2 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/task-T065.md","limit":500}}'  "Read with an unbounded limit is blocked"
+guard_case 2 '{"tool_name":"Bash","tool_input":{"command":"cat prompts/task-T065.md"}}'               "cat of a task spec is blocked"
+guard_case 2 '{"tool_name":"Bash","tool_input":{"command":"head -n 400 prompts/task-T065.md"}}'       "an oversized head is blocked"
+# allowed: everything [0g] steps 1-2 actually need
+guard_case 0 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/task-T065.md","limit":30}}'   "a bounded Read is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"test -s prompts/task-T065.md"}}'           "the non-empty check is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"sed -n /TECH_LEAD_RESULT_START/,$p prompts/task-T065.md"}}' "YAML extraction is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"grep -n verify_tier prompts/task-T065.md"}}' "grep is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"tail -n 40 prompts/task-T065.md"}}'        "a bounded tail is allowed"
+guard_case 0 '{"tool_name":"Bash","tool_input":{"command":"bash framework/dispatch.sh --worktree b m ../x/ prompts/task-T065.md"}}' "dispatching the spec is allowed"
+guard_case 0 '{"tool_name":"Read","tool_input":{"file_path":"/p/prompts/build-spec.md"}}'             "build-spec.md is not a task spec"
+guard_case 0 '{"tool_name":"Read","tool_input":{"file_path":"/p/PLAN.md"}}'                           "PLAN.md is untouched"
+guard_case 0 '{"tool_name":"Edit","tool_input":{"file_path":"/p/prompts/task-T065.md"}}'              "a non-Read/Bash tool is ignored"
+guard_case 0 'not json'                                                                               "malformed hook input never blocks"
+if SPEC_BODY_GUARD_OFF=1 sh -c 'printf "%s" "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/p/prompts/task-T065.md\"}}" | python3 scripts/spec-body-guard.py' >/dev/null 2>&1
+then pass "SPEC_BODY_GUARD_OFF=1 permits a deliberate exception"
+else fail "SPEC_BODY_GUARD_OFF=1 did not permit the read"; fi
+
+# The hook is worthless unwired: setup.sh must actually install it as a PreToolUse hook.
+if grep -q 'spec-body-guard.py' setup.sh && grep -q '"PreToolUse"' setup.sh; then
+  pass "setup.sh wires spec-body-guard as a PreToolUse hook"
+else
+  fail "setup.sh does not wire spec-body-guard — the gate would look installed and enforce nothing"
+fi
+
+echo "[selftest] tier ladder + sol@high burn gate (issue #41)"
+# The gate block runs before any backend work, so drive it in isolation rather than paying for
+# a real dispatch. Extract by MARKER PAIR: bounding it on /^fi$/ truncated at the first block
+# and silently left three gates untested — a check that cannot fail (#34).
+GATE_BLOCK="$(awk '/^# --- \[issue #41\] The escalation ladder/,/^# --- \[issue #41\] end of ladder/' dispatch.sh)"
+if [ -z "$GATE_BLOCK" ] || ! printf '%s' "$GATE_BLOCK" | grep -q 'burn gate'; then
+  fail "the issue-#41 gate block markers are missing from dispatch.sh — gate checks did not run"
+else
+  GATE_TMP="$(mktemp -d)"; mkdir -p "$GATE_TMP/prompts" "$GATE_TMP/logs"
+  echo task > "$GATE_TMP/prompts/task-T001.md"
+  printf -- '---\ncodex_weekly_burn_threshold: 4000000\n---\n' > "$GATE_TMP/PROJECT.md"
+  printf '%s\n' "$GATE_BLOCK" > "$GATE_TMP/gate.sh"
+  gate_case() {  # want_exit, backend, model, tier, read_only, label
+    local got
+    ( BACKEND="$2"; MODEL="$3"; TIER="$4"; READ_ONLY="$5"
+      LOG_DIR="$GATE_TMP/logs"; MODELS_FILE="$PWD/MODELS.md"
+      PROMPT_FILE="$GATE_TMP/prompts/task-T001.md"
+      # The gate block honours two ambient escape hatches (DISPATCH_ALLOW_NO_TIER,
+      # DISPATCH_ALLOW_UNLADDERED_HIGH). These cases assert the DEFAULT refusing behaviour, so
+      # an exported override must not leak in — with DISPATCH_ALLOW_NO_TIER=1 in the caller's
+      # shell the "no tier is refused" case exits 0 instead of 2 and the suite goes green while
+      # testing nothing. Observed for real: every dispatch in the 2026-08-22 OpenRouter tier
+      # bake-off set that variable, and three of the four builders independently diagnosed it.
+      # The #34 pattern in this file's own code.
+      unset DISPATCH_ALLOW_NO_TIER DISPATCH_ALLOW_UNLADDERED_HIGH
+      model_of()  { echo "${1%%@*}"; }
+      effort_of() { case "$1" in *@*) echo "${1##*@}" ;; *) echo "" ;; esac; }
+      . "$GATE_TMP/gate.sh" ) >/dev/null 2>&1
+    got=$?
+    if [ "$got" = "$1" ]; then pass "$6"; else fail "$6 (expected exit $1, got $got)"; fi
+  }
+  # tier must select the model (11 field runs contradicted MODELS.md)
+  gate_case 2 codex    gpt-5.6-sol@high    standard false "tier standard + sol@high is refused"
+  gate_case 0 codex    gpt-5.6-terra       standard false "tier standard + terra is allowed"
+  gate_case 2 codex    gpt-5.6-terra       fast     false "tier fast + terra is refused"
+  gate_case 0 codex    gpt-5.6-luna        fast     false "tier fast + luna is allowed"
+  gate_case 0 codex    gpt-5.6-sol@medium  heavy    false "a within-rung effort bump still matches heavy"
+  gate_case 0 claude   sonnet              standard false "claude standard + sonnet is allowed"
+  gate_case 2 claude   sonnet              heavy    false "claude heavy + sonnet is refused (heavy=opus)"
+  gate_case 0 opencode openrouter/minimax/minimax-m3       standard false "opencode standard resolves"
+  gate_case 2 opencode openrouter/google/gemini-2.5-flash  fast false "a retired model is not a live rung"
+  # missing tier (issue #19 — was a warning, missing on 78% of runs)
+  gate_case 2 codex    gpt-5.6-terra       ""       false "a build dispatch with no tier is refused"
+  gate_case 0 codex    gpt-5.6-terra       ""       true  "a read-only dispatch needs no tier"
+  # sol@high is the terminal rung, and it is burn-gated
+  gate_case 2 codex    gpt-5.6-sol@high    heavy    true  "read-only never reaches sol@high"
+  gate_case 2 codex    gpt-5.6-sol@high    heavy    false "a first-attempt sol@high is refused"
+  GATE_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":"%s","backend":"codex","prompt":"task-T001.md","exit":20,"input_tokens":100}\n' \
+    "$GATE_NOW" > "$GATE_TMP/logs/cost.jsonl"
+  gate_case 0 codex    gpt-5.6-sol@high    heavy    false "sol@high opens after a prior exit 20, under threshold"
+  printf '{"ts":"%s","backend":"codex","prompt":"task-T001.md","exit":20,"input_tokens":9000000}\n' \
+    "$GATE_NOW" > "$GATE_TMP/logs/cost.jsonl"
+  gate_case 30 codex   gpt-5.6-sol@high    heavy    false "sol@high is skipped (exit 30) above the burn threshold"
+  rm -rf "$GATE_TMP"
+fi
+
+# burn_proxy must reach the telemetry row, or the audit stays discipline-based.
+if grep -q '"burn_proxy":%s' dispatch.sh && grep -q '${BURN_PROXY:-null}' dispatch.sh; then
+  pass "dispatch.sh stamps burn_proxy into cost.jsonl"
+else
+  fail "dispatch.sh does not stamp burn_proxy — the sol@high audit would stay manual"
+fi
+
+echo "[selftest] investigate.sh — the one-command diagnosis lane (issue #42)"
+INV_TMP="$(mktemp -d)"
+mkdir -p "$INV_TMP/framework" "$INV_TMP/target"
+cp investigate.sh "$INV_TMP/framework/"
+cp -r prompts "$INV_TMP/framework/"
+printf 'echo "ARGS: $*"\n' > "$INV_TMP/framework/dispatch.sh"
+echo "known so far" > "$INV_TMP/ctx.txt"
+
+inv() { ( cd "$INV_TMP" && bash framework/investigate.sh "$@" 2>&1 ); }
+inv_exit() { ( cd "$INV_TMP" && bash framework/investigate.sh "$@" >/dev/null 2>&1 ); echo $?; }
+
+# argument handling
+[ "$(inv_exit)" = 2 ]                             && pass "no args prints usage and exits 2"     || fail "no args did not exit 2"
+[ "$(inv_exit "$INV_TMP/nope" q)" = 2 ]           && pass "a missing code dir is refused"        || fail "a missing code dir was accepted"
+[ "$(inv_exit "$INV_TMP/target" q "" bogus)" = 2 ] && pass "an invalid tier is refused"           || fail "an invalid tier was accepted"
+[ "$(inv_exit "$INV_TMP/target" q "$INV_TMP/nope.txt")" = 2 ] && pass "an unreadable context file is refused" || fail "an unreadable context file was accepted"
+
+# it must dispatch READ-ONLY — this lane can never modify the target project
+if inv "$INV_TMP/target" "why does it flicker" | grep -q -- '--read-only'; then
+  pass "the dispatch is read-only"
+else
+  fail "investigate.sh dispatched WITHOUT --read-only — a diagnosis lane must never write"
+fi
+
+# backend comes from PROJECT.md, tier resolves to a model
+printf -- '---\nbuilder_backends: [claude, opencode]\n---\n' > "$INV_TMP/PROJECT.md"
+inv "$INV_TMP/target" "q" "" heavy | grep -q -- '--backend claude opus' \
+  && pass "PROJECT.md backend + heavy resolves to claude opus" \
+  || fail "backend/tier resolution ignored PROJECT.md"
+printf -- '---\nbuilder_backends: [codex, claude]\n---\n' > "$INV_TMP/PROJECT.md"
+inv "$INV_TMP/target" "q" "" fast | grep -q 'gpt-5.6-luna' \
+  && pass "codex + fast resolves to luna" || fail "codex fast did not resolve to luna"
+
+# the context file must actually reach the rendered prompt
+inv "$INV_TMP/target" "why does it flicker" "$INV_TMP/ctx.txt" >/dev/null
+if grep -rq 'known so far' "$INV_TMP/prompts/" 2>/dev/null; then
+  pass "the context file is rendered into the prompt"
+else
+  fail "the context file never reached the prompt"
+fi
+if grep -rq 'why does it flicker' "$INV_TMP/prompts/" 2>/dev/null; then
+  pass "the question is rendered into the prompt"
+else
+  fail "the question never reached the prompt"
+fi
+
+# investigate.sh carries its own tier->model table; MODELS.md is the source of truth, so
+# assert they agree. Without this the two drift silently — the read-only lane passes no
+# tier, so dispatch.sh's issue-#41 check never sees this pairing.
+for pair in "codex:fast:gpt-5.6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-5.6-sol" \
+            "opencode:fast:openrouter/deepseek/deepseek-v4-flash-0731" "opencode:standard:openrouter/minimax/minimax-m3" "opencode:heavy:openrouter/moonshotai/kimi-k2.6"; do
+  be="${pair%%:*}"; rest="${pair#*:}"; tr_="${rest%%:*}"; want="${rest#*:}"
+  got="$(python3 -c "
+import re,sys
+tier,section=sys.argv[1],sys.argv[2]
+lines=open('MODELS.md').read().splitlines()
+start=next(i for i,l in enumerate(lines) if l.strip()==section)
+depth=section.count('#')
+for l in lines[start+1:]:
+    if l.startswith('#') and (len(l)-len(l.lstrip('#')))<=depth: break
+    m=re.match(r'\|\s*\`'+tier+r'\`\s*\|\s*\`([^\`]+)\`',l)
+    if m: print(m.group(1).split('@')[0]); break
+" "$tr_" "$([ "$be" = codex ] && echo '### Codex tier column' || echo '## OpenCode Tiers')" 2>/dev/null)"
+  if [ "$got" = "$want" ] && grep -q "$want" investigate.sh; then
+    pass "investigate.sh $be/$tr_ agrees with MODELS.md"
+  else
+    fail "investigate.sh $be/$tr_ drifted from MODELS.md (MODELS.md says '$got')"
+  fi
+done
+rm -rf "$INV_TMP"
 
 echo
 if [ "$FAIL" = 0 ]; then echo "[selftest] PASS"; else echo "[selftest] FAIL"; fi

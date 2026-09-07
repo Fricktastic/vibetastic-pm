@@ -312,6 +312,161 @@ validate_model_slug() {
 validate_model_slug "$MODEL" || exit 30
 [ -n "$FALLBACK_MODEL" ] && { validate_model_slug "$FALLBACK_MODEL" || exit 30; }
 
+# --- [issue #41] The escalation ladder must be real, not a label ------------------------
+# Field audit (gamedaytastic, 307+ dispatches): `grep -c "tier_escalated\|backend_escalated\|
+# backend_skipped" TASK_LOG.md` returned **0**. The ladder had never fired. `tier` was arg 7,
+# "telemetry only", so the orchestrator picked a model directly and attached whatever tier
+# string it liked — `standard` on sol@high (3 runs), `fast` on terra, `heavy` on sol@high, and
+# no tier at all on 232 of 297. Because sol@high is defined as the TERMINAL rung, the burn gate
+# guarding it had nothing to attach to: all 6 sol@high dispatches were first-attempt direct
+# picks, 21.5M input tokens, ~37% of that ISO-week's codex burn.
+#
+# cost-report.sh already flagged those 6 as violations — after the tokens were spent. A
+# detector with no preventer is a receipt, not a gate (#34). So the checks move here.
+#
+# MODELS.md is the single source of truth and is already parsed for slug validation
+# ([0f/B4]); this reads the tier tables out of the same file rather than duplicating them.
+tier_expected_model() {   # backend, tier -> base model slug for that rung ("" = unknown)
+  local backend="$1" tier="$2"
+  [ -r "$MODELS_FILE" ] || return 0
+  case "$backend" in
+    claude)   # prose, not a table: "fast/standard -> sonnet, heavy -> opus"
+      case "$tier" in fast|standard) echo sonnet ;; heavy) echo opus ;; esac
+      return 0 ;;
+    codex)    _section="### Codex tier column" ;;
+    opencode) _section="## OpenCode Tiers" ;;
+    *) return 0 ;;
+  esac
+  # Scope to the named section so the "Previous Tier Models" table — same row shape, retained
+  # for rollback — can never be mistaken for a live one.
+  python3 -c "
+import re,sys
+sec,tier,path=sys.argv[1],sys.argv[2],sys.argv[3]
+lines=open(path).read().splitlines()
+try: start=next(i for i,l in enumerate(lines) if l.strip()==sec)
+except StopIteration: sys.exit()
+depth=sec.count('#')
+for l in lines[start+1:]:
+    if l.startswith('#') and (len(l)-len(l.lstrip('#'))) <= depth: break
+    m=re.match(r'\|\s*\`'+re.escape(tier)+r'\`\s*\|\s*\`([^\`]+)\`',l)
+    if m:
+        print(m.group(1).split('@')[0]); break
+" "$_section" "$tier" "$MODELS_FILE" 2>/dev/null
+}
+
+# A tier that does not select the model is decoration. Compare BASE slugs so codex's
+# within-rung effort bumps (sol@low -> @medium -> @high, all the `heavy` rung) still match.
+if [ -n "$TIER" ]; then
+  EXPECTED_MODEL="$(tier_expected_model "$BACKEND" "$TIER")"
+  # On the claude backend the alias and the pinned slug are one lane — MODELS.md § Field
+  # results: "One model, two names — the CLI alias `sonnet` resolves to `claude-sonnet-5`".
+  # PLAN.md tasks legitimately carry either, so normalise before comparing or the check
+  # rejects correct dispatches.
+  ACTUAL_MODEL="$(model_of "$MODEL")"
+  if [ "$BACKEND" = claude ]; then
+    case "$ACTUAL_MODEL" in
+      claude-sonnet-*|sonnet) ACTUAL_MODEL=sonnet ;;
+      claude-opus-*|opus)     ACTUAL_MODEL=opus ;;
+      claude-haiku-*|haiku)   ACTUAL_MODEL=haiku ;;
+      claude-fable-*|fable)   ACTUAL_MODEL=fable ;;
+    esac
+  fi
+  if [ -n "$EXPECTED_MODEL" ] && [ "$ACTUAL_MODEL" != "$EXPECTED_MODEL" ]; then
+    echo "[dispatch] tier/model mismatch: tier '$TIER' on backend '$BACKEND' is '$EXPECTED_MODEL'," >&2
+    echo "           but the dispatch passed '$ACTUAL_MODEL'." >&2
+    echo "           Re-resolve the model from MODELS.md for this tier, or pass the correct tier." >&2
+    echo "           (issue #41: tier was a free-text label; 11 field runs contradicted MODELS.md.)" >&2
+    exit 2
+  fi
+fi
+
+# [issue #19] Promote the missing-tier warning to a refusal. It was a warning, and it was
+# missing on 78% of runs, which is why cost-report.sh still cannot attribute cost by tier.
+if [ -z "$TIER" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_TIER:-0}" != "1" ]; then
+  echo "[dispatch] refusing a build dispatch with no tier (arg 7)." >&2
+  echo "           Pass the task's current tier (fast|standard|heavy) — it now selects the" >&2
+  echo "           model, not just the telemetry column. DISPATCH_ALLOW_NO_TIER=1 overrides." >&2
+  exit 2
+fi
+
+# --- The codex sol@high burn gate, enforced where the tokens are actually spent ----------
+# state.md asks the orchestrator to consult the ISO-week burn proxy and record it in a
+# TASK_LOG cost_event. It was skipped 6 times out of 6. The figure is a sum over
+# logs/cost.jsonl — a file this script already writes — so ask nobody: compute it, enforce
+# the threshold, and stamp it into the run's own row. Self-evidencing by construction.
+BURN_PROXY=""
+codex_week_burn() {   # ISO-week codex token total from cost.jsonl (in + out + reasoning)
+  python3 -c "
+import json,sys,datetime
+path=sys.argv[1]; wk=datetime.datetime.utcnow().isocalendar()[:2]; t=0
+try: f=open(path)
+except OSError: print(0); sys.exit()
+for l in f:
+    try: r=json.loads(l)
+    except Exception: continue
+    if r.get('backend')!='codex': continue
+    ts=r.get('ts','')
+    try: d=datetime.datetime.strptime(ts,'%Y-%m-%dT%H:%M:%SZ')
+    except Exception: continue
+    if d.isocalendar()[:2]!=wk: continue
+    for k in ('input_tokens','output_tokens','reasoning_tokens'):
+        v=r.get(k)
+        if isinstance(v,(int,float)): t+=int(v)
+print(t)" "${LOG_DIR}/cost.jsonl" 2>/dev/null || echo 0
+}
+burn_threshold() {    # codex_weekly_burn_threshold from PROJECT.md frontmatter, else default
+  local pm project_md v
+  pm="$(dirname "$LOG_DIR")"; project_md="$pm/PROJECT.md"
+  if [ -r "$project_md" ]; then
+    v="$(sed -n '/^---$/,/^---$/p' "$project_md" \
+         | sed -n 's/^codex_weekly_burn_threshold:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+    [ -n "$v" ] && { echo "$v"; return 0; }
+  fi
+  echo 4000000   # MODELS.md § codex_weekly_burn_threshold default
+}
+
+if [ "$BACKEND" = codex ] && [ "$(effort_of "$MODEL")" = high ]; then
+  if $READ_ONLY; then
+    echo "[dispatch] refusing sol@high for a --read-only dispatch." >&2
+    echo "           Read-only work (critic, reviewer, diagnosis) is cheap-tier work by rule" >&2
+    echo "           (economy.md); the most expensive rung is never its lane." >&2
+    exit 2
+  fi
+  # @high is the TERMINAL rung: heavy -> sol@low -> sol@medium -> (burn gate) -> sol@high.
+  # A first-attempt @high is a category error — there is nothing to have escalated from.
+  if [ "${DISPATCH_ALLOW_UNLADDERED_HIGH:-0}" != "1" ]; then
+    PRIOR_20="$(python3 -c "
+import json,sys
+path,prompt=sys.argv[1],sys.argv[2]
+try: f=open(path)
+except OSError: print(0); sys.exit()
+print(1 if any((lambda r: r and r.get('prompt')==prompt and r.get('exit')==20)(
+    (lambda l: (json.loads(l) if l.strip().startswith('{') else None))(l)) for l in f) else 0)
+" "${LOG_DIR}/cost.jsonl" "$(basename "$PROMPT_FILE")" 2>/dev/null || echo 1)"
+    if [ "$PRIOR_20" != "1" ]; then
+      echo "[dispatch] refusing a first-attempt gpt-5.6-sol@high." >&2
+      echo "           @high is the terminal rung, reached only by climbing the ladder on" >&2
+      echo "           exit 20: heavy -> sol@low -> sol@medium -> (burn gate) -> sol@high." >&2
+      echo "           No prior exit-20 run of $(basename "$PROMPT_FILE") is in cost.jsonl." >&2
+      echo "           Start at the task's tier. DISPATCH_ALLOW_UNLADDERED_HIGH=1 overrides." >&2
+      exit 2
+    fi
+  fi
+  BURN_PROXY="$(codex_week_burn)"; BURN_LIMIT="$(burn_threshold)"
+  echo "[dispatch] sol@high burn gate: ISO-week codex proxy ${BURN_PROXY} / threshold ${BURN_LIMIT}" >&2
+  if [ "${BURN_PROXY:-0}" -ge "${BURN_LIMIT:-4000000}" ] 2>/dev/null; then
+    echo "[dispatch] burn gate CLOSED — skipping the @high attempt." >&2
+    echo "           Escalate to the next backend in builder_backends (backend_escalated)," >&2
+    echo "           per MODELS.md § codex_weekly_burn_threshold. Log the skip reason." >&2
+    exit 30
+  fi
+fi
+
+# --- [issue #41] end of ladder/burn gate block ------------------------------------------
+# Explicit end marker: selftest extracts this block by marker pair. Bounding it on /^fi$/
+# silently truncated at the first block and three gates went untested — a check that cannot
+# fail (#34). Do not remove; the selftest fails loudly if either marker goes missing.
+
 # Logs anchor to the PM directory, not the caller's cwd: the task prompt always lives in
 # <pm-dir>/prompts/, so default LOG_DIR to the prompts dir's sibling logs/. This keeps
 # cost.jsonl and run logs in one place no matter where the orchestrator invokes dispatch
@@ -466,12 +621,13 @@ print(f'{i}|{o}|{c}')" "$CLAUDE_RESULTS" 2>/dev/null)"
         [ -n "$row" ] && IFS='|' read -r in_tok out_tok cache_tok <<< "$row"
       fi ;;
   esac
-  printf '{"ts":"%s","role":"opencode","backend":"%s","prompt":"%s","model":"%s","primary_model":"%s","fallback_used":%s,"stall_retries":%s,"tier":%s,"attempts":%s,"verify_passed":%s,"exit":%s,"duration_s":%s,"cost_usd":%s,"input_tokens":%s,"output_tokens":%s,"cache_read_tokens":%s,"reasoning_tokens":%s,"log":"%s"}\n' \
+  printf '{"ts":"%s","role":"opencode","backend":"%s","prompt":"%s","model":"%s","primary_model":"%s","fallback_used":%s,"stall_retries":%s,"tier":%s,"attempts":%s,"verify_passed":%s,"exit":%s,"duration_s":%s,"cost_usd":%s,"input_tokens":%s,"output_tokens":%s,"cache_read_tokens":%s,"reasoning_tokens":%s,"burn_proxy":%s,"log":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BACKEND" "$(basename "$PROMPT_FILE")" "$ACTIVE_MODEL" \
     "$MODEL" "$FALLBACK_USED" "${STALL_RETRIES_USED:-0}" \
     "$([ -n "$TIER" ] && printf '"%s"' "$TIER" || echo null)" \
     "${ATTEMPTS_USED:-1}" "$verify_passed" "$code" "$dur" \
     "${cost_usd:-null}" "${in_tok:-null}" "${out_tok:-null}" "${cache_tok:-null}" "${reason_tok:-null}" \
+    "${BURN_PROXY:-null}" \
     "$(basename "$LOG_FILE")" >> "${LOG_DIR}/cost.jsonl" 2>/dev/null || true
 }
 

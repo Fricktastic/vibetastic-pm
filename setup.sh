@@ -67,6 +67,17 @@ cat > .claude/settings.json <<EOF
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PM_DIR}/framework/scripts/spec-body-guard.py\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Agent",

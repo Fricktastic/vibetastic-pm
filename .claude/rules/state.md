@@ -51,7 +51,11 @@ note: <one line, optional>
 ```
 ```
 
-**Burn-gate audit rule (codex `sol@high`):** every `gpt-5.6-sol@high` dispatch **must**
+**Burn-gate audit rule (codex `sol@high`):** since issue #41, `dispatch.sh` computes the
+burn proxy, enforces `codex_weekly_burn_threshold` itself (exit 30 when closed), and stamps
+`burn_proxy` into the `cost.jsonl` row — the gate no longer depends on this being remembered.
+It was skipped 6 times out of 6 while it did. Still record the `cost_event` for **role**
+attribution, which the hooks cannot infer: every `gpt-5.6-sol@high` dispatch **must**
 record in its `cost_event` the `burn_proxy` reading it consulted before the gate (the
 current ISO-week token total from `logs/cost.jsonl` — see `framework/MODELS.md` §
 `codex_weekly_burn_threshold`). This keeps enforcement out of the read-only `dispatch.sh`

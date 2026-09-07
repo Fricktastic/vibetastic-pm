@@ -90,6 +90,23 @@ After the agent returns:
 2. Parse only the returned YAML block to register the task in PLAN.md.
 3. Never read the spec body into context. The critic and the builder both read it from disk.
 
+**This is now mechanical.** A `PreToolUse` hook (`framework/scripts/spec-body-guard.py`,
+wired by setup.sh) **blocks** a whole-file `Read` or `cat` of `prompts/task-T*.md` /
+`prompts/critic-T*.md`. It exists because the rule above was correct, stated its own
+rationale, and was violated **217 times** on gamedaytastic — ~367K tokens, **37% of
+everything the orchestrator ingested**, the single largest line item in partner burn
+(issue #39). Instruction-based discipline degrades over a long session; this is the same
+lesson that produced `plan-lint-hook.py`.
+
+Still allowed, because steps 1–2 need them: `test -s` / `wc -c` existence checks, `grep`,
+`awk`, `sed -n` YAML extraction, and `head`/`tail`/`Read limit` up to 60 lines. Deliberate
+exceptions: `SPEC_BODY_GUARD_OFF=1`, justified in the TASK_LOG entry — same convention as
+`DISPATCH_ALLOW_NO_VERIFY=1`.
+
+Projects onboarded before the hook shipped do not have it (issue #16): check
+`.claude/settings.json` for a `PreToolUse` entry matching `Read|Bash` and add it by hand if
+absent.
+
 Spawn a fresh Agent with the rendered prompt.
 
 After return, parse on delimiter `<!-- TECH_LEAD_RESULT_START -->`:
@@ -290,8 +307,18 @@ signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monit
   reading code or running the build by hand. `DISPATCH_ALLOW_NO_VERIFY=1` exists for
   deliberate exceptions and must be justified in the TASK_LOG entry.
 - 6th arg: max verify attempts (default 3).
-- 7th arg `tier`: the task's current tier (`fast`/`standard`/`heavy`). Recorded in
-  `logs/cost.jsonl` for cost telemetry only — it does not change dispatch behavior. Also append
+- 7th arg `tier`: the task's current tier (`fast`/`standard`/`heavy`). **It selects the
+  model.** dispatch.sh resolves tier→model from `MODELS.md` for the given backend and
+  **refuses (exit 2)** when the passed model contradicts the passed tier; a missing tier on a
+  build dispatch is also refused (`DISPATCH_ALLOW_NO_TIER=1` overrides). Within-rung effort
+  bumps still match — `heavy` accepts `sol@low`/`@medium`/`@high` — and on the claude backend
+  the alias and the pinned slug are one lane (`sonnet` ≡ `claude-sonnet-*`).
+
+  It was telemetry-only until issue #41, and the consequence was that the ladder was
+  decorative: **zero** `tier_escalated`/`backend_escalated`/`backend_skipped` events across
+  307+ field dispatches, `tier` missing on 78% of runs, and 11 runs whose tier contradicted
+  `MODELS.md` (`standard` on `sol@high`, `fast` on `terra`). Also recorded in
+  `logs/cost.jsonl`. Also append
   a `cost_event` to TASK_LOG before dispatching (see `state.md` → Cost telemetry).
   **Always pass it.** It was missing on 79% of field dispatches, which is why `cost-report.sh`
   cannot attribute cost by tier today and why the tier table in `MODELS.md` rests on a
@@ -355,9 +382,17 @@ exhausted before metered tokens** — that is why `builder_backends` defaults to
   `codex_weekly_burn_threshold` — read from `PROJECT.md` frontmatter, falling back to the
   framework default if the key is absent (`framework/MODELS.md` § Codex tier column); at/above it,
   skip @high and `backend_escalated` to the claude backend immediately. Log the skip reason
-  in the escalation event. **Any `sol@high` dispatch must record the consulted burn-proxy
-  reading in its `cost_event` (`burn_proxy:` — see `state.md`); an `@high` dispatch with no
-  burn figure logged is an auditable violation.** Efforts above high are never
+  in the escalation event. **The burn gate is enforced in dispatch.sh, not by discipline (issue #41).** It computes
+  the current ISO-week codex proxy from `logs/cost.jsonl` itself, reads
+  `codex_weekly_burn_threshold` from `PROJECT.md`, **exits 30** when the week is at/above the
+  line (treat as `backend_escalated`), and stamps the figure into the run's own `cost.jsonl`
+  row as `burn_proxy`. It also **refuses a first-attempt `@high`** — `@high` is the terminal
+  rung, reachable only after a prior exit-20 on the same prompt
+  (`DISPATCH_ALLOW_UNLADDERED_HIGH=1` overrides) — and refuses `@high` on any `--read-only`
+  dispatch, since diagnosis is cheap-tier work. Still log `burn_proxy` in the `cost_event`
+  for role attribution; the enforcement no longer depends on it. All 6 field `@high`
+  dispatches were first-attempt direct picks totalling 21.5M input tokens, ~37% of that
+  ISO-week's codex burn, and `cost-report.sh` flagged every one of them *after* the spend. Efforts above high are never
   auto-dispatched (weekly-cliff guard — Gate 2 only).
 
 **Axis 2 — backend, when the current backend's ladder is exhausted or unavailable.**
