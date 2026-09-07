@@ -1,8 +1,9 @@
 # HANDOFF — vibetastic-pm (framework repo)
 
-**Last session:** 2026-09-07 · **Branch:** `main` @ `d5cfbd2`. Working tree clean.
-**Stage:** framework maintenance. Repo cleanup session — the whole PR stack is merged and
-the branch/issue backlog is pruned. Nothing is in flight.
+**Last session:** 2026-09-07 · **Branch:** `main` @ `49001a3`. Working tree clean.
+**Stage:** framework maintenance. Repo-cleanup session: the whole PR stack is merged, the
+branch and issue backlog is pruned, and the public repo is scrubbed of personal paths.
+**Nothing is in flight.** No dispatches running, no gates open, no half-built work.
 
 ---
 
@@ -16,73 +17,123 @@ asked; then stop, report which projects are behind, and offer — naming them.
 
 > **gamedaytastic is the active project. hometastic is on the backlog.**
 
-Do not start work, pull updates, or make changes in hometastic unless asked for it by name.
+Do not start work, pull updates, or make changes in either unless asked for it by name.
 
 > **A concurrent session may be live in a project repo.** Check before touching one. **Never
 > `git stash` in a repo you do not have exclusive use of.**
 
 > **Do not present a dismissal as a review.** If a candidate was skipped rather than evaluated,
-> say so. (The operator caught this twice on 2026-08-22, and was right both times.)
+> say so. (Caught twice by the operator on 2026-08-22; right both times.)
+
+> **Keep HANDOFF.md current at the end of every session.** Not just when something dramatic
+> happened — a session that ends without refreshing this file has failed its last step.
+
+---
+
+## Repo state at close
+
+| | |
+|---|---|
+| `main` | `49001a3`, pushed, clean |
+| Open PRs | **none** |
+| Branches | `main` only, local and on `origin` |
+| Open issues | **19** (was 29) |
+| `bash scripts/selftest.sh` | **PASS** |
 
 ---
 
 ## What landed this session (2026-09-07)
 
-**The GLM correction — done.** `MODELS.md` asserted that `glm-5.2`/`5.3` were "unbenchmarked."
-False: GLM is scored on SWE-bench **Pro** and **FrontierSWE**, not Verified. `glm-5.2` posts
-62.1 SWE-bench Pro (above GPT-5.5's 58.6) and 74.4% FrontierSWE (near Opus 4.8's 75.1%).
-Root cause: the 2026-08-22 review ranked the entire catalog on Verified alone and read absence
-from one leaderboard as absence of data — overwriting a correct annotation with a wrong one.
+### 1. The GLM correction — done
 
-- Reverted the "unbenchmarked" language in both places.
+`MODELS.md` asserted `glm-5.2`/`5.3` were "unbenchmarked." False: GLM is scored on SWE-bench
+**Pro** and **FrontierSWE**, not Verified. `glm-5.2` posts 62.1 SWE-bench Pro (above GPT-5.5's
+58.6) and 74.4% FrontierSWE (near Opus 4.8's 75.1%). Root cause: the 2026-08-22 review ranked
+the whole catalog on Verified alone and read absence from one leaderboard as absence of data —
+overwriting a correct annotation with a wrong one.
+
+- Reverted the language in both places; added a note beside the `glm-5.3` entry so the next
+  review does not repeat the blind spot.
 - **Operator decision: `glm-5.2` stays the `fast` fallback.** FrontierSWE is closer to this
-  framework's long-horizon workload than single-shot Verified. `glm-5` remains documented as
-  the cheaper alternative (27 providers, $0.60/$1.92) that was considered and rejected.
-- Added a note beside the `glm-5.3` catalog entry so the next review does not repeat the
-  Verified-only blind spot.
-- **Still open (carried from 2026-08-22, item 3):** the other rungs — `minimax-m3`,
-  `kimi-k2.6`, the deepseek variants — were also ranked on Verified only and may be
-  mis-ordered against each other. The *bake-off* results are unaffected (measured, not
-  benchmarked).
+  framework's long-horizon workload than single-shot Verified. `glm-5` stays documented as the
+  cheaper alternative (27 providers, $0.60/$1.92) that was considered and rejected.
+- **Deferred to next maintenance as issue #48:** the *other* rungs (`minimax-m3`, `kimi-k2.6`,
+  the deepseek variants) were ranked on the same wrong axis and cluster within 0.4 Verified
+  points — a spread too small to order anything on. The **bake-off** results are unaffected
+  (measured, not benchmarked) and are explicitly out of scope there.
 
-**The PR stack — all merged.** `main` now carries #38, #40, #43, #44.
+### 2. The PR stack — all merged
 
-Merge mechanics worth knowing, because they went sideways once: #38 was squash-merged with
+`main` carries #38, #40, #43, #44 (issues #36, #37, #39, #41, #42, #19).
+
+**Merge mechanics worth reading before you stack PRs again.** #38 was squash-merged with
 `--delete-branch`, which **auto-closed #40** (its base branch vanished) and left #43/#44
-conflicting against the squashed main. Recovery was to re-push #38's commit to restore the
-base ref, reopen #40, retarget all three to `main`, then merge main into the stack tip and
-land the whole thing through **#44 with a merge commit**. Next time: **retarget every child
-PR to `main` before merging the parent**, and don't `--delete-branch` a stacked base.
+conflicting against the squashed main. Recovery: re-push #38's commit to restore the base ref,
+reopen #40, retarget all three to `main`, merge main into the stack tip resolving one
+`selftest.sh` conflict, then land everything through **#44 with a merge commit**.
 
-**Repo cleanup.** 12 stale local branches deleted (all verified merged), all remote branches
-pruned — `origin` now holds `main` only. PR #47 (repository README) reviewed and merged.
-10 issues closed: #36, #37, #39, #41, #42, #19 (the stack), plus #9, #11, #22, #26 verified
-fixed in the merged code.
+> **Next time: retarget every child PR to `main` before merging the parent, and never
+> `--delete-branch` a base that another PR is stacked on.**
+
+### 3. Repo cleanup
+
+- 12 stale local branches deleted (each verified merged first), all remote branches pruned.
+- PR #47 (repository README) reviewed and merged — the repo had no README.
+- **10 issues closed:** #36, #37, #39, #41, #42, #19 via the stack; #9, #11, #22, #26 verified
+  fixed against the merged code rather than assumed.
+
+### 4. Public-repo hygiene
+
+Audited all 52 tracked files **and the full history** for credentials: **none**. The only key
+references are placeholders (`sk-or-your-key-here`) and code that deliberately strips keys.
+`~/.ssh/gh-agent-token.sh` is referenced but was never committed. `logs/` is correctly ignored;
+`.claude/settings.local.json` is untracked.
+
+Removed the three hardcoded `/Users/tim` paths (`49001a3`):
+
+- `scripts/selftest.sh` pinned two specific PM deployments. Which deployments to lint now
+  resolves in precedence order: **`$SELFTEST_LIVE_PLANS`** → **`.selftest-live-plans`**
+  (gitignored local file, one absolute path per line — *this is where to record the projects
+  you develop against*) → **discovery of sibling `*-pm/PLAN.md`**. All three paths verified.
+  Repo root comes from `--git-common-dir`, so it still resolves to the main checkout when the
+  selftest runs inside a worktree — the original reason those paths were absolute.
+- `setup.sh` usage example uses `myapp` / `myorg` / `$HOME`.
+- `PROJECT.md` describes its paths relative to the checkout. Only the frontmatter is
+  machine-parsed, so nothing depended on the literal string.
+
+`.selftest-live-plans.example` is committed and documents the local file.
+
+**Deliberately left as-is (operator decision):** real project names (gamedaytastic, hometastic)
+remain in the docs as *evidence labels* — "gamedaytastic T073, a one-line fix on a shared audio
+path." Genericizing them is easy; the cost is that the lessons stop being traceable to what
+actually happened. Revisit only if the repo's audience changes.
 
 ---
 
-## Open issues — 18, none blocking
+## Deployments
 
-Nothing is in flight. The remaining backlog splits roughly:
+| Project | Framework state | Notes |
+|---|---|---|
+| **hometastic-pm** | **Current** — pulled this session (`ed84d5e`) | Also needed `spec-body-guard.py` wired into `.claude/settings.json` **by hand** — issue #16 in action: `setup.sh` runs once, so a hook added to the framework never reaches an onboarded project. Verified blocking (exit 2) after wiring. |
+| **gamedaytastic-pm** | **Behind** `main` | **Untouched on purpose** — actively building this session. Needs the same framework pull *and* the same manual hook wiring when the operator asks. |
 
-- **Verified-fixed-in-prose, needs a mechanism:** #15 (refuse a build dispatch without
-  `--worktree` — the rule is in `dispatch.md`, `dispatch.sh` does not enforce it), #16
-  (setup.sh runs once; hooks never reach onboarded projects), #17 (`LOG_DIR` still derived
-  from the prompt file's directory), #18 (mechanize the critic gate).
-- **Correctness of the gates:** #21, #35 (the merge gate verifies a tree but never pins
-  which tree), #29 (recovery marks shipped work failed), #24.
-- **Cost/measurement:** #14 (claude-lane review routing), #32 (how to tell whether a change
+---
+
+## Open issues — 19, none blocking
+
+- **Fixed in prose, still needs a mechanism** (the recurring failure mode — see
+  `RULES.md`): #15 (`dispatch.sh` does not refuse a build without `--worktree`, though the rule
+  is in `dispatch.md`), #16 (setup.sh runs once; hooks never reach onboarded projects — bit us
+  twice today), #17 (`LOG_DIR` still derived from the prompt file's directory), #18 (mechanize
+  the critic gate).
+- **Gate correctness:** #21, #35 (merge gate verifies a tree but never pins *which* tree), #29
+  (recovery marks shipped work failed), #24.
+- **Cost / measurement:** #14 (claude-lane review routing), #32 (how to tell whether a change
   moved token cost), #34 (checks that cannot fail).
+- **Model selection:** #48 (re-rank the tiers on the right benchmarks — filed today).
 - **Larger bets:** #33 (Codex-orchestrator trial, additive), #46 (steal root-cause-before-fix
   and verification-before-completion from superpowers), #23 (inline-authoring gate).
 - **iOS-specific:** #10, #12, #13, #45.
 
-`bash scripts/selftest.sh` is green at `d5cfbd2`.
-
----
-
-## Deployments behind `main`
-
-Not checked this session, and **not to be pulled without being asked by name**:
-`gamedaytastic-pm` (active) and `hometastic-pm` (backlog) both carry `framework/` as a
-subtree and predate everything merged today.
+Suggested next pickup: **#16**, because it is the one that makes every other framework fix fail
+to arrive, and it cost manual intervention twice in a single session.
