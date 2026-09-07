@@ -291,7 +291,39 @@ rm -rf "$BURN_TMP"
 echo "[selftest] plan-lint handles a real live PLAN without crashing"
 # Absolute paths on purpose: relative ones do not resolve inside a git worktree, where the
 # [ -r ] guard silently turned a skipped check into a pass and gave false confidence.
-for live in /Users/tim/Developer/gamedaytastic-pm/PLAN.md /Users/tim/Developer/hometastic-pm/PLAN.md; do
+#
+# Which deployments to lint is DISCOVERED or configured locally — never hardcoded. This repo
+# is public; the paths to someone's working directories are not framework content. Precedence:
+#
+#   1. $SELFTEST_LIVE_PLANS       — space-separated absolute paths (one-off / CI)
+#   2. .selftest-live-plans       — gitignored local file, one absolute path per line,
+#                                   `#` comments allowed. This is where to record the projects
+#                                   you actually develop against.
+#   3. sibling `*-pm/PLAN.md`     — anything next to this checkout
+#
+# The repo root comes from --git-common-dir so it resolves to the MAIN checkout even when the
+# selftest runs inside a worktree.
+_repo_root="$(cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo .)")" 2>/dev/null && pwd)"
+[ -n "$_repo_root" ] || _repo_root="$(pwd)"
+_live_cfg="$_repo_root/.selftest-live-plans"
+set --
+if [ -n "${SELFTEST_LIVE_PLANS:-}" ]; then
+  # shellcheck disable=SC2086
+  set -- $SELFTEST_LIVE_PLANS
+elif [ -r "$_live_cfg" ]; then
+  while IFS= read -r _line; do
+    _line="${_line%%#*}"
+    _line="$(printf '%s' "$_line" | tr -d '[:space:]')"
+    [ -n "$_line" ] && set -- "$@" "$_line"
+  done < "$_live_cfg"
+  [ $# -gt 0 ] || echo "  skip (.selftest-live-plans is present but lists no paths)"
+else
+  for _cand in "$(dirname "$_repo_root")"/*-pm/PLAN.md; do
+    [ -r "$_cand" ] && [ "$_cand" != "$_repo_root/PLAN.md" ] && set -- "$@" "$_cand"
+  done
+  [ $# -gt 0 ] || echo "  skip (no sibling *-pm/PLAN.md found; see .selftest-live-plans.example)"
+fi
+for live in "$@"; do
   if [ ! -r "$live" ]; then printf '  skip %s (not present)\n' "$live"; continue; fi
   bash scripts/plan-lint.sh "$live" >/dev/null 2>&1; got=$?
   if [ "$got" -le 3 ]; then pass "$live (exit $got)"; else fail "$live (crashed, exit $got)"; fi

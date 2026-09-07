@@ -10,8 +10,8 @@ critic_backends: [codex, opencode]
 
 | Key | Path |
 |-----|------|
-| PM directory | `/Users/tim/Developer/vibetastic-pm` |
-| Code directory | `/Users/tim/Developer/vibetastic-pm` |
+| PM directory | this repo's root (wherever it is checked out) |
+| Code directory | same — this repo IS the code |
 | Issue repo | `Fricktastic/vibetastic-pm` |
 
 <!-- This repo is the framework SOURCE, not a framework-managed project. PM dir and code dir

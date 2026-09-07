@@ -10,7 +10,7 @@ set -e
 
 if [ $# -lt 3 ] || [ $# -gt 4 ]; then
   echo "Usage: bash framework/setup.sh <project-name> <absolute-path-to-code-dir> <org/repo> [verify-cmd]"
-  echo "Example: bash framework/setup.sh hometastic /Users/tim/Developer/hometastic-code Fricktastic/hometastic-code 'swift build'"
+  echo "Example: bash framework/setup.sh myapp \"\$HOME/Developer/myapp-code\" myorg/myapp-code 'swift build'"
   echo "verify-cmd: single-line command, run in the code dir, exit 0 = change didn't break the project."
   echo "            Powers dispatch.sh's self-correction loop. Omit to disable (loop degrades to single run)."
   exit 1

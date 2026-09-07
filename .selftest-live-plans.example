@@ -1,0 +1,11 @@
+# Copy to `.selftest-live-plans` (gitignored) and list the PM deployments you develop
+# against. The selftest runs plan-lint against each one to confirm the linter survives a
+# real, messy, live PLAN.md — the fixtures alone never caught that.
+#
+# One absolute path per line. `#` starts a comment. Missing files are skipped, not failed,
+# so it is safe to list a project that is not checked out on this machine.
+#
+# Precedence: $SELFTEST_LIVE_PLANS  >  this file  >  sibling */*-pm/PLAN.md discovery.
+
+# /Users/you/Developer/myapp-pm/PLAN.md
+# /Users/you/Developer/otherapp-pm/PLAN.md
