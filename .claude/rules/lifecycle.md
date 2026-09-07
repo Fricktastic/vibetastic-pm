@@ -41,9 +41,17 @@ Ask the user (one message):
 - What is the project name?
 - What is the absolute path to the code directory?
 - What is the GitHub repo for issues and PRs? (format: `org/repo`)
-- What single command verifies a change didn't break the project, runnable on *this* machine
-  (sim-independent for iOS)? This becomes the per-task gate for the self-correction loop. If
+- What single command compiles **everything, including the test target**, runnable on *this*
+  machine without booting a simulator? On iOS that is `xcodebuild build-for-testing` — not a
+  bare `build`, which never compiles the test target and so cannot notice a test file that
+  does not build (issue #36). This becomes the per-task gate for the self-correction loop. If
   unknown, leave blank — the loop degrades to a single run with no auto-correction.
+  **It is not a test run.** Test execution is the orchestrator's job, on a real
+  simulator/device — see `framework/VERIFY.md` § Who runs what.
+- What single command **runs the test suite** on a real simulator/device? This is the
+  orchestrator's command — `dispatch.sh` never runs it, and no builder can. Pin the
+  destination explicitly. It goes in `PROJECT.md § Test command` so no future session has to
+  re-derive it.
 
 Then detect installed builder CLIs (`command -v codex claude opencode`) and propose the
 backend order — default `codex, claude, opencode`, filtered to what's installed. The user
@@ -76,10 +84,27 @@ max_concurrent_total: 6
 
 <!-- Single-line command run in the code directory after each OpenCode task. Exit 0 = the
      task didn't break the project. Passed to dispatch.sh as the verifier; on failure the loop
-     feeds its output back to the model and retries. Leave the code block empty to disable. -->
+     feeds its output back to the model and retries. Leave the code block empty to disable.
+
+     It must COMPILE THE TEST TARGET, not just the app — on iOS use
+     `xcodebuild build-for-testing`, never a bare `build` (issue #36).
+
+     THIS IS NOT A TEST RUN. Builders cannot execute simulator-dependent tests
+     (CoreSimulatorService is a Mach service no sandbox grant provides). Running the suite is
+     the orchestrator's job, on a real simulator/device — framework/VERIFY.md § Who runs what. -->
 
 ```
 <verify-command-or-empty>
+```
+
+## Test command
+
+<!-- Single-line command that RUNS the suite on a real simulator/device, from the code
+     directory. The orchestrator's command — dispatch.sh never runs it and builders cannot.
+     Pin the destination explicitly. Empty if the project has no runnable suite. -->
+
+```
+<test-command-or-empty>
 ```
 
 ## Notes

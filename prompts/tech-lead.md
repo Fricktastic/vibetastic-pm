@@ -133,10 +133,22 @@ Where an Apple API is involved, specify the exact method signatures and paramete
 
 ### Section 4 — Build and Test
 
-- Build command to run (with exact flags)
+- Build command to run (with exact flags). For a compiled language with a separate test
+  target, this must **compile the tests too** — on iOS, `xcodebuild build-for-testing`, not
+  a bare `build`.
 - What zero errors and zero warnings looks like for this task
+- **Who executes the tests, stated explicitly.** The builder cannot: simulator-dependent
+  tests need CoreSimulatorService, a Mach service no sandbox grant can provide. Write the
+  split out in the spec so the builder does not try, and does not invent results:
+  - *Builder:* compiles, including the test target.
+  - *Orchestrator:* runs the suite on a real simulator/device, after the dispatch.
+  Name the exact command the orchestrator should run, with the destination.
 - Any manual verification steps (what to look for in simulator, what user interaction to test)
 - Known pre-existing issues that are NOT in scope for this task (do not fix these; note them)
+
+> Never write acceptance criteria that require the builder to report a test result. A
+> builder's claim about tests is not evidence (`framework/VERIFY.md` § Who runs what).
+> Phrase them as observable artifacts the orchestrator can check.
 
 ---
 

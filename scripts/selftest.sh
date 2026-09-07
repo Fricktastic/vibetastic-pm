@@ -297,6 +297,51 @@ for live in /Users/tim/Developer/gamedaytastic-pm/PLAN.md /Users/tim/Developer/h
   if [ "$got" -le 3 ]; then pass "$live (exit $got)"; else fail "$live (crashed, exit $got)"; fi
 done
 
+echo "[selftest] Xcode verification-boundary preamble (issue #37)"
+# Sourcing dispatch.sh is not possible (it runs), so exercise prompt_preamble in isolation by
+# extracting the function and driving it with the four cases that matter. Bound the extraction
+# so a rename fails loudly instead of silently testing nothing (issue #34).
+PRE_SNIP="$(awk '/^prompt_preamble\(\) \{$/,/^\}$/' dispatch.sh)"
+if [ -z "$PRE_SNIP" ]; then
+  fail "prompt_preamble() not found in dispatch.sh — preamble checks did not run"
+else
+  PRE_TMP="$(mktemp -d)"
+  printf '## T099\nDo the thing.\n' > "$PRE_TMP/task.md"
+  pre_case() {  # backend, read_only, verify_cmd, expect(none|generic|codex), label
+    local out
+    out="$(BACKEND="$1" READ_ONLY="$2" VERIFY_CMD="$3" PROMPT_FILE="$PRE_TMP/task.md" \
+      bash -c "READ_ONLY() { [ \"\$READ_ONLY\" = true ]; }
+$(printf '%s' "$PRE_SNIP" | sed 's/^  \$READ_ONLY && return 0$/  [ "$READ_ONLY" = true ] \&\& return 0/')
+prompt_preamble" 2>/dev/null)"
+    case "$4" in
+      none)    [ -z "$out" ] && pass "$5" || fail "$5 (expected no preamble, got ${#out} chars)" ;;
+      generic) if [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'workspace-write'; then
+                 pass "$5"; else fail "$5 (expected generic-only preamble)"; fi ;;
+      codex)   if printf '%s' "$out" | grep -q 'workspace-write' \
+                 && printf '%s' "$out" | grep -q 'never report a test result'; then
+                 pass "$5"; else fail "$5 (expected codex sandbox paragraph + evidence rule)"; fi ;;
+    esac
+  }
+  pre_case codex    false "xcodebuild build-for-testing" codex   "codex + Xcode gets the sandbox paragraph"
+  pre_case opencode false "xcodebuild build-for-testing" generic "non-codex Xcode gets the evidence rule only"
+  pre_case codex    true  "xcodebuild build-for-testing" none    "read-only dispatch gets no preamble"
+  pre_case codex    false "swift build"                  none    "non-Xcode task gets no preamble"
+  rm -rf "$PRE_TMP"
+fi
+
+echo "[selftest] verify-cmd that cannot compile tests warns (issue #36)"
+vwarn_case() {  # verify_cmd, expect(warn|quiet), label
+  local out
+  out="$(VERIFY_CMD="$1" bash -c "$(awk '/^# --- \[issue #36\/#37\] A verify-cmd/,/^esac$/' dispatch.sh)" 2>&1)"
+  case "$2" in
+    warn)  printf '%s' "$out" | grep -q 'build-for-testing' && pass "$3" || fail "$3 (expected a warning)" ;;
+    quiet) [ -z "$out" ] && pass "$3" || fail "$3 (expected silence, got: $out)" ;;
+  esac
+}
+vwarn_case "xcodegen generate && xcodebuild -scheme App build" warn  "bare xcodebuild build warns"
+vwarn_case "xcodebuild build-for-testing -scheme App"          quiet "build-for-testing is silent"
+vwarn_case "swift build"                                       quiet "non-Xcode verify-cmd is silent"
+
 echo
 if [ "$FAIL" = 0 ]; then echo "[selftest] PASS"; else echo "[selftest] FAIL"; fi
 exit "$FAIL"
