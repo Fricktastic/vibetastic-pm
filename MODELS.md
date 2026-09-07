@@ -229,7 +229,7 @@ Escalation in `.claude/rules/dispatch.md`).
 
 | Tier | Model | Fallback | Confirmed | Use When |
 |------|-------|----------|-----------|----------|
-| `fast` | `openrouter/deepseek/deepseek-v4-flash-0731` | `openrouter/z-ai/glm-5` | **yes (bake-off 2026-08-22)** | Simple bug fix, isolated change, clear root cause, no API surface changes |
+| `fast` | `openrouter/deepseek/deepseek-v4-flash-0731` | `openrouter/z-ai/glm-5.2` | **yes (bake-off 2026-08-22)** | Simple bug fix, isolated change, clear root cause, no API surface changes |
 | `standard` | `openrouter/minimax/minimax-m3` | `openrouter/moonshotai/kimi-k2.6` | **yes (bake-off 2026-08-22)** | Multi-file feature, new patterns, moderate complexity |
 | `heavy` | `openrouter/moonshotai/kimi-k2.6` | `openrouter/deepseek/deepseek-v4-pro-0813` | **yes (bake-off 2026-08-22)** | Complex architecture, new subsystems, large context, significant reasoning |
 
@@ -271,8 +271,14 @@ retry — which is what the fallback column is for).
 
 **Family diversity is preserved and now cheaper:** `fast` deepseek → `standard` minimax →
 `heavy` moonshot, each a different family, with glm and deepseek-pro as cross-family fallbacks.
-`glm-5` replaces `glm-5.2` as the `fast` fallback — cheaper ($0.60/$1.92 vs $0.97/$3.04), 11
-providers, and the only GLM on any coding leaderboard (77.8%); `glm-5.2`/`5.3` are unbenchmarked.
+`glm-5.2` **stays** the `fast` fallback (operator decision, 2026-09-07). The earlier swap to
+`glm-5` rested on a false premise — that `glm-5.2`/`5.3` were unbenchmarked. They are not: GLM's
+line is scored on SWE-bench **Pro** and **FrontierSWE**, not SWE-bench Verified, and `glm-5.2`
+posts **62.1 on SWE-bench Pro** (above GPT-5.5's 58.6) and **74.4% on FrontierSWE** (near Claude
+Opus 4.8's 75.1%), plus 77.0 on MCP-Atlas tool use. FrontierSWE is closer to this framework's
+long-horizon workload than single-shot Verified. `glm-5` is cheaper ($0.60/$1.92 vs $0.95/$3.00)
+with more providers (27 vs 11), so the swap remains a live cost/capability trade — but it is a
+trade, not a free win, and capability wins at these absolute prices.
 
 **Superseded (2026-07-02 → 2026-08-22).** The prior `fast` rationale — gemini-3-flash-preview
 dropped for pricing above deepseek, `qwen3-coder-flash` adopted as a cheaper *non-reasoning*
@@ -385,7 +391,7 @@ Models to evaluate for future tier assignments. Move to the table above once con
 | `openrouter/minimax/minimax-m3` | standard / heavy | **80.5% SWE-bench Verified**, $0.30/$1.20, 1.05M ctx, 13 providers, no tiered pricing. Near-top capability at a third of `v4-pro-0813`'s price. Non-DeepSeek, so it also restores family diversity on the ladder. **Field test 2026-08-22.** |
 | `openrouter/moonshotai/kimi-k2.6` | standard / heavy | **80.2% SWE-bench Verified**, $0.54/$2.28, 262K ctx, 19 providers. Note `kimi-k3` ($3.00/$15.00) is **not** worth evaluating — K2.6 matches its tier at a sixth the price. **Field test 2026-08-22.** |
 | `openrouter/thinkingmachines/inkling-small` | standard | 80.2% SWE-V, $0.45/$1.20, 1.05M ctx — but only **3 provider endpoints**. Single-point-of-failure risk; see the qwen incident below. Not tested. |
-| `openrouter/z-ai/glm-5` | heavy fallback | 77.8% SWE-V, $0.60/$1.92 — **cheaper than the configured `glm-5.2` fallback ($0.97/$3.04), and the only GLM on any coding leaderboard.** `glm-5.2` and `glm-5.3` are both unbenchmarked, so the current fallback may be a downgrade. Not tested. |
+| `openrouter/z-ai/glm-5` | not in a tier | 77.8% SWE-V, $0.60/$1.92, 27 providers — cheaper than the configured `glm-5.2` fallback ($0.95/$3.00, 11 providers), but **weaker on the benchmarks GLM is actually scored on**: `glm-5.2` posts 62.1 SWE-bench **Pro** and 74.4% **FrontierSWE** (~Opus 4.8). Considered and rejected as the `fast` fallback 2026-09-07. Not tested. |
 
 (`qwen-2.5-coder-32b-instruct` removed 2026-07-02 — obsolete: $0.66/$1.00, 128K ctx; beaten
 on every axis by the qwen3.x line.)
@@ -405,8 +411,10 @@ far cheaper), but the stated reason was unsound. Resolve by field test, not by a
 April): every incumbent is still listed and priced as documented, except
 **`openrouter/x-ai/grok-code-fast-1`, which is delisted entirely** — it appears in field logs
 as a 1-run, 2-second failure and was never in a tier. `glm-5.3` ($1.40/$4.40) is newer than the
-configured `glm-5.2` ($0.97/$3.04) but pricier and absent from the coding leaderboards — no
-reason to move. `gemini-3.7-flash` has fallen to $0.38/$1.88 (from 3.5-flash's $1.50/$9.00) but
+configured `glm-5.2` ($0.95/$3.00) but pricier, and its SWE-bench Pro / FrontierSWE numbers are
+not yet published — no reason to move. (It is **absent from SWE-bench Verified**, which is not
+the same as unbenchmarked: the GLM line reports on Pro and FrontierSWE. Ranking this catalog on
+Verified alone is how the 2026-08-22 review mis-called `glm-5.2` — see § Bake-off.) `gemini-3.7-flash` has fallen to $0.38/$1.88 (from 3.5-flash's $1.50/$9.00) but
 is the same reasoning family whose stall cost an hour in hometastic.
 
 **Standing caveat on this whole table.** `MODELS.md` says "cheapest model that clears the bar;
