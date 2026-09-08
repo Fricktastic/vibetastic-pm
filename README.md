@@ -1,7 +1,7 @@
 # vibetastic-pm
 
 A framework for running an AI orchestrator that drives coding work in a separate target
-repo, instead of writing code itself. The orchestrator (a Claude session) plans the work,
+repo, instead of writing code itself. The orchestrator (a Claude or Codex session) plans the work,
 dispatches implementation tasks to builder models, and enforces review and merge gates
 before anything lands.
 
@@ -9,7 +9,7 @@ before anything lands.
 
 A project gets its own `<project>-pm/` directory that pulls this repo in as a read-only
 `framework/` subtree. That directory holds the live state for one project: `SPEC.md`,
-`PLAN.md`, `TASK_LOG.md`, and rendered prompts. The Claude session running in that
+`PLAN.md`, `TASK_LOG.md`, and rendered prompts. The partner session running in that
 directory is the orchestrator - it reads the state files, decides what's ready to build,
 and calls `dispatch.sh` to hand tasks off to a builder.
 
@@ -26,7 +26,7 @@ transitions, tier escalation, backend fallback - proceeds without asking.
 
 ## What's in this repo
 
-- `CLAUDE.md` - orchestrator guide, read at the start of every session
+- `ORCHESTRATOR.md` - shared contract; `CLAUDE.md` and `AGENTS.md` are provider entry points
 - `RULES.md` - detailed operating rules and lessons learned from running this in production
 - `MODELS.md` - model and tier selection, the source of truth for which model runs what
 - `VERIFY.md` - the merge gate: review tiers and what has to pass before a diff merges
@@ -45,8 +45,29 @@ From a new `<project>-pm/` directory, with this repo checked out as `framework/`
 bash framework/setup.sh <project-name> <path-to-code-dir> <org/repo> [verify-cmd]
 ```
 
-This writes `PROJECT.md` and a `.claude/settings.json` allowlist for the project. Then
-start a Claude session in that directory and follow the SPEC interview.
+This writes PROJECT.md plus additive Claude/Codex adapters. Review the project hooks in
+Codex with `/hooks`, then launch either provider from that PM directory:
+
+```sh
+python3 framework/orchestrate.py claude
+python3 framework/orchestrate.py codex
+```
+
+Codex defaults to a session-only OpenCode fallback profile to reserve its subscription
+capacity for orchestration. `python3 framework/orchestrate.py --profile normal codex`
+uses normal project routing. The single-writer lease prevents concurrent orchestrators;
+PLAN updates are linted transactions with recoverable TASK_LOG events.
+
+For an existing project, use the idempotent adapter installer instead of setup:
+
+```sh
+python3 framework/scripts/install-orchestrators.py --pm-dir . --framework-dir framework
+python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework
+```
+
+See [the shared operating guide](ORCHESTRATOR.md) for state commands, recovery, role dispatch,
+and hook limitations. [The trial protocol](Docs/codex-orchestrator-trial.md) distinguishes
+automated implementation checks from representative project sessions still to be measured.
 
 ## Note on this repo itself
 

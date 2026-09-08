@@ -1,3 +1,10 @@
+<!-- Shared mechanics for both providers; ORCHESTRATOR.md defines harness adaptation. -->
+
+Managed projects: pass `--role reviewer|critic --author-model <actual-model>` for gate
+reviews, and `--security` when applicable. Exit 31 stops for ownership/policy/reconciliation
+without changing failure_count. The lease's session routing profile overrides normal
+backend preferences for this session only. All durable changes use the state commands.
+
 # Dispatch
 
 ## Task Dispatch Loop
@@ -28,13 +35,13 @@ Read `framework/prompts/designer.md`. Substitute:
 
 For mid-project invocations, also prepend a brief description of the specific UI addition so the Designer scopes to the new work only.
 
-Spawn a fresh Agent with the rendered prompt.
+On Claude, spawn the native Designer and stage its result before promoting it with
+`orchestrator-state.py write`. On Codex, use `scripts/dispatch-role.py --role designer
+--output prompts/design-spec.md`. For a mid-project addition, stage the combined document
+and replace it through the same guarded write command.
 
-After return:
-- **Stage 1:** Write output verbatim to `prompts/design-spec.md`
-- **Mid-project:** Append as a new section; note the addition in TASK_LOG
-- Append `agent_returned` + `task_completed` to TASK_LOG
-- Update task in PLAN.md: `status: done`, `completed_at`
+After return, append `agent_returned` + `task_completed` through the guarded TASK_LOG
+append and update the task through `plan-update.py`.
 
 ---
 
@@ -43,17 +50,14 @@ After return:
 Read `framework/prompts/architect.md`. Substitute:
 - `{{SPEC_CONTENT}}` → full body of `SPEC.md`
 - `{{DESIGN_SPEC_CONTENT}}` → full contents of `prompts/design-spec.md`
-- `{{TARGET_PROJECT_PATH}}` → absolute path to `../<project-name>/`
+- `{{TARGET_PROJECT_PATH}}` → absolute path to the target project
 
-Spawn a fresh Agent with the rendered prompt.
-
-After return, parse on delimiter `<!-- ARCHITECT_RESULT_START -->`:
-1. Everything **before** the delimiter → write to `prompts/build-spec.md`. **Written once, never appended to again.**
-2. YAML block **after** the delimiter → extract `selected_tier`, read `framework/MODELS.md` to resolve the `model` and `fallback` columns for that tier, write to `tasks[n].model` and `tasks[n].fallback_model` in PLAN.md; log `model_fallback_used` if true. Also extract `security` and write it to `tasks[n].security` (default `false`); for a multi-task build spec, apply the per-task flag noted in each task section.
-
-Then: append `model_selected`, `agent_returned`, `task_completed` to TASK_LOG. Update task: `status: done`, `completed_at`.
-
-Missing delimiter or malformed YAML → treat as parse failure (increments `failure_count`).
+On Claude, spawn the native Architect and stage its return. On Codex, use
+`scripts/dispatch-role.py --role architect --output prompts/build-spec.md`. Parse the
+`ARCHITECT_RESULT_START` metadata, resolve its selected tier/model through MODELS.md and
+the session routing profile, promote the build spec through the guarded state command,
+and update PLAN/TASK_LOG transactionally. Missing delimiters, malformed metadata, or an
+empty artifact are role failures.
 
 ---
 
@@ -107,11 +111,14 @@ Projects onboarded before the hook shipped do not have it (issue #16): check
 `.claude/settings.json` for a `PreToolUse` entry matching `Read|Bash` and add it by hand if
 absent.
 
-Spawn a fresh Agent with the rendered prompt.
+On Claude, spawn the native Tech Lead with its spec output directed to a staging artifact;
+the lease owner promotes it with `orchestrator-state.py write`. On Codex, use
+`scripts/dispatch-role.py --role tech-lead --output prompts/task-T0XX.md`; leave
+`{{SPEC_OUTPUT_PATH}}` for the wrapper to replace with an isolated staging path. In both
+cases the spec body stays on disk and only metadata enters the partner context.
 
-After return, parse on delimiter `<!-- TECH_LEAD_RESULT_START -->`:
-1. Everything **before** the delimiter → write to `prompts/task-T0XX.md` using the assigned task id. Do not append to `prompts/build-spec.md`.
-2. YAML block **after** the delimiter → create new task in PLAN.md:
+After return, parse the YAML between `TECH_LEAD_RESULT_START` and
+`TECH_LEAD_RESULT_END`, then create the task through `plan-update.py`:
    - `task_title` → `title`
    - `branch_name`, `issue_refs` → store in `notes`
    - `depends_on` → `depends_on`
@@ -120,7 +127,8 @@ After return, parse on delimiter `<!-- TECH_LEAD_RESULT_START -->`:
    - Assign next available task id
    - Set `status: pending`, `agent: opencode`, `failure_count: 0`
 
-Then: append `tech_lead_returned` + `task_created` to TASK_LOG. New task enters the normal dispatch loop.
+The PLAN transaction appends `tech_lead_returned` + `task_created` to TASK_LOG. The new
+task then enters the normal dispatch loop.
 
 Missing delimiter or malformed YAML → treat as parse failure.
 

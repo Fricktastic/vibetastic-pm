@@ -1,9 +1,8 @@
 # HANDOFF — vibetastic-pm (framework repo)
 
-**Last session:** 2026-09-07 · **Branch:** `main` @ `49001a3`. Working tree clean.
-**Stage:** framework maintenance. Repo-cleanup session: the whole PR stack is merged, the
-branch and issue backlog is pruned, and the public repo is scrubbed of personal paths.
-**Nothing is in flight.** No dispatches running, no gates open, no half-built work.
+**Last session:** 2026-09-08 · **Branch:** `feat/33-codex-orchestrator` from `95d9ea2`.
+**Stage:** issue #33 implementation complete and verified locally; branch is not pushed or merged.
+No deployed project was modified. Live trial phases have not started.
 
 ---
 
@@ -30,7 +29,19 @@ Do not start work, pull updates, or make changes in either unless asked for it b
 
 ---
 
-## Repo state at close
+## Issue #33 session — 2026-09-07–08
+
+- Requested: tag the current release, then implement additive Codex orchestration (#33).
+- Created and pushed annotated tag `pre-issue-33` at `95d9ea2`; this is the pre-change rollback point.
+- Read issue #33 and its September 7 additions: single-writer orchestrator lease and a session-level OpenCode-only fallback routing profile.
+- User approved the revised design after critique; implementation is complete on the feature branch.
+- Critique: define lease fencing and dispatch ownership, PLAN/TASK_LOG crash reconciliation, conservative recovery instead of blanket failure marking, idempotent additive setup, measured hook capability checks, telemetry deduplication/token semantics, and explicit fallback adjudication behavior. Separate implementation readiness from measured trial completion.
+- Implemented the shared orchestrator contract and provider entry points, transactional PLAN/TASK_LOG updates, fenced writer leases, run/worktree recovery evidence, provider telemetry adapters, idempotent hook installation/doctor, planning-role dispatch, family-diverse fallback routing, normalized quota reporting, CI checks, and the pre-registered trial protocol.
+- `bash scripts/selftest.sh`: PASS, including 79 additive regression tests. Focused state/integration suite: 47 tests PASS.
+- Remaining empirical acceptance: install in a disposable PM project, trust and observe native hooks for both providers, then run the matched phases in `Docs/codex-orchestrator-trial.md`. Fixture tests are not recorded as live hook/trial evidence.
+- No deployed projects were modified. Real trial outcomes remain to be measured; fixtures cannot establish orchestration quality or subscription headroom.
+
+## Prior repo state before issue #33 (historical)
 
 | | |
 |---|---|

@@ -49,8 +49,8 @@ def price_for(model):
     # last path segment (e.g. openrouter/anthropic/claude-opus-4.8 -> claude-opus-4.8)
     return prices.get(model.rsplit("/", 1)[-1])
 
-# --- Aggregate OpenCode dispatch records ---
-agg = defaultdict(lambda: {"runs":0,"attempts":0,"dur":0,"in":0,"out":0,"cache":0,"fails":0,"cost":0.0,"costed":0,"role":"opencode"})
+# --- Aggregate journal records without merging providers, roles, or models ---
+agg = defaultdict(lambda: {"runs":0,"attempts":0,"dur":0,"in":0,"out":0,"cache":0,"fails":0,"cost":0.0,"costed":0})
 # Primary reliability: keyed by the ORIGINALLY-requested primary model (r["primary_model"]),
 # so a primary that failed and was rescued by its fallback is counted against the PRIMARY,
 # not attributed to the fallback in `model`. "rescued" = the dispatch needed a same-model
@@ -63,8 +63,9 @@ if os.path.exists(cost_jsonl):
         if not line: continue
         try: r = json.loads(line)
         except json.JSONDecodeError: continue
+        role = r.get("role", "opencode")
         pm = r.get("primary_model")
-        if pm:
+        if pm and role not in ("partner", "subagent"):
             p = prim[f"{r.get('backend','opencode')}: {pm}"]
             p["runs"] += 1
             sr = (r.get("stall_retries") or 0) > 0
@@ -72,8 +73,8 @@ if os.path.exists(cost_jsonl):
             if sr: p["stall_retried"] += 1
             if fb: p["fell_back"] += 1
             if sr or fb: p["rescued"] += 1
-        a = agg[f"{r.get('backend','opencode')}: {r.get('model','?')}"]
-        a["role"] = r.get("role","opencode")
+        key = (r.get("backend", "opencode"), role, r.get("model", "?"))
+        a = agg[key]
         a["runs"] += 1
         a["attempts"] += r.get("attempts",1) or 1
         a["dur"] += r.get("duration_s",0) or 0
@@ -113,7 +114,7 @@ def est(model, tin, tout):
 # --- Weekly burn proxy for subscription backends (codex weekly cap; claude 5h windows) ---
 # Codex exposes no in-band quota figure: tokens (esp. reasoning) are a PROXY for weekly-cap
 # burn. Reconcile against the ChatGPT usage UI — this report paces, it is not authoritative.
-weekly = defaultdict(lambda: {"runs":0,"in":0,"out":0,"reason":0,"cache":0})
+weekly = defaultdict(lambda: {"runs":0,"in":0,"out":0,"reason":0,"cache":0,"quota":0})
 if os.path.exists(cost_jsonl):
     import datetime
     for line in open(cost_jsonl):
@@ -132,13 +133,23 @@ if os.path.exists(cost_jsonl):
         for k, f in (("in","input_tokens"),("out","output_tokens"),
                      ("reason","reasoning_tokens"),("cache","cache_read_tokens")):
             if isinstance(r.get(f), int): w[k] += r[f]
+        explicit = r.get("quota_proxy_tokens")
+        if isinstance(explicit, int) and not isinstance(explicit, bool) and explicit >= 0:
+            w["quota"] += explicit
+        else:
+            # Historical rows predate explicit normalized quota accounting. Preserve the
+            # old proxy for those records only; current provider adapters prevent overlap.
+            for field in ("input_tokens", "output_tokens", "reasoning_tokens"):
+                value = r.get(field)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    w["quota"] += value
 
 print("=== Subscription-backend weekly burn (PROXY — reconcile vs provider usage UI) ===")
 if not weekly:
     print("  (no codex/claude dispatch records yet)")
 for (be, wk), w in sorted(weekly.items(), key=lambda kv: (kv[0][1], kv[0][0])):
     print(f"  {wk}  {be:7s} runs={w['runs']}  in={w['in']:,}  out={w['out']:,}  "
-          f"reasoning={w['reason']:,}  cache={w['cache']:,}")
+          f"reasoning={w['reason']:,}  cache={w['cache']:,}  quota={w['quota']:,}")
 print()
 
 # --- Burn-gate audit: every gpt-5.6-sol@high dispatch must log the burn-proxy it consulted ---
@@ -175,27 +186,26 @@ else:
               f"no cost_event with a burn_proxy reading (see state.md burn-gate audit rule)")
 print()
 
-# [0h] Partner-session records (role=partner, written by the Stop hook) are NOT builder
-# dispatches — they are the orchestrator's own burn. They must still land in the weekly-burn
-# roll-up above, because that is what the claude_window / codex_weekly gates read, but
-# listing them as builders would misattribute the framework's most expensive context.
-print("=== Orchestrator (partner) sessions ===")
-_partner = {k: v for k, v in agg.items() if v.get("role") == "partner"}
-if not _partner:
+# Partner/subagent session records written by Stop hooks are not builder dispatches. They
+# still land in weekly burn, while retaining their separate roles here.
+print("=== Orchestrator and subagent sessions ===")
+_orchestrator = {k: v for k, v in agg.items() if k[1] in ("partner", "subagent")}
+if not _orchestrator:
     print("  (no partner records — is the Stop hook wired? see setup.sh)")
-for k, a in sorted(_partner.items()):
-    print(f"  {k}: sessions={a['runs']}  in={a['in']:,}  out={a['out']:,}  cache={a['cache']:,}")
+for (backend, role, model), a in sorted(_orchestrator.items()):
+    print(f"  {backend}: {model} [{role}]: sessions={a['runs']}  "
+          f"in={a['in']:,}  out={a['out']:,}  cache={a['cache']:,}")
 print()
 
 print("=== Builder dispatches (from logs/cost.jsonl) ===")
-if not agg:
+builders = {k: v for k, v in agg.items() if k[1] not in ("partner", "subagent")}
+if not builders:
     print("  (no records yet)")
 total = 0.0
-for model, a in sorted(agg.items()):
-    if a.get("role") == "partner":
-        continue          # [0h] reported above under Orchestrator (partner) sessions
+for (backend, role, model), a in sorted(builders.items()):
+    label = f"{backend}: {model} [{role}]"
     # Subscription backends (codex/claude) have no per-token spend — don't fake a $ figure.
-    if model.startswith(("codex: ", "claude: ")):
+    if backend in ("codex", "claude"):
         d, dollar = None, "(subscription — see weekly burn)"
     # Prefer the actual billed cost (recorded from opencode's session store) over a
     # price-table estimate; estimate only fills in for records that predate cost_usd.
@@ -203,11 +213,11 @@ for model, a in sorted(agg.items()):
         d, src = a["cost"], "actual"
         dollar = f"${d:,.4f} ({src})"
     else:
-        e = est(model.split(": ", 1)[-1], a["in"], a["out"])
+        e = est(model, a["in"], a["out"])
         d, src = ((a["cost"] + (e or 0)) or None), "actual+est" if a["costed"] else "est"
         dollar = f"${d:,.4f} ({src})" if d is not None else "(tokens/price n/a)"
     if d: total += d
-    print(f"  {model}")
+    print(f"  {label}")
     print(f"     runs={a['runs']}  verify-fails={a['fails']}  attempts={a['attempts']}  "
           f"wall={a['dur']}s  in={a['in']:,}  out={a['out']:,}  cache={a['cache']:,}  {dollar}")
 if total:

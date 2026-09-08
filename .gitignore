@@ -7,3 +7,8 @@ logs/
 # Local list of live deployments the selftest lints (absolute paths — machine-specific,
 # and this repo is public). See .selftest-live-plans.example.
 .selftest-live-plans
+
+# Python bytecode and local orchestration ownership/journal
+__pycache__/
+*.pyc
+.orchestrator/

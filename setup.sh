@@ -22,6 +22,13 @@ ISSUE_REPO="$3"
 TEST_CMD="${TEST_CMD:-}"
 VERIFY_CMD="${4:-}"
 PM_DIR="$(pwd)"
+FRAMEWORK_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -e PROJECT.md ] || [ -e .claude/settings.json ] || [ -e .codex/hooks.json ]; then
+  echo "Project already configured; setup never overwrites existing state." >&2
+  echo "Install/update adapters with: python3 framework/scripts/install-orchestrators.py --pm-dir . --framework-dir framework" >&2
+  exit 2
+fi
 
 if [ ! -d "$CODE_DIR" ]; then
   echo "Error: code directory does not exist: $CODE_DIR"
@@ -181,9 +188,11 @@ ${TEST_CMD}
 <!-- Add any project-specific notes here for future PM sessions. -->
 EOF
 
+python3 "$FRAMEWORK_DIR/scripts/install-orchestrators.py" --pm-dir "$PM_DIR" --framework-dir "$FRAMEWORK_DIR"
+
 echo "✓ Wrote PROJECT.md"
 echo ""
 echo "Setup complete. This -pm directory holds project state, logs, and artifacts, and is"
-echo "where you launch the orchestrator (A1 model): run 'claude' here and the partner drives"
+echo "where you launch either orchestrator: python3 framework/orchestrate.py claude (or codex). The partner drives"
 echo "framework/dispatch.sh against this directory and enforces framework/VERIFY.md as the"
-echo "merge gate. See framework/CLAUDE.md."
+echo "merge gate. See framework/ORCHESTRATOR.md; review Codex hook trust with /hooks."

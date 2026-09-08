@@ -543,6 +543,13 @@ for l in lines[start+1:]:
 done
 rm -rf "$INV_TMP"
 
+echo "[selftest] additive orchestration regression suite"
+if python3 -m unittest discover -s tests -p 'test_*.py'; then
+  pass "lease, transaction, telemetry, hook and routing behavior"
+else
+  fail "additive orchestration regression suite"
+fi
+
 echo
 if [ "$FAIL" = 0 ]; then echo "[selftest] PASS"; else echo "[selftest] FAIL"; fi
 exit "$FAIL"

@@ -72,33 +72,23 @@ clears the bar; escalate on proof).
 
 ## Applying Results
 
-After every agent return or OpenCode execution, before doing anything else:
+After every agent return, read the current PLAN.md and register one task transition at a
+time. For installed projects, use `framework/scripts/plan-update.py` with the expected
+SHA256, candidate file, TASK_LOG event and unique operation ID. The command validates and
+atomically replaces PLAN, and recovers an interrupted TASK_LOG append exactly once.
+Use `orchestrator-state.py write/append` for other durable changes. See
+`framework/ORCHESTRATOR.md` for command examples and lease ownership.
 
-1. Read current `PLAN.md` (do not use a cached version)
-2. Apply the specific field updates for this task only
-3. Write `PLAN.md`
-4. Run `bash framework/scripts/plan-lint.sh` and branch on the exit code. A `PostToolUse`
-   hook (`framework/scripts/plan-lint-hook.py`, wired by setup.sh) also runs this
-   automatically on every Write/Edit whose target is named `PLAN.md`, and **blocks on
-   exit 1** — so a structural break surfaces even if this step is skipped. Existing
-   projects set up before the hook shipped do not have it: check `.claude/settings.json`
-   for a `Write|Edit` PostToolUse entry and add it by hand if absent. Run the linter
-   yourself regardless; the hook is a backstop, not a substitute.
-   - **1 = structural corruption** — the write broke PLAN.md. Fix it now, before anything
-     reads the file. This is the hard rule.
-   - **3 = vocabulary drift only** (an unrecognised agent/status/tier value; structure is
-     fine). Not blocking. Fix at leisure, or widen the enum if the value is legitimate.
-   - **2 = the file could not be read.**
-   The split exists because a linter that is permanently red gets ignored: gamedaytastic's
-   PLAN.md reported 52 errors, every one vocabulary and none structural, which made the
-   old "non-zero means corruption" rule impossible to follow.
-5. Append to `TASK_LOG.md`
-
-Never batch multiple task updates into one write. Each task result gets its own read-write cycle.
+Lint exits 0/3 are accepted (3 is vocabulary drift); 1 is structural corruption, 2 is
+unreadability. Unknown linter exits are blocking. PostToolUse lint is feedback only; the
+transactional command is the authoritative mutation path. Uninstalled legacy projects
+must still lint immediately after each write until their adapters are installed.
 
 ---
 
 ## Failure Handling
+
+A dispatch **exit 31** is an ownership/routing/reconciliation stop: resolve the state or policy; never increment failure_count.
 
 First distinguish **escalation** from a true failure. dispatch.sh **exit 20** (verifier never
 passed) and **exit 30** (backend unavailable) are *not* failures: follow Backend & Tier
@@ -157,7 +147,9 @@ Do not modify any files under `framework/` — it is a read-only subtree.
 
 If invoked mid-project (context was reset, prior session ended):
 
-1. Run the Startup Sequence in `lifecycle.md` — it will place you in the correct state.
-2. Any task that was `in_progress` when context was lost → mark `failed`, `failure_count +1`, log `task_interrupted`. This prevents silent data loss from partial agent runs.
-3. Re-evaluate from current PLAN.md. Do not assume prior agent output is valid unless the output file exists on disk.
-4. If state is unclear, tell the user what you found and ask before acting.
+1. Read the Startup Sequence and shared ORCHESTRATOR.md recovery contract.
+2. Inspect `orchestrator-state.py active`, logs/runs.jsonl, process identities and worktrees.
+3. Preserve live work. Verify completed output against its actual commit and merge gates.
+4. Reconcile dead/ambiguous reservations before retry; do not increment failure_count merely
+   because a session ended. A missing finish record is not proof of failure.
+5. If evidence cannot establish what happened, keep the task blocked pending reconciliation.

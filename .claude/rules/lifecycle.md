@@ -27,7 +27,7 @@ Branch on state:
 | SPEC doesn't exist | Begin SPEC Interview |
 | SPEC `status: draft` | **Gate 1** — present spec for approval |
 | SPEC `status: approved`, PLAN empty | Generate PLAN |
-| PLAN has tasks `in_progress` | Mark them `failed` (`failure_count +1`), log `task_interrupted`, re-evaluate |
+| PLAN has tasks `in_progress` | Reconcile runs, processes and worktrees per ORCHESTRATOR.md; preserve live/completed work, never infer failure from interruption |
 | PLAN has ready tasks, current stage `in_progress` | Resume dispatch loop |
 | Stage done, next stage `pending` (interrupted mid-transition) | Auto-advance: summarize, set next stage `in_progress`, dispatch (Gate 3 no longer waits) |
 
@@ -167,8 +167,7 @@ Only after SPEC `status: approved`.
    `fast` to bias for cost — see Backend & Tier Escalation in `dispatch.md`), then resolve
    `model` (and `fallback_model` — opencode backend only, else empty) from that backend's
    column in `framework/MODELS.md`. The PM re-resolves these on escalation.
-5. Write `PLAN.md` with all tasks at `status: pending`, `failure_count: 0`.
-5. Append `plan_generated` to TASK_LOG.
+5. Use `plan-update.py` to install the candidate PLAN (all tasks pending, failure_count 0) and append the `plan_generated` event in one recoverable transaction.
 6. Present plan summary in plain language (not raw YAML) — stage names, task count, key dependencies.
 7. Begin Stage 1 — Design immediately (no gate): set `stages[1].status: in_progress`, append `stage_transition`, dispatch. Tell the user: *"Plan is ready — starting Stage 1 (Design). Reply if you want to adjust."*
 

@@ -103,7 +103,9 @@ def main():
         print("no transcript directories found", file=sys.stderr)
         return 1
 
-    # Never double-write: skip sessions cost.jsonl already carries.
+    # Never double-write Claude partner sessions already in the shared journal. Provider
+    # and role are part of the identity so a Codex session (or subagent) with the same raw
+    # ID does not suppress a legitimate Claude backfill.
     existing = set()
     if os.path.exists(cost_path):
         for line in open(cost_path, errors="ignore"):
@@ -112,13 +114,13 @@ def main():
             except Exception:
                 continue
             if rec.get("role") == "partner" and rec.get("session_id"):
-                existing.add(rec["session_id"])
+                existing.add((rec.get("backend") or "claude", "partner", rec["session_id"]))
 
     records, state, skipped, empty = [], {}, 0, 0
     for d in dirs:
         for path in sorted(glob.glob(os.path.join(d, "*.jsonl"))):
             sid = os.path.splitext(os.path.basename(path))[0]
-            if sid in existing:
+            if ("claude", "partner", sid) in existing:
                 skipped += 1
                 continue
             totals, model, turns, last_ts = read_session(path)
@@ -145,7 +147,9 @@ def main():
                 "cache_read_tokens": totals["cache_read"],
                 "cache_creation_tokens": totals["cache_creation"],
                 "reasoning_tokens": totals["reasoning"] or None,
+                "quota_proxy_tokens": totals["input"] + totals["output"],
                 "session_id": sid,
+                "session_namespace": "claude:partner:%s" % sid,
                 "turns": turns,
                 "backfilled": True,
                 "log": None,

@@ -51,17 +51,29 @@
 #   1   builder infra/model failure — could not produce a run even via the fallback model
 #   20  verify never passed within max-attempts — code runs but is wrong -> PM escalates tier
 #   21  --read-only violated — the run modified the target tree (changes left for inspection)
+#   31  managed session state/policy blocked — reconcile; never increment failure_count
 #   30  backend unavailable — CLI not installed/authenticated; PM skips to the next backend
 #       in PROJECT.md builder_backends (no failure_count increment)
 #
 # Output capture: every builder's assistant output stays on stdout and is also recorded in the
 # per-run human-readable logfile. Backend diagnostics and verifier output go there too. On any
 # non-zero exit the log tail is echoed to stderr so failures are never silent.
+# Managed PM dispatch policy options are additive; legacy callers remain unchanged.
+DISPATCH_HERE="$(cd "$(dirname "$0")" && pwd)"
+PM_ROLE=""
+PM_AUTHOR_MODEL=""
+PM_SECURITY=false
+PM_EXCEPTIONAL=false
+PM_RESERVED=false
 READ_ONLY=false
 WORKTREE_BRANCH=""
 BACKEND=""
 while true; do
   case "$1" in
+    --role) PM_ROLE="$2"; shift 2 ;;
+    --author-model) PM_AUTHOR_MODEL="$2"; shift 2 ;;
+    --security) PM_SECURITY=true; shift ;;
+    --exceptional-adjudication) PM_EXCEPTIONAL=true; shift ;;
     --read-only) READ_ONLY=true; shift ;;
     --worktree)  WORKTREE_BRANCH="$2"; shift 2 ;;
     --backend)   BACKEND="$2"; shift 2 ;;
@@ -117,6 +129,32 @@ else
   fi
   LOG_DIR="$(dirname "$RUN_PROMPT_DIR")/logs"
 fi
+# Resolve explicit PM context first; installed projects require a current lease even
+# when hooks are disabled. Legacy projects keep the old dispatch contract.
+DISPATCH_PM_DIR="${PM_DIR:-$(dirname "$LOG_DIR")}"
+if [ -f "$DISPATCH_PM_DIR/.orchestrator/config.json" ]; then
+  LOG_DIR="$DISPATCH_PM_DIR/logs"
+  PM_LEASE="$(python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" check --token "${PM_ORCHESTRATOR_TOKEN:-}")" || exit 31
+  PM_PROFILE="$(printf '%s' "$PM_LEASE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])')" || exit 31
+  PM_ROLE="${PM_ROLE:-$RUN_ROLE}"
+  [ "$PM_ROLE" != read-only ] || PM_ROLE=investigator
+  PM_POLICY_ARGS=()
+  $PM_SECURITY && PM_POLICY_ARGS+=(--security)
+  $PM_EXCEPTIONAL && PM_POLICY_ARGS+=(--exceptional-adjudication)
+  python3 "$DISPATCH_HERE/scripts/orchestrator-routing.py" check --profile "$PM_PROFILE" \
+    --role "$PM_ROLE" --backend "$RUN_BACKEND" --model "$MODEL" --fallback-model "$FALLBACK_MODEL" \
+    --author-model "$PM_AUTHOR_MODEL" --tier "$TIER" "${PM_POLICY_ARGS[@]}" >/dev/null || exit 31
+  if ! $READ_ONLY && [ -z "$WORKTREE_BRANCH" ]; then
+    echo "[dispatch] managed builders require --worktree" >&2; exit 31
+  fi
+  if [ "$PM_ROLE" != build ] && ! $READ_ONLY; then
+    echo "[dispatch] planning/review roles require --read-only" >&2; exit 31
+  fi
+  python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" reserve \
+    --token "${PM_ORCHESTRATOR_TOKEN:-}" --run-id "$RUN_ID" \
+    --task-id "${RUN_TASK_ID:-$RUN_PROMPT}" --pid "$$" --worktree "$RUN_WORKTREE" --branch "$RUN_BRANCH" >/dev/null || exit 31
+  PM_RESERVED=true
+fi
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="${LOG_DIR}/$(basename "${PROMPT_FILE%.md}")-${RUN_ID}.log"
 RUNS_FILE="${LOG_DIR}/runs.jsonl"
@@ -132,7 +170,7 @@ for k,v in zip(keys,sys.argv[2:]):
  o[k]=None if v=="__NULL__" else (int(v) if k in ("pid","duration_s","exit","commits") else (None if v=="null" else v=="true") if k=="verify_passed" else v)
 print(json.dumps(o,separators=(",",":")))' "$@"
 }
-RUN_START_ROW="$(run_json 'event,run_id,ts_start,pid,role,prompt,task_id,model,backend,tier,dir,branch,worktree,base_sha,log' run_start "$RUN_ID" "$RUN_TS_START" "$$" "$RUN_ROLE" "$RUN_PROMPT" "${RUN_TASK_ID:-__NULL__}" "${MODEL:-__NULL__}" "${RUN_BACKEND:-__NULL__}" "${TIER:-__NULL__}" "${RUN_DIR:-__NULL__}" "${RUN_BRANCH:-__NULL__}" "${RUN_WORKTREE:-__NULL__}" "${RUN_BASE_SHA:-__NULL__}" "$(basename "$LOG_FILE")")"
+RUN_START_ROW="$(run_json 'event,run_id,ts_start,pid,role,prompt,task_id,model,backend,tier,dir,branch,worktree,base_sha,log,orchestrator_provider,orchestrator_session,routing_profile' run_start "$RUN_ID" "$RUN_TS_START" "$$" "$RUN_ROLE" "$RUN_PROMPT" "${RUN_TASK_ID:-__NULL__}" "${MODEL:-__NULL__}" "${RUN_BACKEND:-__NULL__}" "${TIER:-__NULL__}" "${RUN_DIR:-__NULL__}" "${RUN_BRANCH:-__NULL__}" "${RUN_WORKTREE:-__NULL__}" "${RUN_BASE_SHA:-__NULL__}" "$(basename "$LOG_FILE")" "${PM_ORCHESTRATOR_PROVIDER:-__NULL__}" "${PM_ORCHESTRATOR_SESSION:-__NULL__}" "${PM_PROFILE:-__NULL__}")"
 [ -n "$RUN_START_ROW" ] && printf '%s\n' "$RUN_START_ROW" >> "$RUNS_FILE" 2>/dev/null || true
 
 emit_run_finish() {
@@ -145,6 +183,10 @@ emit_run_finish() {
   if [ -n "$RUN_BASE_SHA" ] && [ -n "$head_sha" ]; then commits="$(git -C "$RUN_REPO_PATH" rev-list --count "${RUN_BASE_SHA}..${head_sha}" 2>/dev/null || true)"; fi
   row="$(run_json 'event,run_id,ts_end,duration_s,exit,verify_passed,head_sha,commits' run_finish "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((end_epoch - RUN_START_EPOCH))" "$code" "$RUN_VERIFY_PASSED" "${head_sha:-__NULL__}" "${commits:-__NULL__}")"
   [ -n "$row" ] && printf '%s\n' "$row" >> "$RUNS_FILE" 2>/dev/null || true
+  if $PM_RESERVED; then
+    python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" finish \
+      --run-id "$RUN_ID" --pid "$$" >/dev/null || echo "[dispatch] reservation needs reconciliation: $RUN_ID" >&2
+  fi
 }
 trap 'code=$?; emit_run_finish "$code"' EXIT
 trap 'exit 130' INT
@@ -409,6 +451,9 @@ for l in f:
     try: d=datetime.datetime.strptime(ts,'%Y-%m-%dT%H:%M:%SZ')
     except Exception: continue
     if d.isocalendar()[:2]!=wk: continue
+    proxy=r.get('quota_proxy_tokens')
+    if isinstance(proxy,(int,float)):
+        t+=int(proxy); continue
     for k in ('input_tokens','output_tokens','reasoning_tokens'):
         v=r.get(k)
         if isinstance(v,(int,float)): t+=int(v)
@@ -518,7 +563,7 @@ OPENCODE_DB="${OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
 DIR_ABS="$(cd "$DIR" 2>/dev/null && pwd || echo "$DIR")"
 
 # --- Worktree isolation: builders never touch the live checkout ---
-BUILDER_ENV=()
+BUILDER_ENV=(env -u PM_ORCHESTRATOR_TOKEN -u PM_ORCHESTRATOR_SESSION -u PM_ORCHESTRATOR_PROVIDER -u PM_DIR)
 if [ -n "$WORKTREE_BRANCH" ]; then
   WT_ROOT="$(dirname "$DIR_ABS")/$(basename "$DIR_ABS")-worktrees"
   WT_PATH="${WT_ROOT}/$(basename "${PROMPT_FILE%.md}")"
@@ -551,7 +596,7 @@ if [ -n "$WORKTREE_BRANCH" ]; then
   # are unaffected; the PM pushes from the live checkout (`git -C <project-dir> push origin
   # <branch>`) or unsets it first (`git -C <wt> config --worktree --unset remote.origin.pushurl`).
   BUILDER_GH_DIR="$(mktemp -d)"
-  BUILDER_ENV=(env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$BUILDER_GH_DIR")
+  BUILDER_ENV+=( -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$BUILDER_GH_DIR")
   git -C "$WT_PATH" config extensions.worktreeConfig true 2>/dev/null || true
   git -C "$WT_PATH" config --worktree remote.origin.pushurl \
     "https://invalid.invalid/push-disabled-by-dispatch" 2>/dev/null \
@@ -563,7 +608,7 @@ fi
 HEAD_BEFORE="$(git -C "$DIR_ABS" rev-parse HEAD 2>/dev/null || true)"
 
 emit_cost() {
-  local code="$1" end_epoch dur verify_passed row cost_usd in_tok out_tok cache_tok reason_tok
+  local code="$1" end_epoch dur verify_passed row cost_usd in_tok out_tok cache_tok reason_tok quota_tok
   end_epoch="$(date +%s)"
   dur=$(( end_epoch - START_EPOCH ))
   if [ -z "$VERIFY_CMD" ]; then
@@ -596,7 +641,7 @@ for l in open(sys.argv[1]):
     except Exception: continue
     if e.get('type')=='turn.completed':
         u=e.get('usage',{})
-        i+=u.get('input_tokens',0); o+=u.get('output_tokens',0)
+        i+=max(u.get('input_tokens',0)-u.get('cached_input_tokens',0),0); o+=u.get('output_tokens',0)
         c+=u.get('cached_input_tokens',0); r+=u.get('reasoning_output_tokens',0)
 print(f'{i}|{o}|{c}|{r}')" "$CODEX_EVENTS" 2>/dev/null)"
         [ -n "$row" ] && IFS='|' read -r in_tok out_tok cache_tok reason_tok <<< "$row"
@@ -621,14 +666,18 @@ print(f'{i}|{o}|{c}')" "$CLAUDE_RESULTS" 2>/dev/null)"
         [ -n "$row" ] && IFS='|' read -r in_tok out_tok cache_tok <<< "$row"
       fi ;;
   esac
-  printf '{"ts":"%s","role":"opencode","backend":"%s","prompt":"%s","model":"%s","primary_model":"%s","fallback_used":%s,"stall_retries":%s,"tier":%s,"attempts":%s,"verify_passed":%s,"exit":%s,"duration_s":%s,"cost_usd":%s,"input_tokens":%s,"output_tokens":%s,"cache_read_tokens":%s,"reasoning_tokens":%s,"burn_proxy":%s,"log":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BACKEND" "$(basename "$PROMPT_FILE")" "$ACTIVE_MODEL" \
+  quota_tok=null
+  if [[ "$in_tok" =~ ^[0-9]+$ ]] && [[ "$out_tok" =~ ^[0-9]+$ ]]; then
+    quota_tok=$((in_tok + out_tok))
+  fi
+  printf '{"ts":"%s","role":"%s","backend":"%s","prompt":"%s","model":"%s","primary_model":"%s","fallback_used":%s,"stall_retries":%s,"tier":%s,"attempts":%s,"verify_passed":%s,"exit":%s,"duration_s":%s,"cost_usd":%s,"input_tokens":%s,"output_tokens":%s,"cache_read_tokens":%s,"reasoning_tokens":%s,"burn_proxy":%s,"quota_proxy_tokens":%s,"log":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PM_ROLE:-opencode}" "$BACKEND" "$(basename "$PROMPT_FILE")" "$ACTIVE_MODEL" \
     "$MODEL" "$FALLBACK_USED" "${STALL_RETRIES_USED:-0}" \
     "$([ -n "$TIER" ] && printf '"%s"' "$TIER" || echo null)" \
     "${ATTEMPTS_USED:-1}" "$verify_passed" "$code" "$dur" \
     "${cost_usd:-null}" "${in_tok:-null}" "${out_tok:-null}" "${cache_tok:-null}" "${reason_tok:-null}" \
-    "${BURN_PROXY:-null}" \
-    "$(basename "$LOG_FILE")" >> "${LOG_DIR}/cost.jsonl" 2>/dev/null || true
+    "${BURN_PROXY:-null}" "$quota_tok" \
+    "$(basename "$LOG_FILE")" | python3 "$DISPATCH_HERE/scripts/append-cost.py" "$LOG_DIR" || echo "[dispatch] cost telemetry append failed" >&2
 }
 
 run_opencode_fresh() {
