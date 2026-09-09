@@ -4,9 +4,9 @@ version: "1.0"
 
 # Model Inventory
 
-Curated model slugs for each PM framework role. All models are referenced via OpenRouter.
-Update this file to change which models the framework uses. Mark `confirmed` only after
-testing the model end-to-end in a real session.
+Curated model and tier assignments for each framework role. OpenCode models use
+OpenRouter slugs; provider-native Claude and Codex sessions use their own model selectors.
+Mark `confirmed` only after testing a model end-to-end in a real session.
 
 **This is the single source of truth for model selection. Do not hardcode model slugs
 anywhere else in the framework.**
@@ -16,14 +16,15 @@ anywhere else in the framework.**
 ## Orchestrator (the partner session — A1 model)
 
 There is no standalone PM session (retired 2026-06-29). The orchestrator is the partner
-session running in the project's `<project>-pm/` directory, typically on **Opus** because it
-also serves as the human's thinking partner. That is only affordable because the orchestrator
+session running in the project's `<project>-pm/` directory. The normal Claude profile typically
+uses **Opus**; issue #33 also supports a Codex partner, with the chosen provider recorded in a
+single-writer lease. That is affordable because the orchestrator
 **delegates**: spec-writing to the Tech Lead tier, first-pass diff review to the Reviewer
 (cheap, read-only), open-ended diagnosis to read-only `standard`/`heavy` dispatches. The
 measured failure mode is the partner absorbing those roles itself at Opus rates —
 RULES.md operating lessons 2–3 exist because that burned a session budget in one day.
 
-**The standing orchestrator model is Opus (2026-07-17).** Fable is **not** an orchestrator:
+**For Claude partner sessions, the standing model is Opus (2026-07-17).** Fable is **not** an orchestrator:
 it drains the Claude subscription window ~2× faster than Opus for no orchestration gain
 (orchestration is coordination and judgment, not raw reasoning depth — the place Fable's
 extra cost would buy something), and its security restriction disqualifies it from security
@@ -38,9 +39,10 @@ a standing role, never the orchestrator, and never touches `security: true` work
 
 ## Agent Roles
 
-These agents are spawned via Claude Code's `Agent` tool, which accepts shorthand aliases
-only (`opus`, `sonnet`, `haiku`, `fable`) — not pinned version slugs. `opus` resolves dynamically
-to Anthropic's current Opus release (Opus 4.8 as of 2026-06).
+In a Claude session these roles may use Claude Code's native agent tool with shorthand
+aliases (`opus`, `sonnet`, `haiku`, `fable`). In the Codex fallback profile,
+`dispatch-role.py` stages the same role contracts through OpenCode; native Codex subagents
+are outside the pilot. The effective route comes from `orchestrator-routing.py`.
 
 Balanced cost bias (2026-06-29): the reasoning roles default to **Sonnet** and only the
 Architect holds **Opus**, where peak reasoning earns its cost. Tier escalation (and re-speccing
@@ -52,7 +54,7 @@ a heavy-tier task that still fails Gate 2 on Opus) is the safety net. Telemetry
 | Designer | `sonnet` | `opus` | UI/structural reasoning; Sonnet handles most. (In Hometastic, design is frozen — Designer should not run at all.) |
 | Architect | `opus` | — | Stage-2 subsystem design needs peak reasoning; invoked rarely, so low frequency = low cost |
 | Tech Lead | `sonnet` | `opus` | Most frequently spawned reasoning role; a spec is cheap to redo, so default cheap. Escalate to Opus only for architecturally heavy work |
-| Reviewer | opencode `standard` tier (or `sonnet` subagent) | orchestrator adjudicates | First-pass diff review runs cheap and read-only (`dispatch.sh --read-only` + `prompts/reviewer.md`); Opus reads only the verdict. **Family-diversity rule applies** (below). See VERIFY.md |
+| Reviewer | opencode `standard` tier (or `sonnet` subagent) | orchestrator adjudicates | First-pass diff review runs cheap and read-only (`dispatch.sh --read-only` + `prompts/reviewer.md`); the partner reads only the verdict. **Family-diversity rule applies** (below). See VERIFY.md |
 | Critic (pre-build) | codex `standard` (gpt-5.6-terra) or opencode `standard`, read-only | opencode `heavy` (glm-5.2) for `security: true` | Shift-left plan critique **before** dispatch on R1+/security tasks (`dispatch.sh --read-only` + `prompts/critic.md`); Partner adjudicates the verdict. **Family-diverse from the plan's author** (Tech Lead Sonnet / Partner Opus) — never an Anthropic critic of an Anthropic-authored plan. See VERIFY.md § Pre-build critique |
 
 ### Reviewer family diversity (2026-07-17)
@@ -175,10 +177,10 @@ one project by editing this file is a rules violation (see § Project configurat
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `codex_weekly_burn_threshold` | `4000000` tokens (ISO-week, all codex runs incl. `reasoning_tokens`) | Above this current-week burn proxy in `logs/cost.jsonl`, the `sol@high` attempt is skipped and control falls through to the claude backend. Conservative starting value pending telemetry — raise it once `cost-report.sh` shows the real weekly ceiling. |
+| `codex_weekly_burn_threshold` | `4000000` quota-proxy tokens (ISO-week, partner + child Codex records) | Above this current-week proxy in `logs/cost.jsonl`, the `sol@high` attempt is skipped and control falls through to the claude backend. Fresh input plus output is counted; reasoning is already a subset of output and is not added again. |
 
-The proxy is the same per-run token sum `cost-report.sh` already rolls up per ISO-week (see
-Weekly-quota burn proxy below); the orchestrator reads the current week's total before
+The proxy is the normalized `quota_proxy_tokens` sum that `cost-report.sh` rolls up per
+ISO-week (see Weekly-quota burn proxy below); the orchestrator reads the current week's total before
 deciding the @high bump.
 
 **Self-evidencing audit:** every `sol@high` dispatch must log the burn-proxy reading it
@@ -196,8 +198,9 @@ from the claude backend's environment so this lane can never silently bill per-t
 ### Weekly-quota burn proxy (codex)
 
 Codex exposes **no in-band weekly-quota figure** (probed v0.144.4). dispatch.sh records
-per-run tokens — including `reasoning_tokens`, the fastest quota-eater — into
-`logs/cost.jsonl`; `cost-report.sh` rolls them up per ISO-week as a **burn proxy**.
+normalized partner and child usage into `logs/cost.jsonl`; `cost-report.sh` rolls
+`quota_proxy_tokens` up per ISO-week as a **burn proxy**. For Codex this is fresh input plus
+output; cached input is separate, and reasoning is a subset of output.
 The proxy paces; the ChatGPT usage UI is the authority — reconcile periodically.
 
 ---

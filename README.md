@@ -42,10 +42,12 @@ transitions, tier escalation, backend fallback - proceeds without asking.
 From a new `<project>-pm/` directory, with this repo checked out as `framework/`:
 
 ```
-bash framework/setup.sh <project-name> <path-to-code-dir> <org/repo> [verify-cmd]
+bash framework/setup.sh <project-name> <path-to-code-dir> <org/repo> [verify-cmd] [test-cmd]
 ```
 
-This writes PROJECT.md plus additive Claude/Codex adapters. Review the project hooks in
+The verify command compiles the project and test target without a device; the test command
+runs the suite on the real target selected by the project. This writes PROJECT.md plus
+additive Claude/Codex adapters. Review the project hooks in
 Codex with `/hooks`, then launch either provider from that PM directory:
 
 ```sh

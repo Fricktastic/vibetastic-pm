@@ -1,26 +1,26 @@
 #!/bin/bash
 # vibetastic-pm project setup — run once when standing up a <project>-pm/ directory.
-# Usage: bash framework/setup.sh <project-name> <absolute-path-to-code-dir> <org/repo>
+# Usage: bash framework/setup.sh <project-name> <absolute-code-dir> <org/repo> [verify-cmd] [test-cmd]
 #
-# Writes:
-#   .claude/settings.json   — allowlist for cross-directory operations
-#   PROJECT.md              — project paths for the partner-orchestrator
+# Writes PROJECT.md, then installs additive Claude and Codex adapters, provider entry
+# documents, hooks, and lease state through install-orchestrators.py.
 
 set -e
 
-if [ $# -lt 3 ] || [ $# -gt 4 ]; then
-  echo "Usage: bash framework/setup.sh <project-name> <absolute-path-to-code-dir> <org/repo> [verify-cmd]"
-  echo "Example: bash framework/setup.sh myapp \"\$HOME/Developer/myapp-code\" myorg/myapp-code 'swift build'"
+if [ $# -lt 3 ] || [ $# -gt 5 ]; then
+  echo "Usage: bash framework/setup.sh <project-name> <absolute-path-to-code-dir> <org/repo> [verify-cmd] [test-cmd]"
+  echo "Example: bash framework/setup.sh myapp \"\$HOME/Developer/myapp-code\" myorg/myapp-code 'swift build' 'swift test'"
   echo "verify-cmd: single-line command, run in the code dir, exit 0 = change didn't break the project."
   echo "            Powers dispatch.sh's self-correction loop. Omit to disable (loop degrades to single run)."
+  echo "test-cmd: single-line command run by the orchestrator on a real test target/device."
   exit 1
 fi
 
 PROJECT_NAME="$1"
 CODE_DIR="$2"
 ISSUE_REPO="$3"
-TEST_CMD="${TEST_CMD:-}"
 VERIFY_CMD="${4:-}"
+TEST_CMD="${5:-${TEST_CMD:-}}"
 PM_DIR="$(pwd)"
 FRAMEWORK_DIR="$(cd "$(dirname "$0")" && pwd)"
 

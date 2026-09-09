@@ -35,7 +35,9 @@ Branch on state:
 
 ## Onboarding
 
-Run only when `PROJECT.md` does not exist. Note: `framework/setup.sh` does this automatically if run before the first session — check before asking.
+Run only when `PROJECT.md` does not exist. Prefer the one-time setup command before the first
+provider session; it creates `PROJECT.md` and installs both provider adapters. If setup has
+already run, skip this section.
 
 Ask the user (one message):
 - What is the project name?
@@ -53,81 +55,27 @@ Ask the user (one message):
   destination explicitly. It goes in `PROJECT.md § Test command` so no future session has to
   re-derive it.
 
-Then detect installed builder CLIs (`command -v codex claude opencode`) and propose the
-backend order — default `codex, claude, opencode`, filtered to what's installed. The user
-can reorder or drop backends.
+Run setup with the answers rather than writing `PROJECT.md` by hand. Setup detects installed
+builder CLIs in `codex, claude, opencode` order and writes the project routing defaults from
+`MODELS.md`. The optional verify and test commands correspond to the two questions above:
 
-Write `PROJECT.md`:
-
-```markdown
----
-project: <project-name>
-setup_at: <ISO8601>
-builder_backends: [<detected order, e.g. codex, claude, opencode>]
-reviewer_backends: [opencode]
-critic_backends: [codex, opencode]
-codex_weekly_burn_threshold: 4000000
-claude_window_burn_threshold: null
-max_concurrent: {codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}
-max_concurrent_total: 6
----
-
-## Project Paths
-
-| Key | Path |
-|-----|------|
-| PM directory | `<absolute-path-to-this-pm-dir>` |
-| Code directory | `<absolute-path-to-code-dir>` |
-| Issue repo | `<org/repo>` |
-
-## Verify command
-
-<!-- Single-line command run in the code directory after each OpenCode task. Exit 0 = the
-     task didn't break the project. Passed to dispatch.sh as the verifier; on failure the loop
-     feeds its output back to the model and retries. Leave the code block empty to disable.
-
-     It must COMPILE THE TEST TARGET, not just the app — on iOS use
-     `xcodebuild build-for-testing`, never a bare `build` (issue #36).
-
-     THIS IS NOT A TEST RUN. Builders cannot execute simulator-dependent tests
-     (CoreSimulatorService is a Mach service no sandbox grant provides). Running the suite is
-     the orchestrator's job, on a real simulator/device — framework/VERIFY.md § Who runs what. -->
-
-```
-<verify-command-or-empty>
+```sh
+bash framework/setup.sh <project-name> <absolute-code-dir> <org/repo> ['verify-cmd'] ['test-cmd']
+python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework
 ```
 
-## Test command
+Setup writes `PROJECT.md`, merges the managed harness into `CLAUDE.md` and `AGENTS.md`,
+installs `.claude/settings.json` and `.codex/hooks.json`, and ignores `.orchestrator/` lease
+state. Review Codex project hooks with `/hooks`. Start the chosen provider through the lease
+wrapper from the PM directory:
 
-<!-- Single-line command that RUNS the suite on a real simulator/device, from the code
-     directory. The orchestrator's command — dispatch.sh never runs it and builders cannot.
-     Pin the destination explicitly. Empty if the project has no runnable suite. -->
-
-```
-<test-command-or-empty>
-```
-
-## Notes
-
-<!-- Add any project-specific notes here for future PM sessions. -->
+```sh
+python3 framework/orchestrate.py claude
+python3 framework/orchestrate.py codex
 ```
 
-**Tunable frontmatter keys.** Beyond `builder_backends`, the frontmatter carries the
-per-project routing/threshold knobs. `framework/` is a read-only subtree, so these live here
-— never edit the framework defaults to tune one project. Defaults match framework behavior;
-omitting a key uses the default. Authority for each: `framework/MODELS.md` § Project
-configuration keys.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `reviewer_backends` | `[opencode]` | Ordered preference for the first-pass Reviewer lane. Still subject to the family-diversity hard rule (`VERIFY.md`) — config narrows the choice, it never overrides diversity. |
-| `critic_backends` | `[codex, opencode]` | Ordered preference for the pre-build Critic lane. Same diversity constraint, measured against the plan's author. |
-| `codex_weekly_burn_threshold` | `4000000` | ISO-week codex burn proxy above which the `sol@high` rung is skipped (see `dispatch.md` § Backend & Tier Escalation). |
-| `claude_window_burn_threshold` | `null` (ungated) | 5-hour-window claude burn proxy, symmetric to the codex gate. Ungated until the 2026-08-17 telemetry review (issue #14). |
-| `max_concurrent` | `{codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}` | Per-lane concurrent-dispatch cap for parallel fan-out. `claude_review` is unused while `reviewer_backends` is `[opencode]`. |
-| `max_concurrent_total` | `6` | Global concurrent-dispatch cap per project. |
-
-Check whether `.claude/settings.json` exists. If not, tell the user to run `bash framework/setup.sh <project-name> <code-dir>` from the PM directory and restart.
+For an existing PM directory, do not rerun setup. Use the idempotent
+`install-orchestrators.py` command documented in `README.md`, then run the doctor.
 
 Append `onboarding_complete` to TASK_LOG. Then proceed to SPEC Interview.
 

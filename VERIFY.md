@@ -1,6 +1,6 @@
 ---
-framework: claude-pm
-version: "1.0"
+framework: vibetastic-pm
+version: "2.0"
 ---
 
 # VERIFY — the risk-tiered merge gate
@@ -70,7 +70,7 @@ would earn a lane. Simply running the suite never will.
 
 ---
 
-## Diff review — cheap-first, Opus adjudicates (all tiers)
+## Diff review — cheap-first, partner adjudicates (all tiers)
 
 Every builder diff gets read for **intent and integration traps** — "does it do the thing,
 match the spec, mock the right layer, stay in scope" — before merge. Compilation and tests
@@ -81,10 +81,10 @@ Cost structure (this is deliberate — see RULES.md operating lesson 3):
 1. **First pass runs on a cheap tier.** Dispatch a **read-only** review (`dispatch.sh
    --read-only` with `prompts/reviewer.md` rendered for the task) on the `standard` tier,
    or spawn a Sonnet subagent. The reviewer returns a verdict + findings, changes nothing.
-2. **Opus adjudicates only.** The orchestrator (already Opus in the partner model) reads
-   the reviewer's findings against the spec and decides merge / reject / re-dispatch. It
-   does not perform the line-by-line first pass itself — that is Tech-Lead-tier work and
-   burning Opus on it was the single biggest measured cost sink.
+2. **The lease-owning partner adjudicates only.** It reads the reviewer's findings against
+   the spec and decides merge / reject / re-dispatch. It does not perform the line-by-line
+   first pass itself. A `security: true` diff remains the explicit exception: its final
+   adjudication must be performed by Opus as described below.
 
 A diff merged without this rung is a gate violation regardless of tier.
 
@@ -193,17 +193,15 @@ Effect — the review rung is forced up, in two places:
 1. **First-pass review runs on Sonnet minimum.** The cheap opencode tier is not an
    acceptable first pass for a security diff. Use a Sonnet subagent (or higher), or an
    opencode reviewer only *in addition to*, never *instead of*, the Sonnet rung.
-2. **Adjudication is mandatory Opus, and is never delegated.** The orchestrator reads the
-   security diff itself. This is an explicit, deliberate exception to RULES.md operating
-   lesson 3 and to the pm-scope delegation defaults. **Fable must never be used** for
-   security adjudication or security review — it is policy-restricted from security work
-   (MODELS.md § Orchestrator).
+2. **Adjudication is mandatory Opus.** A Claude partner on Opus performs it directly. A
+   Codex partner requests the exceptional Claude adjudication defined in `ORCHESTRATOR.md`
+   and records its result; if Opus is unavailable, the task remains blocked. **Fable must
+   never be used** for security adjudication or security review.
 
 Where this collides with the family-diversity rule above (a claude-built security diff),
-the **security floor wins**: satisfy diversity by picking a non-Anthropic reviewer at or
-above the Sonnet capability rung (opencode `heavy`, glm-5.2) *in addition to* the Sonnet
-pass, or record in the TASK_LOG verdict that diversity was consciously traded for the
-security floor. Never resolve the collision by dropping to the cheap tier.
+both gates apply: use a non-Anthropic reviewer at or above the Sonnet capability rung in
+addition to the Sonnet pass. If no legal diverse reviewer is available, the task remains
+blocked. Never waive diversity or resolve the collision by dropping to the cheap tier.
 
 **Rationale:** a missed security bug does not fail a verify loop — it ships, silently, and
 the cost lands later and outside the project. Every other rung in this file assumes a

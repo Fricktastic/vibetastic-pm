@@ -1,6 +1,6 @@
 ---
-framework: claude-pm
-version: "1.0"
+framework: vibetastic-pm
+version: "2.0"
 ---
 
 ## Directory Convention
@@ -11,7 +11,8 @@ Each project gets a sibling PM directory named `<project-name>-pm/`:
 Developer/
 ├── my-app/          ← target project (any stack)
 └── my-app-pm/       ← PM framework instance (this structure)
-    ├── CLAUDE.md    ← symlink → framework/CLAUDE.md
+    ├── CLAUDE.md    ← managed Claude entry block (existing content preserved)
+    ├── AGENTS.md    ← managed Codex entry block (existing content preserved)
     ├── SPEC.md
     ├── PLAN.md
     ├── TASK_LOG.md
@@ -30,7 +31,9 @@ The `-pm/` directory is the sole source of truth for project state. The target p
 
 ## File Ownership
 
-The PM orchestrator is the **sole writer** to all state files. Subagents receive context slices as input and return structured results. The PM applies those results to state files — subagents never write directly.
+The lease-owning orchestrator is the **sole writer** to durable state files. Role workers
+receive context slices and return structured results. A worker may write only to its isolated
+staging path; the lease owner validates and promotes that output through the state commands.
 
 | File | Writer | Readers |
 |---|---|---|
@@ -92,9 +95,14 @@ Flow:
 
 All model assignments are defined in `framework/MODELS.md`. That file is the single source of truth — do not hardcode model slugs in prompts or instructions.
 
-**For agent roles** (Designer, Architect, Tech Lead): use the model in the Agent Roles table.
+**For agent roles** (Designer, Architect, Tech Lead): resolve the effective backend through
+`orchestrator-routing.py`. Claude sessions may use native role agents; the Codex fallback
+profile dispatches roles through OpenCode with `dispatch-role.py`.
 
-**For OpenCode tasks**: the Tech Lead recommends a tier (`fast` / `standard` / `heavy`) in its output metadata. The PM reads `framework/MODELS.md` and writes the corresponding model slug to `tasks[n].model` in PLAN.md before dispatching. For Stage 2 Architect-selected tasks, the Architect classifies the task complexity and picks a tier directly.
+**For build tasks**: the Tech Lead recommends a tier (`fast` / `standard` / `heavy`) in its
+output metadata. The orchestrator resolves the backend/profile and writes the corresponding
+model slug to `tasks[n].model` before dispatch. For Stage 2 Architect-selected tasks, the
+Architect classifies the task complexity and picks a tier directly.
 
 **Fallback**: each tier's fallback model is the `Fallback` column of the OpenCode Tiers
 table in `framework/MODELS.md` — dispatch.sh retries with it automatically on an infra

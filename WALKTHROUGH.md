@@ -1,35 +1,28 @@
 # Walkthrough — Instantiating vibetastic-pm for a New Project
 
-> **⚠️ Partially historical (2026-06-29 — A1 model).** This walkthrough describes the
-> original **standalone PM session** launched inside `<project>-pm/`. That session model is
-> **retired**: the standalone PM role is gone — orchestration is the partner session that
-> drives `framework/dispatch.sh` directly and enforces `framework/VERIFY.md` as the merge
-> gate — see `CLAUDE.md` (v2). A brief intermediate design (2026-06-29) ran the partner from
-> a separate `<project>-run` workspace; that split was **retired 2026-08-17** and the partner
-> session now runs in the `<project>-pm/` directory (where it launches with `claude`). The
-> mechanics below (setup.sh, subtree layout, SPEC/PLAN/TASK_LOG flow, Gate 1/Gate 2,
-> dispatch/verify loop, tier escalation) are still accurate; read "the PM" as "the
-> partner-orchestrator". **Also historical: Gate 3.** Stage transitions no longer
-> wait for "proceed" — they auto-advance with a posted summary (RULES.md Gate 3). Every
-> "type proceed" below is the old behavior. Model names in examples (Gemini Flash, Opus
-> Designer) are historical too — `framework/MODELS.md` is the source of truth. **Newer
-> mechanics** (reviewer family diversity, `security` flag, codex burn-gated `sol@high`,
-> Opus/Fable orchestrator guidance, write-through state + `HANDOFF.md`/`checkpoint`,
-> framework-defect issues) are collected in **§14** and are not reflected in the older sections.
+> Sections 4–12 retain an annotated historical example of the original staged workflow.
+> Current bootstrap, provider launch, ownership, recovery, routing, and gate rules are stated
+> explicitly in sections 1–3, 13–14 and in `ORCHESTRATOR.md`. Where an old transcript says
+> `proceed` or names a particular model, follow `RULES.md` and `MODELS.md`: stage transitions
+> auto-advance and the effective provider profile selects the backend.
 
 ## TL;DR
 
-vibetastic-pm is a Claude Code PM orchestrator. You describe your project; it drives four agents — Designer → Architect → Tech Lead (on demand) → OpenCode — from spec through working code. Your only required inputs are:
+vibetastic-pm lets either a Claude or Codex partner orchestrate work from a project PM
+directory. The lease-owning partner drives Designer → Architect → Tech Lead → builder work,
+then enforces the risk-tiered merge gate. Your required inputs are:
 
 - Answer 6 questions at the start (SPEC interview)
 - Type `approved` once (SPEC approval)
-- Type `proceed` three times (once per stage)
+- Decide retry / skip / abort only if a task fails twice
 
-Everything else — subagent dispatch, model selection, retries, state management, PR opening — runs autonomously. If your session crashes, restart `claude` from the `-pm/` directory and it resumes from where it left off.
+Everything else — role dispatch, model selection, first retry, state management, and stage
+transitions — runs autonomously. After an interruption, restart the chosen provider through
+`orchestrate.py`; reconciliation checks recorded runs and worktrees before changing task state.
 
-**One-time setup** (run before first `claude` invocation):
+**One-time setup** (run before the first provider session):
 ```bash
-bash framework/setup.sh <project-name> /absolute/path/to/code-dir <org/repo> ['verify-cmd']
+bash framework/setup.sh <project-name> /absolute/path/to/code-dir <org/repo> ['verify-cmd'] ['test-cmd']
 ```
 
 **Framework updates** (without touching project files):
@@ -64,13 +57,11 @@ git remote add framework https://github.com/Fricktastic/vibetastic-pm.git
 # Pull vibetastic-pm framework files into a framework/ subdirectory
 git subtree add --prefix framework framework main --squash
 
-# Symlink CLAUDE.md to the root so Claude Code auto-loads it
-ln -s framework/CLAUDE.md CLAUDE.md
-
-# Run one-time project setup (writes .claude/settings.json and PROJECT.md).
+# Run one-time project setup. It writes PROJECT.md and installs additive
+# CLAUDE.md/AGENTS.md entry blocks plus Claude/Codex hooks.
 # 4th arg (optional): the single-line verify command powering dispatch.sh's
 # self-correction loop.
-bash framework/setup.sh my-app /absolute/path/to/my-app my-org/my-app 'npm test'
+bash framework/setup.sh my-app /absolute/path/to/my-app my-org/my-app 'npm run build' 'npm test'
 ```
 
 To pull framework updates later (project files are never touched):
@@ -95,7 +86,7 @@ This works but framework improvements must be applied manually to each project i
 
 ## 2. Prerequisites
 
-**OpenRouter API key** — the Architect agent queries OpenRouter for model selection. Set it in your shell environment before starting:
+**OpenRouter API key** — the OpenCode lanes use OpenRouter. Set it in your shell environment before starting:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-your-key-here
@@ -107,19 +98,32 @@ To persist it across sessions, add that line to your shell profile (`~/.zshrc`, 
 source ~/.zshrc
 ```
 
-Claude Code inherits your shell environment at launch, so the Architect will see `$OPENROUTER_API_KEY` automatically when it runs.
+The provider wrapper and dispatched OpenCode processes inherit this environment.
 
-**OpenCode** — must be installed and on your `$PATH`. The PM shells out to it directly for Stage 3 implementation tasks.
+**OpenCode** — must be installed and on your `$PATH` for OpenCode-backed roles and builds.
+
+Validate the installation before the first session:
+
+```bash
+python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework
+```
 
 ---
 
 ## 3. Start the PM
 
+Review Codex project hooks with `/hooks`, then launch exactly one lease owner:
+
 ```bash
-claude
+python3 framework/orchestrate.py claude
+# or
+python3 framework/orchestrate.py codex
 ```
 
-Claude Code reads `CLAUDE.md` automatically. The PM runs its Startup Sequence — reads `SPEC.md` (status: `draft`, body empty) and begins the SPEC interview.
+Claude reads the managed `CLAUDE.md` entry and Codex reads `AGENTS.md`; both point to the
+same `ORCHESTRATOR.md` contract. The wrapper records provider, PID, start time and routing
+profile in `.orchestrator/lease.json`. A second orchestrator is refused while that lease is
+live. On a new project the partner begins the SPEC interview.
 
 ---
 
@@ -189,15 +193,15 @@ The PM generates `PLAN.md` from the approved spec and presents a plain-language 
 > T003: Set up project structure and auth
 > T004: Build main feature screens
 >
-> Type **proceed** to begin Stage 1.
+> Starting Stage 1 — Design now. Reply if you want to adjust.
 
-**Gate 3 fires immediately** — even before the first stage. The PM will not dispatch any task until you confirm.
+Gate 3 posts the summary and auto-advances. It is not a confirmation gate.
 
 ---
 
 ## 7. Stage 1 Runs Autonomously
 
-Type `proceed`. The PM:
+The partner immediately:
 
 1. Sets `stages[1].status: in_progress` in PLAN.md
 2. Appends `stage_transition` to TASK_LOG
@@ -215,19 +219,23 @@ No user input required during any of that. When T001 is done, Gate 3 fires for S
 > **Output:** `prompts/design-spec.md`
 > Covers: 3 user flows, 7 screens, 12 components, interaction model.
 >
-> Ready to begin Stage 2 — Architecture. Type **proceed** to continue, or review `prompts/design-spec.md` first and give me adjustments.
+> Auto-advancing to Stage 2 — Architecture. Reply if you want to adjust or pause.
 
 ---
 
 ## 8. Stage 2 → Stage 3
 
-Same pattern. Type `proceed`. The Architect agent runs, queries OpenRouter, writes `prompts/build-spec.md`, and returns a structured result block. The PM parses the `<!-- ARCHITECT_RESULT_START -->` delimiter, extracts `selected_model`, and writes it to the relevant tasks in PLAN.md. Gate 3 fires again before Stage 3.
+The same pattern auto-advances through Stage 2. The Architect role produces
+`prompts/build-spec.md` plus tier and security metadata. The lease owner validates and
+promotes the staged result, then resolves each task's effective backend/model from the
+session routing profile. Gate 3 posts a summary and immediately starts Stage 3.
 
 At this point the state files look like:
 
 ```
 my-app-pm/
-├── CLAUDE.md           symlink → framework/CLAUDE.md
+├── CLAUDE.md           managed Claude entry block
+├── AGENTS.md           managed Codex entry block
 ├── SPEC.md             status: approved
 ├── PLAN.md             T001 done, T002 done, T003/T004 pending
 ├── TASK_LOG.md         6+ entries
@@ -247,15 +255,20 @@ my-app-pm/
 
 ---
 
-## 9. Stage 3 — OpenCode Executes
+## 9. Stage 3 — Builders Execute
 
-Type `proceed`. The PM runs each Implementation task via shell — no Agent spawn, direct execution. Before dispatching, it extracts a task-scoped prompt file containing only the preamble, execution notes, and the current task section (see CLAUDE.md for the awk command). Then:
+The partner dispatches each implementation task through `dispatch.sh` in an isolated
+worktree. Backend order comes from the effective session profile. The normal profile uses
+project routing; Codex fallback uses OpenCode only for child work.
 
 ```bash
-bash framework/dispatch.sh <model> ../my-app/ prompts/task-T00X.md 2>&1
+bash framework/dispatch.sh --worktree <branch> --backend <backend> \
+  <model> ../my-app/ prompts/task-T00X.md [fallback] [verify-cmd]
 ```
 
-The model comes from the task's tier, resolved against `framework/MODELS.md`. It is never an Anthropic model — the opencode tiers are non-Anthropic only (MODELS.md hard invariant); Anthropic models run exclusively on the subscription side via the Agent tool.
+The model comes from the task tier, backend order, and routing profile. Anthropic models run
+only through the Claude subscription backend; OpenCode never routes Anthropic through
+OpenRouter.
 
 PM captures exit code and output. On success: task marked `done`. Tasks with no inter-dependencies within a stage may run in parallel at the PM's discretion.
 
@@ -330,19 +343,20 @@ If OpenCode exits non-zero on T003:
 
 ## 13. Recovery After a Crash
 
-If Claude Code exits mid-run (context reset, terminal closed, process killed), restart from the same directory:
+If the provider exits mid-run, restart from the same PM directory with the same wrapper (or
+choose the other provider after the previous lease is stale):
 
 ```bash
 cd my-app-pm/
-claude
+python3 framework/orchestrate.py claude
+# or: python3 framework/orchestrate.py codex
 ```
 
-The PM reads current state on startup. Any task that was `in_progress` when context was lost is marked `failed` (`failure_count +1`) and logged as `task_interrupted`. The PM re-evaluates from current PLAN.md state:
-
-> Resuming project my-app.
-> T003 was interrupted — marked failed (failure_count: 1). Retrying automatically.
-
-One interrupted run counts as one failure. If the task was already at `failure_count: 1` before the crash, the interrupted re-run pushes it to 2 and Gate 2 fires.
+The partner runs `orchestrator-state.py reconcile` and compares PLAN run metadata with live
+processes, job/session handles, exit records, and worktrees. A live run remains
+`in_progress`; a completed run is finalized from evidence; only a confirmed failed run
+increments `failure_count`. Interruption alone never counts as failure. Ambiguous ownership
+blocks new dispatch until it is resolved, preserving recoverable work.
 
 ---
 
@@ -378,11 +392,10 @@ consulted in its `cost_event` (`burn_proxy:` field); `cost-report.sh` prints a `
 for any `@high` dispatch missing it — a self-evidencing audit that keeps enforcement out of
 read-only `dispatch.sh`.
 
-**Orchestrator model / Fable.** The standing orchestrator/partner model is **Opus**. Fable is
-**not** an orchestrator (it drains the Claude window ~2× faster for no orchestration gain, and
-its security restriction disqualifies it from security adjudication). Fable's only sanctioned
-role is a rare, single-spawn **adviser escalation** for an exceptional non-security judgment
-call, logged as a `cost_event`. See `MODELS.md` § Orchestrator.
+**Orchestrator provider / Fable.** The normal Claude partner uses Opus; issue #33 adds a
+Codex partner with the same durable-state contract. The Codex default profile reserves Codex
+capacity for orchestration and routes ordinary child work through OpenCode. Fable is never a
+standing orchestrator and never handles security work. See `MODELS.md` and `ORCHESTRATOR.md`.
 
 **Session handoff — write-through + `HANDOFF.md`.** State writes happen at the moment of the
 event, never batched: the PM may not proceed past a dispatch, task completion/failure, gate
@@ -423,23 +436,23 @@ Gate numbers refer to gate *type*, not the order they appear in a session. On a 
 ## Full Flow at a Glance
 
 ```
-claude
+python3 framework/orchestrate.py claude  # or codex
   ↓ SPEC interview (PM asks, you answer)
   ↓ Gate 1 — type "approved"
   ↓ Plan generated
-  ↓ Gate 3 — type "proceed"         ← Stage 1: Design
-  ↓ Designer (Opus) runs autonomously
-  ↓ Gate 3 — type "proceed"         ← Stage 2: Architecture
-  ↓ Architect (Opus) runs autonomously, selects OpenCode model
-  ↓ Gate 3 — type "proceed"         ← Stage 3: Implementation
-  ↓ OpenCode (Gemini Flash) runs autonomously
+  ↓ Gate 3 posts summary and auto-starts Stage 1: Design
+  ↓ Designer role runs through the effective profile
+  ↓ Gate 3 posts summary and auto-starts Stage 2: Architecture
+  ↓ Architect role produces build spec + tier metadata
+  ↓ Gate 3 posts summary and auto-starts Stage 3: Implementation
+  ↓ builders run through the effective backend order
   ↓ [new bug or requirement]
-  ↓ Tech Lead (Sonnet) specs the fix autonomously
-  ↓ OpenCode runs autonomously
+  ↓ Tech Lead role specs the fix autonomously
+  ↓ selected builder runs autonomously
   ↓ Project complete
 ```
 
-Three `proceed`s and one `approved`. Everything else is autonomous.
+On a clean run, `approved` at Gate 1 is the only required stage-flow response.
 
 **Agent roster** (models per `framework/MODELS.md` — the source of truth):
 

@@ -23,3 +23,14 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(r.returncode,0,r.stderr)
             self.assertTrue((Path(d)/'.codex/hooks.json').is_file())
             self.assertTrue((Path(d)/'AGENTS.md').is_file())
+
+    def test_accepts_test_command_as_fifth_argument(self):
+        with tempfile.TemporaryDirectory() as d:
+            r=subprocess.run(
+                ['bash',str(ROOT/'setup.sh'),'test',d,'org/repo','python -m compileall .','python -m unittest'],
+                cwd=d,capture_output=True,text=True,
+            )
+            self.assertEqual(r.returncode,0,r.stderr)
+            project=(Path(d)/'PROJECT.md').read_text()
+            self.assertIn('python -m compileall .',project)
+            self.assertIn('python -m unittest',project)
