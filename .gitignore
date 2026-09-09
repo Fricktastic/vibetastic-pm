@@ -8,6 +8,10 @@ logs/
 # and this repo is public). See .selftest-live-plans.example.
 .selftest-live-plans
 
+# Maintainer-session context for this framework checkout. Consuming PM projects keep their
+# own root HANDOFF.md; this repository's local handoff must not ship in the framework subtree.
+/HANDOFF.md
+
 # Python bytecode and local orchestration ownership/journal
 __pycache__/
 *.pyc

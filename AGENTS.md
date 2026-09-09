@@ -12,5 +12,6 @@ mechanics under framework/.claude/rules/ explicitly; Codex does not auto-load th
 
 This repository is the framework source. Its root PLAN, SPEC and TASK_LOG are templates,
 not live state. Work on framework issues through normal git branches and commits, run
-`bash scripts/selftest.sh`, and keep HANDOFF.md current. Do not enable project hooks or a
-project lease in this source checkout. Do not modify deployed projects without instruction.
+`bash scripts/selftest.sh`, and keep the ignored local HANDOFF.md current when it exists.
+Do not enable project hooks or a project lease in this source checkout. Do not modify
+deployed projects without instruction.

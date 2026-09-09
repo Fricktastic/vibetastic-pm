@@ -17,5 +17,6 @@ Use the transactional state commands for all durable changes. Do not write PLAN 
 
 This repository is the framework source, not a framework-managed project. Its root PLAN,
 SPEC and TASK_LOG are shipped templates. Framework maintenance uses normal branches,
-commits and `bash scripts/selftest.sh`; do not acquire a project lease here. Read HANDOFF.md
-for current work and operator directives. Never propagate changes to deployments unless asked.
+commits and `bash scripts/selftest.sh`; do not acquire a project lease here. Read the ignored
+local HANDOFF.md when it exists for current work and operator directives. Never propagate
+changes to deployments unless asked.
