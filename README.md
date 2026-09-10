@@ -58,7 +58,8 @@ python3 framework/orchestrate.py codex
 Codex defaults to a session-only OpenCode fallback profile to reserve its subscription
 capacity for orchestration. `python3 framework/orchestrate.py --profile normal codex`
 uses normal project routing. The single-writer lease prevents concurrent orchestrators;
-PLAN updates are linted transactions with recoverable TASK_LOG events.
+PLAN updates are linted transactions with recoverable TASK_LOG events. Both provider
+adapters block bulk task/critic-spec reads from the expensive partner context.
 
 For an existing project, use the idempotent adapter installer instead of setup:
 

@@ -99,8 +99,9 @@ def merged_config(original, provider, hook_script, pm_dir, prior_command=None):
                 kept_groups.append(kept)
         hooks[event] = kept_groups
 
-    mutation_matcher = "Write|Edit|apply_patch|Bash|shell"
-    hooks["PreToolUse"].append(command_group(command, mutation_matcher))
+    pretool_matcher = "Read|read_file|Write|Edit|apply_patch|Bash|shell|exec_command"
+    mutation_matcher = "Write|Edit|apply_patch|Bash|shell|exec_command"
+    hooks["PreToolUse"].append(command_group(command, pretool_matcher))
     hooks["PostToolUse"].append(command_group(command, mutation_matcher))
     hooks["Stop"].append(command_group(command))
     return result
@@ -213,6 +214,7 @@ def install(pm_dir, framework_dir):
         framework_dir / "scripts/append-cost.py",
         framework_dir / "scripts/orchestrator-routing.py",
         framework_dir / "scripts/dispatch-role.py",
+        framework_dir / "scripts/spec-body-guard.py",
         framework_dir / "orchestrate.py",
     )
     missing = [str(path) for path in required if not path.is_file()]

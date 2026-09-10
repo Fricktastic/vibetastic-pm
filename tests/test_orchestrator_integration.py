@@ -45,6 +45,7 @@ class InstallerTests(unittest.TestCase):
             "orchestrator-hook.py", "orchestrator-state.py", "plan-update.py", "pm_state.py",
             "plan-lint.sh", "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",
             "orchestrator-routing.py", "dispatch-role.py",
+            "spec-body-guard.py",
         ):
             (scripts / name).write_text("# fixture\n")
         (self.framework / "orchestrate.py").write_text("# fixture\n")
@@ -101,6 +102,11 @@ class InstallerTests(unittest.TestCase):
             ]
             self.assertEqual(len(commands), 3)
             self.assertTrue(all(f"--provider {provider}" in command for command in commands))
+            pre_groups = [
+                group for group in config["hooks"]["PreToolUse"]
+                if any("orchestrator-hook.py" in hook.get("command", "") for hook in group["hooks"])
+            ]
+            self.assertIn("Read", pre_groups[0]["matcher"])
         self.assertIn("framework/ORCHESTRATOR.md", (self.pm / "CLAUDE.md").read_text())
         self.assertIn("framework/ORCHESTRATOR.md", (self.pm / "AGENTS.md").read_text())
         self.assertIn("framework/scripts/plan-update.py", (self.pm / "CLAUDE.md").read_text())
@@ -195,6 +201,7 @@ class HookTests(unittest.TestCase):
         (self.framework / "scripts").mkdir(parents=True)
         shutil.copy2(HOOK, self.framework / "scripts/orchestrator-hook.py")
         shutil.copy2(SCRIPTS / "plan-lint.sh", self.framework / "scripts/plan-lint.sh")
+        shutil.copy2(SCRIPTS / "spec-body-guard.py", self.framework / "scripts/spec-body-guard.py")
         (self.pm / ".orchestrator/config.json").write_text(json.dumps({
             "schema_version": 1,
             "enabled": True,
@@ -297,6 +304,22 @@ class HookTests(unittest.TestCase):
         self.assertEqual(records[-1]["transcript_path"], str(self.pm / "transcript.jsonl"))
         self.assertEqual(records[-1]["hook_event_name"], "PreToolUse")
 
+    def test_codex_pretool_blocks_task_spec_reads_and_bulk_shell_reads(self):
+        task = str(self.pm / "prompts/task-T033.md")
+        direct = self.invoke(
+            "codex",
+            self.payload("PreToolUse", tool="Read", tool_input={"file_path": task}),
+        )
+        self.assertEqual(direct.returncode, 2)
+        self.assertIn("reading a task-spec body", direct.stderr)
+
+        shell = self.invoke(
+            "codex",
+            self.payload("PreToolUse", tool="exec_command", tool_input={"command": f"cat {task}"}),
+        )
+        self.assertEqual(shell.returncode, 2)
+        self.assertIn("reading a task-spec body", shell.stderr)
+
     def test_posttool_lints_existing_plan_for_claude_and_string_codex_payloads(self):
         (self.pm / "PLAN.md").write_text("not frontmatter\n")
         claude = self.invoke("claude", self.payload("PostToolUse", tool="Write", tool_input={"file_path": "notes.md"}))
@@ -340,6 +363,7 @@ class DoctorTests(unittest.TestCase):
         (self.framework / "ORCHESTRATOR.md").write_text("# Fixture contract\n")
         shutil.copy2(HOOK, self.framework / "scripts/orchestrator-hook.py")
         shutil.copy2(SCRIPTS / "plan-lint.sh", self.framework / "scripts/plan-lint.sh")
+        shutil.copy2(SCRIPTS / "spec-body-guard.py", self.framework / "scripts/spec-body-guard.py")
         for name in (
             "orchestrator-state.py", "plan-update.py", "pm_state.py",
             "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",

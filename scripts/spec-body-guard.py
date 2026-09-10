@@ -24,13 +24,15 @@ What is explicitly allowed, because [0g] step 1-2 require them
     - existence / non-empty checks (`test -s`, `wc -c`, `ls`)
     - bounded greps and tail slices that pull the YAML block after the delimiter
     - `Read` with an explicit small `limit`
-    - anything the builder or critic does — this hook only ever runs in the PM session
+    - anything the builder or critic does — this hook only runs in the orchestrator session
 
 Escape hatch
     SPEC_BODY_GUARD_OFF=1 in the environment, mirroring DISPATCH_ALLOW_NO_VERIFY=1.
     Deliberate exceptions exist; silent ones should not. Justify it in TASK_LOG.
 
-Wired by setup.sh:
+Wired for both providers by install-orchestrators.py through orchestrator-hook.py. The
+shared adapter translates Codex `read_file` / `exec_command` names to this guard's
+`Read` / `Bash` vocabulary. Fresh Claude setup may also retain the direct native hook:
   "PreToolUse": [{"matcher": "Read|Bash", "hooks": [{"type": "command",
     "command": "python3 \"<pm-dir>/framework/scripts/spec-body-guard.py\""}]}]
 
@@ -106,9 +108,9 @@ def main():
     data = json.load(sys.stdin)
     tool = data.get("tool_name") or ""
     tool_input = data.get("tool_input") or {}
-    if tool == "Read":
+    if tool in ("Read", "read_file"):
         name = blocked_read(tool_input)
-    elif tool == "Bash":
+    elif tool in ("Bash", "shell", "exec_command"):
         name = blocked_bash(tool_input)
     else:
         sys.exit(0)

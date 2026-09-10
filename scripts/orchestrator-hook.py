@@ -115,6 +115,46 @@ def is_direct_plan_write(payload):
     return False
 
 
+def spec_guard_payload(payload):
+    """Translate provider tool names to the guard's small Claude-compatible vocabulary."""
+    translated = dict(payload)
+    tool = str(payload.get("tool_name") or "")
+    if tool == "read_file":
+        translated["tool_name"] = "Read"
+    elif tool in ("shell", "exec_command"):
+        translated["tool_name"] = "Bash"
+    return translated
+
+
+def check_spec_body(framework_dir, payload):
+    guard = framework_dir / "scripts/spec-body-guard.py"
+    try:
+        checked = subprocess.run(
+            [sys.executable, str(guard)],
+            input=json.dumps(spec_guard_payload(payload)),
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[orchestrator-hook] Blocked: spec-body guard could not run: {exc}", file=sys.stderr)
+        return False
+    if checked.returncode == 2:
+        detail = (checked.stderr or checked.stdout).strip()
+        if detail:
+            print(detail, file=sys.stderr)
+        return False
+    if checked.returncode != 0:
+        print(
+            f"[orchestrator-hook] Blocked: spec-body guard returned unexpected exit "
+            f"{checked.returncode}.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def check_owner(pm_dir, framework_dir, provider):
     token = os.environ.get("PM_ORCHESTRATOR_TOKEN")
     claimed_provider = os.environ.get("PM_ORCHESTRATOR_PROVIDER") or provider
@@ -162,6 +202,8 @@ def check_owner(pm_dir, framework_dir, provider):
 
 def pre_tool_use(pm_dir, framework_dir, provider, payload):
     if not check_owner(pm_dir, framework_dir, provider):
+        return 2, "blocked"
+    if not check_spec_body(framework_dir, payload):
         return 2, "blocked"
     if is_direct_plan_write(payload):
         print(

@@ -94,8 +94,9 @@ After the agent returns:
 2. Parse only the returned YAML block to register the task in PLAN.md.
 3. Never read the spec body into context. The critic and the builder both read it from disk.
 
-**This is now mechanical.** A `PreToolUse` hook (`framework/scripts/spec-body-guard.py`,
-wired by setup.sh) **blocks** a whole-file `Read` or `cat` of `prompts/task-T*.md` /
+**This is now mechanical for both providers.** The managed `PreToolUse` adapter invokes
+`framework/scripts/spec-body-guard.py` and **blocks** a whole-file read or `cat` of
+`prompts/task-T*.md` /
 `prompts/critic-T*.md`. It exists because the rule above was correct, stated its own
 rationale, and was violated **217 times** on gamedaytastic — ~367K tokens, **37% of
 everything the orchestrator ingested**, the single largest line item in partner burn
@@ -107,9 +108,10 @@ Still allowed, because steps 1–2 need them: `test -s` / `wc -c` existence chec
 exceptions: `SPEC_BODY_GUARD_OFF=1`, justified in the TASK_LOG entry — same convention as
 `DISPATCH_ALLOW_NO_VERIFY=1`.
 
-Projects onboarded before the hook shipped do not have it (issue #16): check
-`.claude/settings.json` for a `PreToolUse` entry matching `Read|Bash` and add it by hand if
-absent.
+Projects onboarded before the additive installer shipped may not have it (issue #16): rerun
+`install-orchestrators.py`, then use `orchestrator-doctor.py` to verify both
+`.claude/settings.json` and `.codex/hooks.json`. In Codex, review/trust the installed project
+hooks with `/hooks`; an untrusted native hook cannot enforce the guard.
 
 On Claude, spawn the native Tech Lead with its spec output directed to a staging artifact;
 the lease owner promotes it with `orchestrator-state.py write`. On Codex, use

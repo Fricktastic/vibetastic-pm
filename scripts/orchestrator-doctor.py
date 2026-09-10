@@ -81,7 +81,12 @@ def check_configuration(pm_dir, framework_dir):
             if len(groups) != 1 or len(commands) != 1:
                 errors.append(f"{relative}: expected one managed {event} hook, found {len(commands)}")
                 continue
-            expected_matcher = "Write|Edit|apply_patch|Bash|shell" if event != "Stop" else None
+            if event == "PreToolUse":
+                expected_matcher = "Read|read_file|Write|Edit|apply_patch|Bash|shell|exec_command"
+            elif event == "PostToolUse":
+                expected_matcher = "Write|Edit|apply_patch|Bash|shell|exec_command"
+            else:
+                expected_matcher = None
             actual_matcher = groups[0][0].get("matcher")
             if actual_matcher != expected_matcher:
                 errors.append(

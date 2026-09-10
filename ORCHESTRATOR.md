@@ -89,8 +89,9 @@ PLAN must use plan-update. Candidate/staging artifacts can live under logs/ or /
 Project metadata under `.orchestrator/` is local operational state; preserve it across
 sessions and exclude it from commits. It never replaces the shared Markdown contract.
 
-Hooks reject direct Write/Edit/apply_patch edits to PLAN and lint PLAN after supported
-tools. These are cooperative safeguards, not filesystem security: arbitrary shell commands,
+Hooks reject direct Write/Edit/apply_patch edits to PLAN, block bulk task/critic-spec reads
+from either provider's orchestrator context, and lint PLAN after supported tools. These are
+cooperative safeguards, not filesystem security: arbitrary shell commands,
 disabled/untrusted hooks and specialized tools can bypass them. Do not claim that a
 PostToolUse hook undoes a write or that lint proves a transition satisfies every merge gate.
 
