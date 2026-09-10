@@ -324,7 +324,9 @@ offload lane). Context/prices verified on OpenRouter 2026-06-29.
 | `claude-sonnet-5` | 2.00 | 10.00 | 1M | Subscription only. Pinned. Observed 3/3 in the field 2026-08. |
 | `claude-sonnet-4.6` | 3.00 | 15.00 | 1M | Subscription only. Pinned, previous generation — keep listed so historical `sonnet`-era records and any pinned dispatch still validate. |
 | `haiku` / `claude-haiku-4-5` | 1.00 | 5.00 | 200K | Subscription only (commit subagent / mechanical steps) |
-| `openrouter/deepseek/deepseek-v4-pro` | 0.43 | 0.87 | 1M | **standard** primary; fast/heavy fallback — cheapest, top SWE-bench |
+| `openrouter/deepseek/deepseek-v4-pro` | 0.96 | 1.91 | 1M | **RETIRING (announced 2026-09-10, days away)** — unpinned 0423 preview. No longer in any tier (superseded by minimax-m3 / kimi-k2.6 at the 2026-08-22 bake-off). Do not add it back; use `deepseek-v4-pro-0813`. Price also rose 2.2× since it was documented |
+| `openrouter/deepseek/deepseek-v4-pro-0813` | 0.66 | 1.98 | 1M | **heavy fallback** — GA release. Price *fell* ~45% since 2026-08-22 ($1.19/$3.56), now cheaper than glm-5.2 output |
+| `openrouter/deepseek/deepseek-v4-flash-0731` | 0.065 | 0.18 | 1.31M | **fast** primary — 28 providers, unaffected by the 2026-09-10 DeepSeek retirements |
 | `openrouter/z-ai/glm-5.2` | 0.95 | 3.00 | 1M | **heavy fallback** + reviewer/critic family-diversity rung. Demoted from heavy primary 2026-08 — see § Field results |
 | `openrouter/qwen/qwen3-coder-flash` | 0.195 | 0.975 | 1M | **fast** primary — non-reasoning coder specialist (e2e confirmed 2026-07-02) |
 | `gpt-5.6-sol` / `-terra` / `-luna` | — | — | — | Codex backend, ChatGPT subscription — no per-token spend; tracked as weekly-quota burn proxy (tokens in cost.jsonl) |
@@ -390,7 +392,8 @@ Models to evaluate for future tier assignments. Move to the table above once con
 | `openrouter/qwen/qwen3.5-flash-02-23` | fast (budget floor) | $0.065/$0.26, 1M ctx — 3× cheaper than qwen3-coder-flash, but a **reasoning model** (the stall-risk class); only adopt after a stall-free e2e test |
 | `openrouter/qwen/qwen3.7-plus` | standard | $0.32/$1.28, 1M ctx — newest Qwen general line; only marginally cheaper than deepseek, no reason to swap today |
 | `openrouter/deepseek/deepseek-v4-flash-0731` | **fast** | **$0.08/$0.18, 1.31M ctx, 79.0% SWE-bench Verified** (2026-08-22 leaderboard). Beats the incumbent `fast` on price, context *and* measured capability — within 1.6 pts of v4-pro-0813 at a fifth of the input cost. Two flags: it is a **reasoning model** (the stall-risk class the `fast` rung was deliberately anchored away from), and an *earlier* `deepseek-v4-flash` was removed for failing on every run. `0731` is a re-post-trained revision, not that model. **Field test before adopting.** |
-| `openrouter/deepseek/deepseek-v4-pro-0813` | standard / heavy | $1.19/$3.56, 1.05M ctx, **80.6% SWE-bench Verified** — the GA release. See the slug-drift note below. |
+| `openrouter/deepseek/deepseek-v4-pro-0813` | standard / heavy | **$0.66/$1.98** (repriced down from $1.19/$3.56, checked 2026-09-10), 1.05M ctx, **80.6% SWE-bench Verified** — the GA release, 20 providers. Currently the `heavy` fallback. See the slug-drift note below. |
+| `openrouter/deepseek/deepseek-v4.1-flash` | fast (watch) | **New 2026-09-10.** $0.15/$0.60, 1.05M ctx. DeepSeek claims it exceeds V4 Pro on capability and speed. But it is **2.3× the price of the incumbent `fast` rung** (`v4-flash-0731`, $0.065/$0.18), has a **smaller context** (1.05M vs 1.31M), and lists only **4 provider endpoints** vs 28 — the single-point-of-failure pattern that took out `qwen3-coder-flash`. **Do not adopt yet.** Recheck provider count in ~2 weeks; only field-test if it broadens or if `0731` is deprecated. |
 | `openrouter/minimax/minimax-m3` | standard / heavy | **80.5% SWE-bench Verified**, $0.30/$1.20, 1.05M ctx, 13 providers, no tiered pricing. Near-top capability at a third of `v4-pro-0813`'s price. Non-DeepSeek, so it also restores family diversity on the ladder. **Field test 2026-08-22.** |
 | `openrouter/moonshotai/kimi-k2.6` | standard / heavy | **80.2% SWE-bench Verified**, $0.54/$2.28, 262K ctx, 19 providers. Note `kimi-k3` ($3.00/$15.00) is **not** worth evaluating — K2.6 matches its tier at a sixth the price. **Field test 2026-08-22.** |
 | `openrouter/thinkingmachines/inkling-small` | standard | 80.2% SWE-V, $0.45/$1.20, 1.05M ctx — but only **3 provider endpoints**. Single-point-of-failure risk; see the qwen incident below. Not tested. |
@@ -409,6 +412,16 @@ OpenRouter resolves the unpinned `deepseek/deepseek-v4-pro` to **"DeepSeek V4 Pr
 price. The active `standard`/`heavy` rung has therefore been running the April preview on a
 justification the GA model earned. Not necessarily wrong (the preview may be fine, and it is
 far cheaper), but the stated reason was unsound. Resolve by field test, not by assumption.
+
+**DeepSeek retirements, 2026-09-10 (verified against the live OpenRouter catalog).**
+`deepseek-v4-flash` (the pre-0731 release) and `deepseek-v4-flash-vision-exp` are retired;
+the unpinned `deepseek-v4-pro` (the 0423 preview) retires within days. **No active tier is
+affected** — the `fast` primary is the pinned `deepseek-v4-flash-0731` (28 providers) and the
+`heavy` fallback is the pinned `deepseek-v4-pro-0813` (20 providers), both alive. This is the
+payoff for pinning slugs after the 2026-08-22 drift finding: an unpinned `deepseek-v4-pro`
+rung would have failed mid-dispatch. Neither retired flash model was ever configured here.
+`~deepseek/deepseek-v4-flash-latest` exists as a floating alias — **never configure it**;
+floating slugs are exactly what the slug-drift note above warns against.
 
 **Catalog check, 2026-08-22** (live `openrouter/api/v1/models`, 421 models, 147 released since
 April): every incumbent is still listed and priced as documented, except
