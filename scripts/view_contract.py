@@ -32,7 +32,8 @@ _STAGE_STATES = {
     "building": "active",
     "done": "done",
 }
-_ITEM_START = re.compile(r"^\s+- id:\s*(?P<value>\S+)")
+_LIST_ITEM = re.compile(r"^\s+-\s*(?P<body>.*)$")
+_ITEM_START = re.compile(r"^\s+-\s*id:\s*(?P<value>.*)$")
 _FIELD = re.compile(r"^\s*(?P<name>[A-Za-z_][A-Za-z0-9_-]*):\s*(?P<value>.*)$")
 
 
@@ -58,7 +59,7 @@ def parse_plan(text: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
     stages = _parse_stages(frontmatter, digest, warnings)
     raw_tasks = _parse_task_fields(frontmatter, digest, warnings)
-    task_ids = {task["id"] for task in raw_tasks}
+    task_ids = {task["id"] for task in raw_tasks if task["id_valid"]}
     tasks = _normalize_tasks(raw_tasks, task_ids, warnings)
 
     plan = {
@@ -85,7 +86,7 @@ def _frontmatter_lines(
         return list(enumerate(lines, 1))
 
     for index in range(1, len(lines)):
-        if lines[index] == "---":
+        if lines[index].rstrip() == "---":
             return [(line_no, line) for line_no, line in enumerate(lines[1:index], 2)]
 
     _warning(
@@ -117,9 +118,13 @@ def _parse_stages(
         return []
 
     stages: list[dict[str, Any]] = []
-    for item in _items(section):
+    seen_ids: dict[str, int] = {}
+    for ordinal, item in enumerate(_items(section), 1):
         fields, field_lines = _fields(item)
-        stage_id = fields.get("id")
+        source_id = fields.get("id")
+        stage_id, id_valid = _unique_id(
+            source_id, seen_ids, "stage", ordinal, item[0][0], warnings
+        )
         source_status = fields.get("status")
         state = _STAGE_STATES.get(source_status) if source_status is not None else None
         if source_status is not None and state is None:
@@ -131,7 +136,7 @@ def _parse_stages(
                 stage_id=stage_id,
                 field="status",
             )
-        for field in ("id", "name", "status"):
+        for field in ("name", "status"):
             if fields.get(field) is None:
                 _warning(
                     warnings,
@@ -144,6 +149,8 @@ def _parse_stages(
         stages.append(
             {
                 "id": stage_id,
+                "source_id": source_id,
+                "id_valid": id_valid,
                 "name": fields.get("name"),
                 "source_status": source_status,
                 "state": state,
@@ -163,16 +170,26 @@ def _parse_task_fields(
         return []
 
     tasks: list[dict[str, Any]] = []
-    for item in _items(section):
+    seen_ids: dict[str, int] = {}
+    for ordinal, item in enumerate(_items(section), 1):
         fields, field_lines = _fields(item)
-        task_id = fields.get("id")
-        if task_id is None:
-            # _items only starts at an ``- id:`` line, but retain a defensive
-            # fallback so malformed future callers cannot turn drift into a
-            # parser exception.
-            task_id = "<unknown>"
+        source_id = fields.get("id")
+        task_id, id_valid = _unique_id(
+            source_id, seen_ids, "task", ordinal, item[0][0], warnings
+        )
+        depends_value = fields.get("depends_on")
+        dependencies, dependencies_valid = _parse_dependencies(depends_value)
+        if not dependencies_valid and depends_value is not None:
+            _warning(
+                warnings,
+                "nested_dependency_list",
+                f"Task {task_id} has malformed nested depends_on value '{depends_value}'",
+                line=field_lines.get("depends_on"),
+                task_id=task_id,
+                field="depends_on",
+            )
         for field in _TASK_REQUIRED_FIELDS:
-            if fields.get(field) is None:
+            if field not in fields or fields.get(field) is None:
                 _warning(
                     warnings,
                     "missing_required_field",
@@ -184,11 +201,14 @@ def _parse_task_fields(
         tasks.append(
             {
                 "id": task_id,
+                "source_id": source_id,
+                "id_valid": id_valid,
                 "stage": fields.get("stage"),
                 "title": fields.get("title"),
                 "agent": fields.get("agent"),
                 "source_status": fields.get("status"),
-                "dependencies": _dependencies(fields.get("depends_on")),
+                "dependencies": dependencies,
+                "dependencies_valid": dependencies_valid,
                 "failure_count": fields.get("failure_count"),
                 "tier": fields.get("tier"),
                 "verify_tier": fields.get("verify_tier"),
@@ -208,7 +228,7 @@ def _normalize_tasks(
     completed = {
         task["id"]
         for task in tasks
-        if task["source_status"] == "done"
+        if task["id_valid"] and task["source_status"] == "done"
     }
 
     normalized: list[dict[str, Any]] = []
@@ -224,7 +244,7 @@ def _normalize_tasks(
                 field="depends_on",
                 dependency=dependency,
             )
-        dependencies_done = not missing_dependencies and all(
+        dependencies_done = task["dependencies_valid"] and not missing_dependencies and all(
             dependency in completed for dependency in task["dependencies"]
         )
         state, resolution = canonical_task_status(task["source_status"], dependencies_done)
@@ -252,7 +272,7 @@ def _section(
 ) -> list[tuple[int, str]] | None:
     start = None
     for index, (_, line) in enumerate(lines):
-        if line == f"{name}:":
+        if line.rstrip() == f"{name}:":
             start = index + 1
             break
     if start is None:
@@ -260,7 +280,7 @@ def _section(
     if stop_at is None:
         return lines[start:]
     for index in range(start, len(lines)):
-        if lines[index][1] == f"{stop_at}:":
+        if lines[index][1].rstrip() == f"{stop_at}:":
             return lines[start:index]
     return lines[start:]
 
@@ -268,8 +288,13 @@ def _section(
 def _items(lines: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
     items: list[list[tuple[int, str]]] = []
     current: list[tuple[int, str]] | None = None
+    item_indent: int | None = None
     for line_no, line in lines:
-        if _ITEM_START.match(line):
+        list_match = _LIST_ITEM.match(line)
+        indent = len(line) - len(line.lstrip()) if list_match else None
+        if list_match and (item_indent is None or indent == item_indent):
+            if item_indent is None:
+                item_indent = indent
             current = [(line_no, line)]
             items.append(current)
         elif current is not None:
@@ -286,6 +311,11 @@ def _fields(item: list[tuple[int, str]]) -> tuple[dict[str, str | None], dict[st
             fields["id"] = _scalar(item_match.group("value"))
             lines["id"] = line_no
             continue
+        list_match = _LIST_ITEM.match(line)
+        if list_match:
+            # Retain malformed entries such as ``- title: ...`` so callers
+            # can display a partial record and a structured missing-id warning.
+            line = list_match.group("body")
         match = _FIELD.match(line)
         if not match:
             continue
@@ -300,15 +330,65 @@ def _scalar(value: str) -> str | None:
     value = value.strip()
     if not value or value in {"null", "~"}:
         return None
-    if value[0:1] in {"'", '"'} and value[-1:] == value[0]:
-        return value[1:-1]
+    if value[0:1] in {"'", '"'}:
+        quote = value[0]
+        for index in range(1, len(value)):
+            if value[index] != quote or value[index - 1] == "\\":
+                continue
+            remainder = value[index + 1 :].strip()
+            if not remainder or remainder.startswith("#"):
+                return value[1:index]
+            break
     return value.split(" #", 1)[0].strip()
 
 
 def _dependencies(value: str | None) -> list[str]:
+    return _parse_dependencies(value)[0]
+
+
+def _parse_dependencies(value: str | None) -> tuple[list[str], bool]:
     if value is None or value == "[]":
-        return []
-    return [part.strip().strip("\"'") for part in value.strip("[]").split(",") if part.strip()]
+        return [], value is not None
+    stripped = value.strip()
+    nested_list = stripped.startswith("[[") and stripped[-2:] == "]]"
+    if nested_list:
+        return [], False
+    return [part.strip().strip("\"'") for part in stripped.strip("[]").split(",") if part.strip()], True
+
+
+def _unique_id(
+    source_id: str | None,
+    seen_ids: dict[str, int],
+    kind: str,
+    ordinal: int,
+    line: int,
+    warnings: list[dict[str, Any]],
+) -> tuple[str, bool]:
+    if not source_id:
+        synthetic = f"__invalid_{kind}_{ordinal}"
+        _warning(
+            warnings,
+            "missing_required_field",
+            f"{kind.title()} {synthetic} is missing required field 'id'",
+            line=line,
+            **{f"{kind}_id": synthetic},
+            field="id",
+        )
+        return synthetic, False
+    count = seen_ids.get(source_id, 0) + 1
+    seen_ids[source_id] = count
+    if count == 1:
+        return source_id, True
+    unique = f"{source_id}~duplicate-{count}"
+    _warning(
+        warnings,
+        f"duplicate_{kind}_id",
+        f"{kind.title()} {source_id} is duplicated; retaining partial entry as {unique}",
+        line=line,
+        **{f"{kind}_id": source_id},
+        field="id",
+    )
+    return unique, False
 
 
 def _provenance(digest: str, line: int) -> dict[str, Any]:
