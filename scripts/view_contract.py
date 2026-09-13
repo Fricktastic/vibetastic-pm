@@ -59,7 +59,7 @@ def parse_plan(text: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
     stages = _parse_stages(frontmatter, digest, warnings)
     raw_tasks = _parse_task_fields(frontmatter, digest, warnings)
-    task_ids = {task["id"] for task in raw_tasks if task["id_valid"]}
+    task_ids = {task["id"] for task in raw_tasks if task["valid_identity"]}
     tasks = _normalize_tasks(raw_tasks, task_ids, warnings)
 
     plan = {
@@ -122,7 +122,7 @@ def _parse_stages(
     for ordinal, item in enumerate(_items(section), 1):
         fields, field_lines = _fields(item)
         source_id = fields.get("id")
-        stage_id, id_valid = _unique_id(
+        stage_id, valid_identity, entry_key = _unique_id(
             source_id, seen_ids, "stage", ordinal, item[0][0], warnings
         )
         source_status = fields.get("status")
@@ -150,7 +150,8 @@ def _parse_stages(
             {
                 "id": stage_id,
                 "source_id": source_id,
-                "id_valid": id_valid,
+                "entry_key": entry_key,
+                "valid_identity": valid_identity,
                 "name": fields.get("name"),
                 "source_status": source_status,
                 "state": state,
@@ -174,7 +175,7 @@ def _parse_task_fields(
     for ordinal, item in enumerate(_items(section), 1):
         fields, field_lines = _fields(item)
         source_id = fields.get("id")
-        task_id, id_valid = _unique_id(
+        task_id, valid_identity, entry_key = _unique_id(
             source_id, seen_ids, "task", ordinal, item[0][0], warnings
         )
         depends_value = fields.get("depends_on")
@@ -202,7 +203,8 @@ def _parse_task_fields(
             {
                 "id": task_id,
                 "source_id": source_id,
-                "id_valid": id_valid,
+                "entry_key": entry_key,
+                "valid_identity": valid_identity,
                 "stage": fields.get("stage"),
                 "title": fields.get("title"),
                 "agent": fields.get("agent"),
@@ -228,7 +230,7 @@ def _normalize_tasks(
     completed = {
         task["id"]
         for task in tasks
-        if task["id_valid"] and task["source_status"] == "done"
+        if task["valid_identity"] and task["source_status"] == "done"
     }
 
     normalized: list[dict[str, Any]] = []
@@ -363,32 +365,33 @@ def _unique_id(
     ordinal: int,
     line: int,
     warnings: list[dict[str, Any]],
-) -> tuple[str, bool]:
+) -> tuple[str | None, bool, str | None]:
     if not source_id:
-        synthetic = f"__invalid_{kind}_{ordinal}"
+        entry_key = f"invalid-entry:{line}"
         _warning(
             warnings,
             "missing_required_field",
-            f"{kind.title()} {synthetic} is missing required field 'id'",
+            f"{kind.title()} entry {entry_key} is missing required field 'id'",
             line=line,
-            **{f"{kind}_id": synthetic},
+            **{f"{kind}_id": None, "entry_key": entry_key},
             field="id",
         )
-        return synthetic, False
+        return None, False, entry_key
     count = seen_ids.get(source_id, 0) + 1
     seen_ids[source_id] = count
     if count == 1:
-        return source_id, True
-    unique = f"{source_id}~duplicate-{count}"
+        return source_id, True, None
+    entry_key = f"invalid-entry:{line}"
     _warning(
         warnings,
         f"duplicate_{kind}_id",
-        f"{kind.title()} {source_id} is duplicated; retaining partial entry as {unique}",
+        f"{kind.title()} {source_id} is duplicated; retaining partial entry {entry_key}",
         line=line,
         **{f"{kind}_id": source_id},
+        entry_key=entry_key,
         field="id",
     )
-    return unique, False
+    return source_id, False, entry_key
 
 
 def _provenance(digest: str, line: int) -> dict[str, Any]:
