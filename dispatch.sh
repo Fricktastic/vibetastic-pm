@@ -688,6 +688,7 @@ run_opencode_fresh() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
+    -- \
     "$PROMPT_TEXT" \
     < /dev/null 2>> "$LOG_FILE"
 }
@@ -703,6 +704,7 @@ run_opencode_continue() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
+    -- \
     "$message" \
     < /dev/null 2>> "$LOG_FILE"
 }
@@ -843,6 +845,7 @@ run_codex_fresh() {
     --json -C "$DIR" -s workspace-write --skip-git-repo-check \
     -c sandbox_workspace_write.network_access=true \
     -m "$(model_of "$spec")" "${args[@]}" \
+    -- \
     "$PROMPT_TEXT"
   local ec=$?
   codex_postrun
@@ -861,6 +864,7 @@ run_codex_continue() {
       --json --skip-git-repo-check \
       -c sandbox_workspace_write.network_access=true \
       -m "$(model_of "$spec")" "${args[@]}" \
+      -- \
       "$message"
   local ec=$?
   codex_postrun
@@ -895,6 +899,7 @@ run_claude_fresh() {
       -p --output-format json \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
+      -- \
       "$PROMPT_TEXT" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
@@ -909,6 +914,7 @@ run_claude_continue() {
       -p --output-format json --resume "$CLAUDE_SESSION_ID" \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
+      -- \
       "$message" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?

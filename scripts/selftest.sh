@@ -221,6 +221,87 @@ if [ "$got" = 1 ] && [ "$(wc -l < "$STALL_CALLS" | tr -d ' ')" = 2 ] \
 else
   fail "empty-fresh stall guard (dispatch exit $got)"
 fi
+
+echo "[selftest] leading-hyphen prompts terminate backend option parsing (issue #49)"
+printf '%s\n' '---' 'role prompt' > "$DISPATCH_TMP/frontmatter.md"
+cat > "$DISPATCH_BIN/codex" <<'SH'
+#!/bin/bash
+last="${!#}"
+prev="${@: -2:1}"
+if [[ " $* " == *" resume "* ]]; then
+  if [ "$prev" != -- ]; then
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resume parsed as an option"}}'
+    exit 64
+  fi
+  touch "$FAKE_VERIFY_FLAG"
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resume received"}}'
+elif [ "$prev" != -- ] || [ "$last" != $'---\nrole prompt' ]; then
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"prompt parsed as an option"}}'
+  exit 64
+else
+  printf '%s\n' '{"type":"thread.started","thread_id":"frontmatter-thread"}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"prompt received"}}'
+fi
+SH
+cat > "$DISPATCH_BIN/claude" <<'SH'
+#!/bin/bash
+last="${!#}"
+prev="${@: -2:1}"
+if [[ " $* " == *" --resume "* ]]; then
+  if [ "$prev" != -- ]; then
+    printf '%s\n' '{"result":"resume parsed as an option"}'
+    exit 64
+  fi
+  touch "$FAKE_VERIFY_FLAG"
+  printf '%s\n' '{"session_id":"frontmatter-session","result":"resume received"}'
+elif [ "$prev" != -- ] || [ "$last" != $'---\nrole prompt' ]; then
+  printf '%s\n' '{"result":"prompt parsed as an option"}'
+  exit 64
+else
+  printf '%s\n' '{"session_id":"frontmatter-session","result":"prompt received"}'
+fi
+SH
+cat > "$DISPATCH_BIN/opencode" <<'SH'
+#!/bin/bash
+last="${!#}"
+prev="${@: -2:1}"
+if [[ " $* " == *" --continue "* ]]; then
+  if [ "$prev" != -- ]; then
+    printf '%s\n' 'resume parsed as an option'
+    exit 64
+  fi
+  touch "$FAKE_VERIFY_FLAG"
+  printf '%s\n' 'resume received'
+elif [ "$prev" != -- ] || [ "$last" != $'---\nrole prompt' ]; then
+  printf '%s\n' 'prompt parsed as an option'
+  exit 64
+else
+  printf '%s\n' 'prompt received'
+fi
+SH
+chmod +x "$DISPATCH_BIN/codex" "$DISPATCH_BIN/claude" "$DISPATCH_BIN/opencode"
+
+frontmatter_case() { # backend model
+  local backend="$1" model="$2" logs="$DISPATCH_TMP/frontmatter-$1-logs"
+  local flag="$DISPATCH_TMP/frontmatter-$1-verified"
+  PATH="$DISPATCH_BIN:$PATH" FAKE_VERIFY_FLAG="$flag" CODEX_FIRST_EVENT_TIMEOUT=0 \
+    OPENCODE_DISPATCH_LOG_DIR="$logs" OPENCODE_DISPATCH_STALL_RETRIES=0 \
+    bash dispatch.sh --backend "$backend" "$model" \
+      "$DISPATCH_PROJECT" "$DISPATCH_TMP/frontmatter.md" '' \
+      "test -f $flag" 2 standard >/dev/null 2>&1
+}
+frontmatter_case codex gpt-5.6-terra
+codex_frontmatter=$?
+frontmatter_case claude claude-sonnet-4.6
+claude_frontmatter=$?
+frontmatter_case opencode openrouter/minimax/minimax-m3
+opencode_frontmatter=$?
+if [ "$codex_frontmatter" = 0 ] && [ "$claude_frontmatter" = 0 ] \
+  && [ "$opencode_frontmatter" = 0 ]; then
+  pass "Codex, Claude, and OpenCode delimit fresh prompts and resumed messages"
+else
+  fail "frontmatter prompt dispatch (codex=$codex_frontmatter claude=$claude_frontmatter opencode=$opencode_frontmatter)"
+fi
 rm -rf "$DISPATCH_TMP"
 
 echo "[selftest] partner-burn hook records orchestrator usage"
