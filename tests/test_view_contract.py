@@ -15,6 +15,8 @@ from scripts.view_contract import (
     derive_attention,
     parse_plan,
     sanitize_lease,
+    append_view_events,
+    diff_snapshots,
     write_snapshot,
 )
 
@@ -294,6 +296,19 @@ reason: \"Approve device verification\"
         path = write_snapshot(self.pm, build_snapshot(self.pm, now=self.now))
         self.assertEqual(json.loads(path.read_text())["generation"], 1)
         self.assertEqual(path, self.pm / ".orchestrator/view/v1/snapshot.json")
+
+    def test_snapshot_does_not_publish_parser_line_maps(self):
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertTrue(all("field_lines" not in row for row in snapshot["tasks"] + snapshot["stages"]))
+
+    def test_event_rows_are_compact_allowlisted_and_deduplicated(self):
+        event = diff_snapshots({}, {"changed": True}, "reserve", None,
+                               {"run_id": "run-1", "task_id": "T001", "status": "active",
+                                "token": "must-not-appear"})[0]
+        append_view_events(self.pm, [event, event])
+        rows = (self.pm / ".orchestrator/view/v1/events.jsonl").read_text().splitlines()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(set(json.loads(rows[0])), {"event_id", "type", "operation", "run_id", "task_id", "status"})
 
     def test_attention_distinguishes_explicit_gate_from_inference(self):
         snapshot = build_snapshot(self.pm, now=self.now)
