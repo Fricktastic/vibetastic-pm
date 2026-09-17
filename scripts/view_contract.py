@@ -467,7 +467,9 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
             _view_warning(warnings, "missing_task_linkage", "Run has no authoritative PLAN task", ".orchestrator/runs.json" if run["source"] != "journal" else "logs/runs.jsonl", task_id=task_id)
     tasks = []
     for task in plan["tasks"]:
-        copy = dict(task)
+        # ``field_lines`` is parser bookkeeping.  It is intentionally not part of
+        # the public View contract (nor of the event contract below).
+        copy = {key: value for key, value in task.items() if key != "field_lines"}
         copy["runs"] = sorted(task_runs.get(task["id"], set())) if task["valid_identity"] else []
         tasks.append(copy)
     capacity = {"usage": _capacity_rows(captures["logs/cost.jsonl"], warnings), "provenance": _provenance_for(captures["logs/cost.jsonl"], "logs/cost.jsonl", 1)}
@@ -475,7 +477,8 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
         "contract": "vibetastic-view/v1", "schema_version": 1, "generated_at": generated,
         "generation": _prior_generation(Path(pm_dir), warnings), "project": project,
         "plan": {key: plan[key] for key in ("project", "created", "updated", "provenance")},
-        "stages": plan["stages"], "tasks": tasks, "recommended_next": [], "attention": [],
+        "stages": [{key: value for key, value in stage.items() if key != "field_lines"}
+                   for stage in plan["stages"]], "tasks": tasks, "recommended_next": [], "attention": [],
         "ownership": ownership, "runs": runs, "capacity": capacity, "sources": sources,
         "warnings": [],
     }
@@ -496,6 +499,93 @@ def write_snapshot(pm_dir: Path, snapshot: dict[str, Any]) -> Path:
     """Atomically write the sole View v1 output; no events are produced here."""
     target = Path(pm_dir) / ".orchestrator" / "view" / "v1" / "snapshot.json"
     _atomic_replace(target, (json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode())
+    return target
+
+
+_EVENT_FIELDS = {
+    "lease_acquired": ("provider", "session", "profile"),
+    "lease_renewed": ("provider", "session", "profile"),
+    "lease_released": ("provider", "session", "profile"),
+    "lease_handed_off": ("provider", "session", "profile"),
+    "lease_taken_over": ("provider", "session", "profile"),
+    "run_started": ("run_id", "task_id", "status", "role", "backend", "model", "tier"),
+    "run_finished": ("run_id", "task_id", "status", "role", "backend", "model", "tier"),
+    "run_reconciled": ("run_id", "task_id", "status", "role", "backend", "model", "tier"),
+    "plan_updated": ("plan_hash", "lint_exit"),
+    "document_written": ("path", "hash"),
+    "document_appended": ("path", "hash"),
+}
+
+
+def diff_snapshots(before: dict[str, Any], after: dict[str, Any], operation: str,
+                   identity_seed: str | None, entity: dict[str, Any]) -> list[dict[str, Any]]:
+    """Create the deliberately tiny event projection for one fixed PM command.
+
+    ``before``/``after`` are accepted so callers cannot manufacture events outside a
+    guarded state transition.  They are never embedded in an event.
+    """
+    event_type = operation
+    aliases = {"acquire": "lease_acquired", "renew": "lease_renewed", "release": "lease_released",
+               "handoff": "lease_handed_off", "takeover": "lease_taken_over", "reserve": "run_started",
+               "finish": "run_finished", "reconcile": "run_reconciled", "update_plan": "plan_updated",
+               "write": "document_written", "append": "document_appended"}
+    event_type = aliases.get(operation, operation)
+    if event_type not in _EVENT_FIELDS:
+        raise ValueError("unsupported view event")
+    allowed = {key: entity[key] for key in _EVENT_FIELDS[event_type]
+               if key in entity and (_is_scalar(entity[key]) or
+                                     (isinstance(entity[key], list) and all(_is_scalar(v) for v in entity[key])))}
+    # A changed result is what makes a command observable; release is intentionally
+    # observable even though its after ownership is null.
+    if before == after and event_type not in {"lease_released", "lease_renewed"}:
+        return []
+    ordinal = 0
+    if identity_seed:
+        token = identity_seed[7:] if identity_seed.startswith("sha256:") else hashlib.sha256(identity_seed.encode()).hexdigest()[:32]
+        event_id = "op:" + token[:32] + f":{ordinal}"
+    else:
+        token = str(allowed.get("run_id") or allowed.get("session") or "released")
+        after_digest = hashlib.sha256(json.dumps(allowed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+        event_id = f"cmd:{operation}:{token}:{after_digest}:{ordinal}"
+    return [{"event_id": event_id, "type": event_type, "operation": operation, **allowed}]
+
+
+def append_view_events(pm_dir: Path, events: list[dict[str, Any]]) -> Path:
+    """Durably append valid sanitized event rows, preserving malformed old rows."""
+    target = Path(pm_dir) / ".orchestrator" / "view" / "v1" / "events.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[str] = set()
+    malformed = False
+    if target.exists():
+        for line in target.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict) or not isinstance(row.get("event_id"), str):
+                    raise ValueError()
+                existing.add(row["event_id"])
+            except (ValueError, json.JSONDecodeError):
+                malformed = True
+    rows = []
+    for event in sorted(events, key=lambda row: row.get("event_id", "")):
+        event_type = event.get("type")
+        if (event_type not in _EVENT_FIELDS or not all(isinstance(event.get(key), str)
+                for key in ("event_id", "type", "operation")) or
+                set(event) - {"event_id", "type", "operation", *_EVENT_FIELDS[event_type]}):
+            raise ValueError("unsanitized view event")
+        if event["event_id"] not in existing:
+            rows.append(json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+            existing.add(event["event_id"])
+    if rows:
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write("\n".join(rows) + "\n")
+            stream.flush(); os.fsync(stream.fileno())
+    descriptor = os.open(target.parent, os.O_RDONLY)
+    try: os.fsync(descriptor)
+    finally: os.close(descriptor)
+    if malformed:
+        # The caller's snapshot refresh will retain a warning; malformed history is
+        # deliberately never repaired or rewritten here.
+        pass
     return target
 
 

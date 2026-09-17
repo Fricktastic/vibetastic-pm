@@ -15,6 +15,9 @@ from pathlib import Path
 import secrets
 import subprocess
 import tempfile
+import sys
+
+from view_contract import build_snapshot, write_snapshot, diff_snapshots, append_view_events
 
 
 class StateError(RuntimeError):
@@ -89,6 +92,51 @@ class PMState:
     def _save(self, path, value):
         self._replace(path, serialized(value) + b'\n')
 
+    def _dirty_path(self):
+        return self.meta / 'view' / 'dirty'
+
+    def _publish_result(self, result, before, command, identity_seed, entity):
+        """Publish after the authoritative write; projection failure is non-fatal."""
+        try:
+            after = build_snapshot(self.pm)
+            events = diff_snapshots(before, after, command, identity_seed, entity)
+            append_view_events(self.pm, events)
+            write_snapshot(self.pm, after)
+            return result
+        except Exception:
+            marker = {'version': 1, 'command': command,
+                      'identity_seed': digest((identity_seed or command).encode()),
+                      'entity': entity, 'before': before}
+            try:
+                self._replace(self._dirty_path(), serialized(marker) + b'\n')
+                warning = {'code': 'view_projection_dirty'}
+            except Exception:
+                print('view projection dirty marker could not be written', file=sys.stderr)
+                warning = {'code': 'dirty_marker_unwritable'}
+            if isinstance(result, dict):
+                return result | {'view_warning': warning}
+            return result
+
+    def _repair_view_if_dirty(self):
+        path = self._dirty_path()
+        if not path.exists():
+            return
+        marker = self._read_json(path)
+        if not isinstance(marker, dict) or marker.get('version') != 1:
+            return
+        before = marker.get('before')
+        if not isinstance(before, dict):
+            return
+        after = build_snapshot(self.pm)
+        # Transactional seeds were intentionally hashed in the marker.  Recreate the
+        # same stable event id directly from that opaque value.
+        seed = ('sha256:' + marker['identity_seed'][:32]) if marker.get('identity_seed') else None
+        events = diff_snapshots(before, after, marker.get('command'), seed, marker.get('entity', {}))
+        append_view_events(self.pm, events)
+        write_snapshot(self.pm, after)
+        path.unlink()
+        self._fsync_dir(path.parent)
+
     @contextmanager
     def _lock(self):
         config = self._read_json(self.meta / 'config.json')
@@ -98,6 +146,7 @@ class PMState:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
             try:
                 self._recover()
+                self._repair_view_if_dirty()
                 yield
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
@@ -132,11 +181,13 @@ class PMState:
 
     def acquire(self, provider, session, pid, profile='normal'):
         with self._lock():
+            before = build_snapshot(self.pm)
             if self._lease() is not None:
                 raise StateError('project already owned; age never authorizes stealing a lease')
             lease = self._new_lease(provider, session, pid, profile)
             self._save(self.meta / 'lease.json', lease)
-            return lease
+            return self._publish_result(lease, before, 'acquire', None,
+                                        {'provider': provider, 'session': session, 'profile': profile})
 
     def check(self, token, provider=None, session=None):
         with self._lock():
@@ -144,23 +195,28 @@ class PMState:
 
     def renew(self, token):
         with self._lock():
+            before = build_snapshot(self.pm)
             lease = self._check(token)
             lease['renewed_at'] = stamp()
             self._save(self.meta / 'lease.json', lease)
-            return lease
+            return self._publish_result(lease, before, 'renew', None,
+                                        {key: lease.get(key) for key in ('provider', 'session', 'profile')})
 
     def release(self, token):
         with self._lock():
-            self._check(token)
+            before = build_snapshot(self.pm); lease = self._check(token)
             self._save(self.meta / 'lease.json', None)
-            return {'released': True}
+            return self._publish_result({'released': True}, before, 'release', None,
+                                        {'provider': lease['provider'], 'session': 'released', 'profile': lease['profile']})
 
     def handoff(self, token, provider, session, pid, profile='normal'):
         with self._lock():
+            before = build_snapshot(self.pm)
             self._check(token)
             lease = self._new_lease(provider, session, pid, profile)
             self._save(self.meta / 'lease.json', lease)
-            return lease
+            return self._publish_result(lease, before, 'handoff', None,
+                                        {'provider': provider, 'session': session, 'profile': profile})
 
     def _runs(self):
         runs = self._read_json(self.meta / 'runs.json', {})
@@ -269,6 +325,7 @@ class PMState:
 
     def takeover(self, provider, session, pid, evidence_hash, reason, profile='normal'):
         with self._lock():
+            before = build_snapshot(self.pm)
             evidence = self._active()
             if not reason.strip() or evidence_hash != evidence['evidence_hash']:
                 raise StateError('takeover requires a reason and current active evidence hash')
@@ -280,10 +337,12 @@ class PMState:
             lease['takeover'] = {'previous_owner': evidence['lease'], 'evidence_hash': evidence_hash,
                                  'reason': reason, 'unreconciled_runs': [r['run_id'] for r in evidence['runs']]}
             self._save(self.meta / 'lease.json', lease)
-            return lease
+            return self._publish_result(lease, before, 'takeover', None,
+                                        {'provider': provider, 'session': session, 'profile': profile})
 
     def reserve(self, token, run_id, task_id, pid, worktree, branch=None):
         with self._lock():
+            before = build_snapshot(self.pm)
             lease = self._check(token)
             if not run_id or not task_id:
                 raise StateError('run-id and task-id are required')
@@ -312,11 +371,13 @@ class PMState:
                    'owner': lease}
             runs[run_id] = run
             self._save(self.meta / 'runs.json', runs)
-            return run
+            return self._publish_result(run, before, 'reserve', None,
+                                        {key: run.get(key) for key in ('run_id', 'task_id', 'status', 'role', 'backend', 'model', 'tier')})
 
     def finish(self, run_id, pid=None):
         """Dispatch's own process may finish after ownership moves to another session."""
         with self._lock():
+            before = build_snapshot(self.pm)
             runs = self._runs()
             if run_id not in runs:
                 raise StateError('unknown run-id')
@@ -327,10 +388,12 @@ class PMState:
             if run['status'] == 'active':
                 run.update(status='finished', finished_at=stamp())
                 self._save(self.meta / 'runs.json', runs)
-            return run
+            return self._publish_result(run, before, 'finish', None,
+                                        {key: run.get(key) for key in ('run_id', 'task_id', 'status', 'role', 'backend', 'model', 'tier')})
 
     def reconcile(self, token, run_id, evidence_hash, reason):
         with self._lock():
+            before = build_snapshot(self.pm)
             self._check(token)
             evidence = self._active()
             if not reason.strip() or evidence_hash != evidence['evidence_hash']:
@@ -344,7 +407,8 @@ class PMState:
             runs[run_id].update(status='reconciled', reconciled_at=stamp(), reason=reason,
                                 evidence_hash=evidence_hash)
             self._save(self.meta / 'runs.json', runs)
-            return runs[run_id]
+            return self._publish_result(runs[run_id], before, 'reconcile', None,
+                                        {key: runs[run_id].get(key) for key in ('run_id', 'task_id', 'status', 'role', 'backend', 'model', 'tier')})
 
     def _file_hash(self, path):
         return digest(path.read_bytes()) if path.exists() else None
@@ -412,6 +476,7 @@ class PMState:
 
     def update_plan(self, token, expected_hash, candidate, event, operation_id):
         with self._lock():
+            before = build_snapshot(self.pm)
             self._check(token)
             if not event.strip():
                 raise StateError('PLAN update requires a nonempty TASK_LOG event')
@@ -436,11 +501,14 @@ class PMState:
                       'lint_exit': lint.returncode, 'lint_output': lint.stdout + lint.stderr}
             marker = '\n<!-- pm-operation: ' + operation_id + ' -->\n'
             log_bytes = log.read_bytes() if log.exists() else b''
-            return self._transaction(operation_id, request,
+            result = self._transaction(operation_id, request,
                 [(plan, candidate.encode()), (log, log_bytes + (marker + event.rstrip() + '\n').encode())], result)
+            return self._publish_result(result, before, 'update_plan', operation_id,
+                                        {'plan_hash': result['plan_hash'], 'lint_exit': result['lint_exit']})
 
     def _write(self, token, relative, content, operation_id, append):
         with self._lock():
+            before_snapshot = build_snapshot(self.pm)
             self._check(token)
             target = self._target(relative, allow_log=append)
             request = {'kind': 'append' if append else 'write', 'path': relative, 'content': content}
@@ -449,8 +517,10 @@ class PMState:
                 return replay
             before = target.read_bytes() if append and target.exists() else b''
             after = before + content.encode()
-            return self._transaction(operation_id, request, [(target, after)],
-                                     {'operation_id': operation_id, 'path': relative, 'hash': digest(after)})
+            result = self._transaction(operation_id, request, [(target, after)],
+                                       {'operation_id': operation_id, 'path': relative, 'hash': digest(after)})
+            return self._publish_result(result, before_snapshot, 'append' if append else 'write', operation_id,
+                                        {'path': relative, 'hash': result['hash']})
 
     def write(self, token, relative, content, operation_id):
         return self._write(token, relative, content, operation_id, False)

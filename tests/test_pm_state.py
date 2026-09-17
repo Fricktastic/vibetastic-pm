@@ -108,6 +108,17 @@ class StateTests(unittest.TestCase):
         with self.assertRaises(self.mod.StateError):
             self.update(token, candidate=PLAN.replace('pending', 'failed'))
 
+    def test_reserve_publishes_sanitized_run_started_event(self):
+        token = self.own()
+        self.state.reserve(token, 'run-1', 'T001', os.getpid(), str(self.pm))
+        events = [json.loads(line) for line in
+                  (self.pm / '.orchestrator/view/v1/events.jsonl').read_text().splitlines()]
+        event = next(event for event in events if event['type'] == 'run_started')
+        self.assertEqual(event['type'], 'run_started')
+        self.assertEqual(event['task_id'], 'T001')
+        self.assertNotIn('worktree', event)
+        self.assertNotIn('owner', event)
+
     def test_recover_replace_before_log_and_after_log_before_commit(self):
         token = self.own()
         real_replace = self.mod.os.replace
