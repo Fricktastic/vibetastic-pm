@@ -297,6 +297,48 @@ reason: \"Approve device verification\"
         self.assertEqual(json.loads(path.read_text())["generation"], 1)
         self.assertEqual(path, self.pm / ".orchestrator/view/v1/snapshot.json")
 
+    def test_unstable_three_attempt_capture_returns_last_complete_capture_once_per_source(self):
+        original = view_contract._fingerprint_source
+        def unstable(pm, relative):
+            present, source_hash = original(pm, relative)
+            return (present, "changed" if relative == "PLAN.md" else source_hash)
+        with patch.object(view_contract, "_fingerprint_source", side_effect=unstable):
+            snapshot = build_snapshot(self.pm, now=self.now)
+        warnings = [warning for warning in snapshot["warnings"]
+                    if warning["code"] == "unstable_source_read"]
+        self.assertEqual(warnings, [{"code": "unstable_source_read",
+                                     "message": "Source changed during capture", "path": "PLAN.md"}])
+        self.assertEqual(snapshot["plan"]["provenance"]["sha256"],
+                         hashlib.sha256((self.pm / "PLAN.md").read_bytes()).hexdigest())
+
+    def test_snapshot_replace_failure_preserves_old_bytes_and_cleans_temp(self):
+        target = self.pm / ".orchestrator/view/v1/snapshot.json"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'{"old":true}\n')
+        with patch.object(view_contract.os, "replace", side_effect=OSError("replace failed")):
+            with self.assertRaises(OSError):
+                write_snapshot(self.pm, {"new": True})
+        self.assertEqual(target.read_bytes(), b'{"old":true}\n')
+        self.assertEqual(list(target.parent.glob(".snapshot-*")), [])
+
+    def test_invalid_task_identity_never_links_matching_run(self):
+        plan = (self.pm / "PLAN.md").read_text()
+        duplicate = """  - id: T001
+    stage: 1
+    title: Duplicate
+    agent: codex
+    status: pending
+    depends_on: []
+    failure_count: 0
+"""
+        opening, closing = plan.rsplit("---\n", 1)
+        (self.pm / "PLAN.md").write_text(opening + duplicate + "---\n" + closing)
+        snapshot = build_snapshot(self.pm, now=self.now)
+        invalid = next(task for task in snapshot["tasks"] if task["id"] == "T001" and not task["valid_identity"])
+        self.assertEqual(invalid["runs"], [])
+        self.assertTrue(any(item["rule"] == "missing_task_linkage" and item["task_id"] == "T001"
+                            for item in snapshot["attention"]))
+
     def test_snapshot_does_not_publish_parser_line_maps(self):
         snapshot = build_snapshot(self.pm, now=self.now)
         self.assertTrue(all("field_lines" not in row for row in snapshot["tasks"] + snapshot["stages"]))
@@ -309,6 +351,38 @@ reason: \"Approve device verification\"
         rows = (self.pm / ".orchestrator/view/v1/events.jsonl").read_text().splitlines()
         self.assertEqual(len(rows), 1)
         self.assertEqual(set(json.loads(rows[0])), {"event_id", "type", "operation", "run_id", "task_id", "status"})
+
+    def test_event_mapping_allowlists_and_renewal_identity_are_fixed(self):
+        mappings = {
+            "acquire": "lease_acquired", "renew": "lease_renewed", "release": "lease_released",
+            "handoff": "lease_handed_off", "takeover": "lease_taken_over", "reserve": "run_started",
+            "finish": "run_finished", "reconcile": "run_reconciled", "update_plan": "plan_updated",
+            "write": "document_written", "append": "document_appended",
+        }
+        entity = {"provider": "codex", "session": "s", "profile": "normal", "renewed_at": "one",
+                  "run_id": "r", "task_id": "T001", "status": "active", "role": "builder",
+                  "backend": "codex", "model": "m", "tier": "fast", "plan_hash": "h", "lint_exit": 0,
+                  "path": "HANDOFF.md", "hash": "h", "field_lines": {"secret": 1}}
+        for command, event_type in mappings.items():
+            row = diff_snapshots({}, {"changed": command}, command, None, entity)[0]
+            self.assertEqual(row["type"], event_type)
+            self.assertNotIn("field_lines", row)
+        one = diff_snapshots({}, {"changed": 1}, "renew", None, entity)[0]
+        entity["renewed_at"] = "two"
+        two = diff_snapshots({}, {"changed": 2}, "renew", None, entity)[0]
+        self.assertNotEqual(one["event_id"], two["event_id"])
+        self.assertNotIn("renewed_at", two)
+
+    def test_event_id_formulas_and_parent_fsync(self):
+        entity = {"run_id": "run-1", "task_id": "T001", "status": "active"}
+        cmd = diff_snapshots({}, {"after": 1}, "reserve", None, entity)[0]
+        expected = hashlib.sha256(json.dumps(entity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+        self.assertEqual(cmd["event_id"], f"cmd:reserve:run-1:{expected}:0")
+        op = diff_snapshots({}, {"after": 1}, "write", "transaction-id", {"path": "HANDOFF.md", "hash": "h"})[0]
+        self.assertEqual(op["event_id"], "op:" + hashlib.sha256(b"transaction-id").hexdigest()[:32] + ":0")
+        with patch.object(view_contract.os, "fsync", wraps=view_contract.os.fsync) as sync:
+            append_view_events(self.pm, [cmd])
+        self.assertGreaterEqual(sync.call_count, 2)  # event file and its parent directory
 
     def test_attention_distinguishes_explicit_gate_from_inference(self):
         snapshot = build_snapshot(self.pm, now=self.now)

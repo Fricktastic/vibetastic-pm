@@ -119,6 +119,56 @@ class StateTests(unittest.TestCase):
         self.assertNotIn('worktree', event)
         self.assertNotIn('owner', event)
 
+    def test_renewals_have_distinct_cmd_event_ids(self):
+        token = self.own()
+        with patch.object(self.mod, 'stamp', side_effect=['2026-01-01T00:00:00+00:00',
+                                                          '2026-01-01T00:00:01+00:00',
+                                                          '2026-01-01T00:00:02+00:00']):
+            self.state.renew(token)
+            self.state.renew(token)
+        rows = [json.loads(line) for line in (self.pm / '.orchestrator/view/v1/events.jsonl').read_text().splitlines()]
+        renewals = [row for row in rows if row['type'] == 'lease_renewed']
+        self.assertEqual(len(renewals), 2)
+        self.assertTrue(all(row['event_id'].startswith('cmd:renew:session:') for row in renewals))
+        self.assertNotEqual(renewals[0]['event_id'], renewals[1]['event_id'])
+
+    def test_dirty_repair_preserves_cmd_and_op_identity_classes(self):
+        token = self.own()
+        real_write = self.mod.write_snapshot
+        with patch.object(self.mod, 'write_snapshot', side_effect=OSError('projection failed')):
+            result = self.state.reserve(token, 'repair-run', 'T001', os.getpid(), str(self.pm))
+        self.assertEqual(result['view_warning']['code'], 'view_projection_dirty')
+        marker = json.loads((self.pm / '.orchestrator/view/dirty').read_text())
+        self.assertEqual(marker['identity_seed'], 'cmd')
+        self.state.check(token)
+        rows = [json.loads(line) for line in (self.pm / '.orchestrator/view/v1/events.jsonl').read_text().splitlines()]
+        cmd = next(row for row in rows if row.get('run_id') == 'repair-run')
+        self.assertTrue(cmd['event_id'].startswith('cmd:reserve:repair-run:'))
+        with patch.object(self.mod, 'write_snapshot', side_effect=OSError('projection failed')):
+            result = self.state.write(token, 'HANDOFF.md', 'repair', 'operation-for-repair')
+        self.assertEqual(result['view_warning']['code'], 'view_projection_dirty')
+        # The replayed guarded command repairs first, then returns cached state.
+        self.state.write(token, 'HANDOFF.md', 'repair', 'operation-for-repair')
+        rows = [json.loads(line) for line in (self.pm / '.orchestrator/view/v1/events.jsonl').read_text().splitlines()]
+        op = next(row for row in rows if row['type'] == 'document_written')
+        self.assertEqual(op['event_id'], 'op:' + hashlib.sha256(b'operation-for-repair').hexdigest()[:32] + ':0')
+        self.assertEqual(len([row for row in rows if row['type'] == 'document_written']), 1)
+
+    def test_dirty_marker_unwritable_is_safe_and_authoritative_write_succeeds(self):
+        token = self.own()
+        original_replace = self.state._replace
+        def fail_dirty(path, data):
+            if Path(path).name == 'dirty':
+                raise OSError('private path must not escape')
+            return original_replace(path, data)
+        with patch.object(self.mod, 'write_snapshot', side_effect=OSError('projection failed')), \
+             patch.object(self.state, '_replace', side_effect=fail_dirty), \
+             patch('sys.stderr') as stderr:
+            result = self.state.write(token, 'HANDOFF.md', 'authoritative', 'dirty-unwritable')
+        self.assertEqual((self.pm / 'HANDOFF.md').read_text(), 'authoritative')
+        self.assertEqual(result['view_warning'], {'code': 'dirty_marker_unwritable'})
+        self.assertIn('view projection dirty marker could not be written', str(stderr.write.call_args))
+
     def test_recover_replace_before_log_and_after_log_before_commit(self):
         token = self.own()
         real_replace = self.mod.os.replace
