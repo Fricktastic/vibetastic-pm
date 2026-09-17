@@ -167,7 +167,8 @@ class StateTests(unittest.TestCase):
             result = self.state.write(token, 'HANDOFF.md', 'authoritative', 'dirty-unwritable')
         self.assertEqual((self.pm / 'HANDOFF.md').read_text(), 'authoritative')
         self.assertEqual(result['view_warning'], {'code': 'dirty_marker_unwritable'})
-        self.assertIn('view projection dirty marker could not be written', str(stderr.write.call_args))
+        self.assertIn('view projection dirty marker could not be written',
+                      ''.join(call.args[0] for call in stderr.write.call_args_list))
 
     def test_recover_replace_before_log_and_after_log_before_commit(self):
         token = self.own()
