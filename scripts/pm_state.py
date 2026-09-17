@@ -104,8 +104,11 @@ class PMState:
             write_snapshot(self.pm, after)
             return result
         except Exception:
+            # Keep the identity class.  Transaction operation ids are reduced to
+            # their opaque digest; command events derive their stable cmd identity
+            # from the saved, already-sanitized entity on repair.
             marker = {'version': 1, 'command': command,
-                      'identity_seed': digest((identity_seed or command).encode()),
+                      'identity_seed': ('op:' + digest(identity_seed.encode())[:32]) if identity_seed else 'cmd',
                       'entity': entity, 'before': before}
             try:
                 self._replace(self._dirty_path(), serialized(marker) + b'\n')
@@ -128,9 +131,11 @@ class PMState:
         if not isinstance(before, dict):
             return
         after = build_snapshot(self.pm)
-        # Transactional seeds were intentionally hashed in the marker.  Recreate the
-        # same stable event id directly from that opaque value.
-        seed = ('sha256:' + marker['identity_seed'][:32]) if marker.get('identity_seed') else None
+        # The marker has the event identity class and only an opaque operation
+        # digest.  Passing None for cmd intentionally regenerates the cmd formula.
+        seed = marker.get('identity_seed')
+        if seed == 'cmd':
+            seed = None
         events = diff_snapshots(before, after, marker.get('command'), seed, marker.get('entity', {}))
         append_view_events(self.pm, events)
         write_snapshot(self.pm, after)
@@ -200,7 +205,7 @@ class PMState:
             lease['renewed_at'] = stamp()
             self._save(self.meta / 'lease.json', lease)
             return self._publish_result(lease, before, 'renew', None,
-                                        {key: lease.get(key) for key in ('provider', 'session', 'profile')})
+                                        {key: lease.get(key) for key in ('provider', 'session', 'profile', 'renewed_at')})
 
     def release(self, token):
         with self._lock():

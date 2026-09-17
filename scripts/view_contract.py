@@ -244,6 +244,16 @@ def _parse_task_fields(
                 "provenance": _provenance(digest, item[0][0]),
             }
         )
+    # A duplicate identity makes *every* occurrence ambiguous.  Keeping the
+    # first occurrence linkable would let a run attach to a PLAN entry whose
+    # authoritative identity is no longer unique.
+    counts: dict[str, int] = {}
+    for task in tasks:
+        if isinstance(task["source_id"], str):
+            counts[task["source_id"]] = counts.get(task["source_id"], 0) + 1
+    for task in tasks:
+        if isinstance(task["source_id"], str) and counts[task["source_id"]] > 1:
+            task["valid_identity"] = False
     return tasks
 
 
@@ -516,6 +526,13 @@ _EVENT_FIELDS = {
     "document_appended": ("path", "hash"),
 }
 
+# These values contribute to a command event's identity but are never projected.
+# A renewal is otherwise indistinguishable from a previous renewal of the same
+# lease (the public lease event allowlist intentionally omits timestamps).
+_EVENT_IDENTITY_FIELDS = {
+    "lease_renewed": ("renewed_at",),
+}
+
 
 def diff_snapshots(before: dict[str, Any], after: dict[str, Any], operation: str,
                    identity_seed: str | None, entity: dict[str, Any]) -> list[dict[str, Any]]:
@@ -535,17 +552,24 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any], operation: str
     allowed = {key: entity[key] for key in _EVENT_FIELDS[event_type]
                if key in entity and (_is_scalar(entity[key]) or
                                      (isinstance(entity[key], list) and all(_is_scalar(v) for v in entity[key])))}
+    identity_entity = {key: entity[key] for key in (*_EVENT_FIELDS[event_type],
+                                                     *_EVENT_IDENTITY_FIELDS.get(event_type, ()))
+                       if key in entity and (_is_scalar(entity[key]) or
+                                             (isinstance(entity[key], list) and all(_is_scalar(v) for v in entity[key])))}
     # A changed result is what makes a command observable; release is intentionally
     # observable even though its after ownership is null.
     if before == after and event_type not in {"lease_released", "lease_renewed"}:
         return []
     ordinal = 0
     if identity_seed:
-        token = identity_seed[7:] if identity_seed.startswith("sha256:") else hashlib.sha256(identity_seed.encode()).hexdigest()[:32]
+        # Repair stores this already-hashed, non-secret operation identity.  A
+        # normal transaction supplies its opaque operation id and never publishes it.
+        token = (identity_seed.removeprefix("op:") if identity_seed.startswith("op:")
+                 else hashlib.sha256(identity_seed.encode()).hexdigest())
         event_id = "op:" + token[:32] + f":{ordinal}"
     else:
         token = str(allowed.get("run_id") or allowed.get("session") or "released")
-        after_digest = hashlib.sha256(json.dumps(allowed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+        after_digest = hashlib.sha256(json.dumps(identity_entity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
         event_id = f"cmd:{operation}:{token}:{after_digest}:{ordinal}"
     return [{"event_id": event_id, "type": event_type, "operation": operation, **allowed}]
 
@@ -583,9 +607,9 @@ def append_view_events(pm_dir: Path, events: list[dict[str, Any]]) -> Path:
     try: os.fsync(descriptor)
     finally: os.close(descriptor)
     if malformed:
-        # The caller's snapshot refresh will retain a warning; malformed history is
-        # deliberately never repaired or rewritten here.
-        pass
+        # Retain malformed history untouched, but make publication repair explicit.
+        # The authoritative mutation has already committed when this is called.
+        raise ValueError("malformed existing view event row")
     return target
 
 
