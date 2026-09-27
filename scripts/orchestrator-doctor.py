@@ -14,6 +14,8 @@ import tempfile
 
 EVENTS = ("PreToolUse", "PostToolUse", "Stop")
 BEGIN = "<!-- BEGIN VIBETASTIC ORCHESTRATOR HARNESS -->"
+VOLATILE_SCRIPT = "scripts/handoff-volatile-hook.py"
+VOLATILE_HEADING = "## Volatile — re-verify before use"
 
 
 def load_object(path, errors):
@@ -106,6 +108,21 @@ def check_configuration(pm_dir, framework_dir):
             if expected_script not in words or command_provider != provider or command_pm != str(pm_dir):
                 errors.append(f"{relative}: managed {event} command targets the wrong adapter")
 
+        # Issue #51: the volatile-handoff banner runs at SessionStart for both providers.
+        volatile = " ".join((
+            "python3", shlex.quote(str(framework_dir / VOLATILE_SCRIPT)),
+            "--pm-dir", shlex.quote(str(pm_dir)),
+        ))
+        groups = managed_groups(config, "SessionStart", volatile)
+        count = sum(len(managed) for _, managed in groups)
+        if count != 1:
+            errors.append(f"{relative}: expected one managed SessionStart hook, found {count}")
+        elif groups[0][0].get("matcher") is not None:
+            errors.append(
+                f"{relative}: managed SessionStart matcher is {groups[0][0].get('matcher')!r}; "
+                "expected none (every session source)"
+            )
+
     for name in ("CLAUDE.md", "AGENTS.md"):
         try:
             content = (pm_dir / name).read_text()
@@ -115,6 +132,36 @@ def check_configuration(pm_dir, framework_dir):
         if BEGIN not in content or "ORCHESTRATOR.md" not in content:
             errors.append(f"{name} does not contain the managed harness section")
     return {"ok": not errors, "errors": errors}
+
+
+def volatile_selftest(framework_dir, pm_dir):
+    """The SessionStart banner must be silent without a section and loud with one (#51)."""
+    script = framework_dir / VOLATILE_SCRIPT
+    if not script.is_file():
+        return [f"{VOLATILE_SCRIPT} is missing"]
+    errors = []
+
+    def invoke():
+        return subprocess.run(
+            [sys.executable, str(script), "--pm-dir", str(pm_dir)],
+            input=json.dumps({"hook_event_name": "SessionStart", "cwd": str(pm_dir)}),
+            capture_output=True, text=True, timeout=30,
+        )
+
+    silent = invoke()
+    if silent.returncode != 0 or silent.stdout:
+        errors.append("volatile-handoff hook was not a silent no-op without HANDOFF.md")
+    handoff = pm_dir / "HANDOFF.md"
+    handoff.write_text(
+        f"# Handoff\n\n{VOLATILE_HEADING}\n"
+        "- doctor fixture claim | as-of 2026-01-01 | check: `true`\n"
+    )
+    loud = invoke()
+    handoff.unlink()
+    if loud.returncode != 0 or "CLAIMS, NOT FACTS" not in loud.stdout \
+            or "doctor fixture claim" not in loud.stdout:
+        errors.append("volatile-handoff hook did not print the volatile section with its banner")
+    return errors
 
 
 def run_adapter_selftest(framework_dir):
@@ -141,6 +188,8 @@ def run_adapter_selftest(framework_dir):
         (pm_dir / ".codex/hooks.json").write_text("{}\n")
         environment = os.environ.copy()
         environment["ORCHESTRATOR_HOOK_SELFTEST"] = "1"
+
+        errors.extend(volatile_selftest(framework_dir, pm_dir))
 
         base_payload = {
             "session_id": "doctor-fixture",

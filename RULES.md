@@ -215,6 +215,53 @@ things a fresh session would otherwise have to re-derive. It contains:
 - **Open questions awaiting the user** — any gate or decision the session is blocked on.
 - **In-session-only context** — anything load-bearing that isn't already in PLAN/TASK_LOG
   (a diagnosis conclusion, a decision rationale, a reviewer verdict not yet merged).
+- **Volatile claims** — in the fixed section below, and nowhere else.
+
+### Volatile claims — one fixed section (issue #51)
+
+Observed failure (gamedaytastic, 2026-09-24): the handoff said *"Codex quota is exhausted —
+dispatches run on opencode."* The quota had reset. The next session read the sentence as a
+fact and routed a spec critique and a build to metered opencode; the operator caught it, the
+build was killed mid-run and redispatched on Codex. A handoff mixes **durable** content
+(decisions, rationale, next action) with **volatile** state that is true only at the moment
+it was written — quota or backend availability, what build is on a device, a branch head, a
+PR's open/merged state, whether a task or process is still running. The durable part is
+orientation; the volatile part is a claim that expires.
+
+Every volatile claim goes in **one** section with exactly this heading (tooling detects the
+exact string — do not reword it):
+
+```markdown
+## Volatile — re-verify before use
+- <claim> | as-of <YYYY-MM-DD> | check: `<command that re-establishes it>`
+```
+
+Example lines:
+
+```markdown
+## Volatile — re-verify before use
+- T041 build installed on test device | as-of 2026-09-24 | check: `bash scripts/device-build-watermark.sh`
+- PR #88 open, awaiting review | as-of 2026-09-24 | check: `gh pr view 88 --json state -q .state`
+- task/T043 head is 4f2c1ab | as-of 2026-09-24 | check: `git -C ../app rev-parse task/T043`
+```
+
+- **One claim per line**, each with an as-of date and a check command. A claim with no check
+  command is not a claim anyone can use; leave it out or find the command.
+- **Volatile claims are banned from prose and headers.** "Current stage", "In-flight
+  dispatches" and "Next planned action" may *refer* to a volatile line ("resume once the PR in
+  § Volatile is merged"), never restate it as fact.
+- **Backend availability is never a handoff claim at all.** It is re-derived live: dispatch,
+  and branch on exit 30 (`dispatch.sh` classifies the backend's own quota/rate-limit/auth
+  refusal as exit 30). A "quota exhausted" line is exactly the sentence that caused #51.
+- Check commands are **project-supplied** (a device-build watermark, a branch-head probe).
+  The framework supplies the format and the mechanism, not the checks.
+
+**Mechanism.** `scripts/handoff-volatile-hook.py` runs as a `SessionStart` hook for both
+Claude and Codex (installed by `install-orchestrators.py`, verified by
+`orchestrator-doctor.py`). It prints this section — and only this section — under a
+*"claims, not facts"* banner, with each line's age in days and a flag on any line missing its
+date or check. It is silent when `HANDOFF.md` or the section is absent and never fails a
+session. The consuming rule is in `.claude/rules/state.md` § Volatile handoff claims.
 
 The PM rewrites `HANDOFF.md` **after every gate decision and every stage transition**, and
 whenever the user says **"checkpoint"**.

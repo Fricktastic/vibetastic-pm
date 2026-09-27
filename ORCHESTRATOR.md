@@ -49,7 +49,9 @@ must explicitly acquire a lease using its live process ID and export the returne
 into its tool environment; the CLI wrapper is the supported, tested pilot entry point.
 
 Before exiting, update HANDOFF.md with stage, in-flight run IDs/worktrees, latest results,
-open gates, next action, and unresolved recovery evidence. Releasing ownership does not
+open gates, next action, and unresolved recovery evidence. Time-bound claims go only in its
+`## Volatile — re-verify before use` section, one per line with an as-of date and a check
+command. Releasing ownership does not
 cancel builders or make their tasks ready to retry.
 
 ## Durable state mutations
@@ -99,6 +101,12 @@ PostToolUse hook undoes a write or that lint proves a transition satisfies every
 
 Read HANDOFF first for orientation, then SPEC, PLAN and recent TASK_LOG. Durable evidence
 wins over the handoff. Never turn `in_progress` into `failed` just because a session ended.
+
+HANDOFF's `## Volatile — re-verify before use` section holds claims, not facts (format in
+RULES.md § Session Handoff; rule in `.claude/rules/state.md`). Both providers' SessionStart
+hook prints it with a banner. Run a line's check before acting on it, re-verify before
+carrying it into a new handoff, and never choose a backend from a handoff: dispatch and
+branch on exit 30.
 
 ```sh
 python3 framework/scripts/orchestrator-state.py --pm-dir . active

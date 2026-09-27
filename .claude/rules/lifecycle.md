@@ -17,7 +17,9 @@ After `eval "$(~/.ssh/gh-agent-token.sh)"`, check for `PROJECT.md`. If missing, 
 
 `HANDOFF.md` is orientation, not authority: where it disagrees with `PLAN.md`/`TASK_LOG.md`,
 the durable state files win (the handoff may predate the last write). Reconcile and, if the
-handoff was stale, note it.
+handoff was stale, note it. Its `## Volatile — re-verify before use` lines (printed by the
+SessionStart hook) are claims: run each line's check before acting on it (`state.md` §
+Volatile handoff claims).
 
 Branch on state:
 

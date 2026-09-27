@@ -472,6 +472,90 @@ else
   fail "dispatch.sh does not stamp burn_proxy — the sol@high audit would stay manual"
 fi
 
+echo "[selftest] handoff volatile section — SessionStart banner (issue #51)"
+# The heading is a contract: a consuming project's interim shim greps framework/ for this
+# exact string to know it can retire itself. Renaming it silently re-arms the shim.
+VOL_HEADING='## Volatile — re-verify before use'
+if grep -qF -- "$VOL_HEADING" scripts/handoff-volatile-hook.py && grep -qF -- "$VOL_HEADING" RULES.md; then
+  pass "the exact volatile heading is defined in the hook and RULES.md"
+else
+  fail "the volatile heading drifted — consuming-project shims detect the exact string"
+fi
+VOL_TMP="$(mktemp -d)"
+vol_run() { python3 scripts/handoff-volatile-hook.py --pm-dir "$VOL_TMP" < /dev/null 2>&1; }
+vol_case() {  # label, expected-grep ('' = expect silence)
+  local out got
+  out="$(vol_run)"; got=$?
+  if [ "$got" != 0 ]; then fail "$1 (hook exit $got — must never fail a session)"; return; fi
+  if [ -z "$2" ]; then
+    [ -z "$out" ] && pass "$1" || fail "$1 (expected silence, got: $out)"
+  else
+    printf '%s' "$out" | grep -qF -- "$2" && pass "$1" || fail "$1 (missing '$2' in: $out)"
+  fi
+}
+vol_case "no HANDOFF.md is a silent no-op" ""
+printf '# Handoff\n\n## Next\n- do the thing\n' > "$VOL_TMP/HANDOFF.md"
+vol_case "HANDOFF.md without the section is silent" ""
+printf '# Handoff\n\n%s\n\n## Next\n- x\n' "$VOL_HEADING" > "$VOL_TMP/HANDOFF.md"
+vol_case "an empty volatile section is silent" ""
+printf '# Handoff\n\n%s\n- Codex quota exhausted | as-of 2026-09-24 | check: `gh pr view 1 | cat`\n\n## Next\n- next-section-line\n' \
+  "$VOL_HEADING" > "$VOL_TMP/HANDOFF.md"
+vol_case "a present section prints under the claims-not-facts banner" "CLAIMS, NOT FACTS"
+vol_case "each claim is printed with its age" "Codex quota exhausted | as-of 2026-09-24"
+if vol_run | grep -q 'next-section-line'; then fail "the section leaked past the next heading"
+else pass "the section stops at the next heading"; fi
+if vol_run | grep -q 'MALFORMED'; then fail "a well-formed line (pipe inside check) was flagged"
+else pass "a check command containing a pipe is still well-formed"; fi
+printf '# Handoff\n\n%s\n- device build is at abc123\n- PR open | as-of yesterday | check: `true`\n' \
+  "$VOL_HEADING" > "$VOL_TMP/HANDOFF.md"
+vol_case "a line with no as-of/check is flagged malformed" "MALFORMED: no as-of date, no check command"
+vol_case "a non-ISO as-of date is flagged" "MALFORMED: invalid as-of date"
+rm -f "$VOL_TMP/HANDOFF.md"; mkdir "$VOL_TMP/HANDOFF.md"
+vol_case "an unreadable HANDOFF.md never fails the session" ""
+printf '\xff\xfe%s\n- x | as-of 2026-01-01 | check: `true`\n' "$VOL_HEADING" > "$VOL_TMP/H2"
+rm -rf "$VOL_TMP/HANDOFF.md"; mv "$VOL_TMP/H2" "$VOL_TMP/HANDOFF.md"
+out="$(vol_run)"; [ $? = 0 ] && pass "undecodable bytes never fail the session" || fail "undecodable HANDOFF.md failed the hook"
+rm -rf "$VOL_TMP"
+if grep -q 'handoff-volatile-hook.py' scripts/install-orchestrators.py \
+   && grep -q 'SessionStart' scripts/install-orchestrators.py \
+   && grep -q 'SessionStart' scripts/orchestrator-doctor.py; then
+  pass "the installer wires it as SessionStart for both providers and the doctor checks it"
+else
+  fail "the volatile hook is not wired/checked — it would look shipped and do nothing"
+fi
+
+echo "[selftest] dispatch classifies backend quota/auth refusals as exit 30 (issue #51)"
+# Before #51 a quota refusal mid-run exited 1 — a task failure toward Gate 2 — so the only
+# "quota" signal the orchestrator had was a handoff sentence. These fakes emit each backend's
+# refusal shape; the last case guards against classifying the builder's own prose.
+Q_TMP="$(mktemp -d)"; Q_BIN="$Q_TMP/bin"; Q_PROJ="$Q_TMP/project"
+mkdir -p "$Q_BIN" "$Q_PROJ"; git -C "$Q_PROJ" init -q
+printf 'fake task\n' > "$Q_TMP/task-T997.md"
+q_case() {  # want_exit, backend, model, label  (fake CLI body already written)
+  local got
+  PATH="$Q_BIN:$PATH" CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$Q_TMP/logs-$RANDOM" \
+    Q_CALLS="$Q_TMP/calls" bash dispatch.sh --read-only --backend "$2" "$3" "$Q_PROJ" \
+    "$Q_TMP/task-T997.md" > /dev/null 2> "$Q_TMP/stderr"
+  got=$?
+  if [ "$got" = "$1" ]; then pass "$4"; else fail "$4 (expected exit $1, got $got)"; fi
+}
+q_fake() { printf '#!/bin/bash\nprintf "call\\n" >> "$Q_CALLS"\n%s\n' "$2" > "$Q_BIN/$1"; chmod +x "$Q_BIN/$1"; }
+q_fake codex "printf '%s\n' '{\"type\":\"error\",\"message\":\"You have hit your usage limit. Try again later.\"}'
+printf '%s\n' '{\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit\"}}'; exit 1"
+q_case 30 codex gpt-5.6-terra "codex usage-limit event exits 30 (backend unavailable)"
+grep -q 'backend unavailable: codex' "$Q_TMP/stderr" \
+  && pass "the refusal reason is reported on stderr" || fail "exit 30 carried no reason"
+q_fake claude "printf '%s\n' '{\"is_error\":true,\"result\":\"Claude AI usage limit reached|1790000000\",\"session_id\":\"s\"}'; exit 1"
+q_case 30 claude sonnet "claude is_error usage-limit result exits 30"
+rm -f "$Q_TMP/calls"
+q_fake opencode "echo 'ERROR 2026-09-27 service=llm error=402 Insufficient credits' >&2; exit 1"
+q_case 30 opencode openrouter/minimax/minimax-m3 "opencode insufficient-credits error exits 30"
+[ "$(wc -l < "$Q_TMP/calls" | tr -d ' ')" = 1 ] \
+  && pass "a refused silent run is not stall-retried" || fail "a quota refusal was stall-retried"
+q_fake codex "printf '%s\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"added a rate limit and fixed the 429 quota handling\"}}'; exit 1"
+q_case 1 codex gpt-5.6-terra "the builder's own report mentioning rate limits stays exit 1"
+rm -rf "$Q_TMP"
+
 echo "[selftest] investigate.sh — the one-command diagnosis lane (issue #42)"
 INV_TMP="$(mktemp -d)"
 mkdir -p "$INV_TMP/framework" "$INV_TMP/target"

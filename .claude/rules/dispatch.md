@@ -354,7 +354,15 @@ echoes the last 40 lines so a failure is never silent.
 |------|---------|-----------|
 | `0` | Ran and (if a verifier was set) it passed | Proceed to the staged-change check, then PR Opening |
 | `20` | Code runs but the verifier never passed within the attempt budget | **Tier escalation** (below) — not a `failure_count` event |
-| `30` | Backend unavailable (CLI missing/unauthenticated, or quota exhausted) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
+| `30` | Backend unavailable (CLI missing, bad slug, burn gate closed, or the backend refused the run for quota/rate-limit/auth) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
+
+**Availability is live state, never handoff state (issue #51).** Always start at the first
+entry of `builder_backends` (or the task's current backend) and let exit 30 move you on. Do
+not skip a backend because a handoff, a TASK_LOG note or an earlier session said its quota was
+exhausted — quotas reset, and the refused dispatch costs nothing. `dispatch.sh` classifies a
+refusal from the backend's own diagnostics (codex `error`/`turn.failed` events, claude
+`is_error` results, error-level stderr), never from the builder's report, and does not burn
+the same-backend fallback or a stall retry on it.
 | other non-0 | builder infra/model failure (even via fallback) | Task failure — see `state.md` (`failure_count +1`) |
 
 **Exit 0 — staged-change check before opening PR** (run in the worktree path dispatch.sh
@@ -412,6 +420,7 @@ exhausted before metered tokens** — that is why `builder_backends` defaults to
   `backend_escalated` (from→to backend, verifier tail). No `failure_count` change.
 - Exit **30** (backend unavailable — CLI missing, auth failure, quota exhausted): skip to
   the next backend at the **same tier**, append `backend_skipped`. No `failure_count` change.
+  The skip lasts for that dispatch only: the next task starts again at the first backend.
 - All backends exhausted: increment `failure_count`, write the verifier output to `error`,
   and follow `state.md` Failure Handling → Gate 2: the Tech Lead (subscription Sonnet,
   escalating to subscription Opus for genuinely architectural cases) re-specs or fixes the
