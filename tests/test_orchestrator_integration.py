@@ -18,6 +18,7 @@ SCRIPTS = ROOT / "scripts"
 INSTALLER = SCRIPTS / "install-orchestrators.py"
 HOOK = SCRIPTS / "orchestrator-hook.py"
 DOCTOR = SCRIPTS / "orchestrator-doctor.py"
+VOLATILE = SCRIPTS / "handoff-volatile-hook.py"
 
 
 def run(*args, input=None, env=None):
@@ -45,7 +46,7 @@ class InstallerTests(unittest.TestCase):
             "orchestrator-hook.py", "orchestrator-state.py", "plan-update.py", "pm_state.py",
             "plan-lint.sh", "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",
             "orchestrator-routing.py", "dispatch-role.py",
-            "spec-body-guard.py",
+            "spec-body-guard.py", "handoff-volatile-hook.py",
         ):
             (scripts / name).write_text("# fixture\n")
         (self.framework / "orchestrate.py").write_text("# fixture\n")
@@ -107,6 +108,14 @@ class InstallerTests(unittest.TestCase):
                 if any("orchestrator-hook.py" in hook.get("command", "") for hook in group["hooks"])
             ]
             self.assertIn("Read", pre_groups[0]["matcher"])
+            session = [
+                hook["command"]
+                for group in config["hooks"]["SessionStart"]
+                for hook in group["hooks"]
+            ]
+            self.assertEqual(len(session), 1)
+            self.assertIn("handoff-volatile-hook.py", session[0])
+            self.assertIn("--pm-dir", session[0])
         self.assertIn("framework/ORCHESTRATOR.md", (self.pm / "CLAUDE.md").read_text())
         self.assertIn("framework/ORCHESTRATOR.md", (self.pm / "AGENTS.md").read_text())
         self.assertIn("framework/scripts/plan-update.py", (self.pm / "CLAUDE.md").read_text())
@@ -364,6 +373,7 @@ class DoctorTests(unittest.TestCase):
         shutil.copy2(HOOK, self.framework / "scripts/orchestrator-hook.py")
         shutil.copy2(SCRIPTS / "plan-lint.sh", self.framework / "scripts/plan-lint.sh")
         shutil.copy2(SCRIPTS / "spec-body-guard.py", self.framework / "scripts/spec-body-guard.py")
+        shutil.copy2(VOLATILE, self.framework / "scripts/handoff-volatile-hook.py")
         for name in (
             "orchestrator-state.py", "plan-update.py", "pm_state.py",
             "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",
@@ -436,6 +446,33 @@ class DoctorTests(unittest.TestCase):
         report = json.loads(result.stdout)
         self.assertFalse(report["configuration"]["ok"])
         self.assertTrue(any("matcher" in error for error in report["configuration"]["errors"]))
+
+    def test_doctor_requires_the_volatile_handoff_session_start_hook(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+        path = self.pm / ".codex/hooks.json"
+        config = json.loads(path.read_text())
+        del config["hooks"]["SessionStart"]
+        path.write_text(json.dumps(config))
+
+        result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+
+        self.assertEqual(result.returncode, 1)
+        errors = json.loads(result.stdout)["configuration"]["errors"]
+        self.assertTrue(any("SessionStart" in error for error in errors), errors)
+
+    def test_reinstall_from_moved_framework_replaces_the_session_start_hook(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+        moved = self.framework.parent / "framework-moved"
+        shutil.copytree(self.framework, moved)
+        again = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", moved)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        for rel in (".claude/settings.json", ".codex/hooks.json"):
+            groups = json.loads((self.pm / rel).read_text())["hooks"]["SessionStart"]
+            commands = [hook["command"] for group in groups for hook in group["hooks"]]
+            self.assertEqual(len(commands), 1, commands)
+            self.assertIn("framework-moved", commands[0])
 
     def test_doctor_ignores_similarly_named_custom_hook(self):
         install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)

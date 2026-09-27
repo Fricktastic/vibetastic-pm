@@ -52,8 +52,10 @@
 #   20  verify never passed within max-attempts — code runs but is wrong -> PM escalates tier
 #   21  --read-only violated — the run modified the target tree (changes left for inspection)
 #   31  managed session state/policy blocked — reconcile; never increment failure_count
-#   30  backend unavailable — CLI not installed/authenticated; PM skips to the next backend
-#       in PROJECT.md builder_backends (no failure_count increment)
+#   30  backend unavailable — CLI not installed, bad model slug, burn gate closed, or the
+#       backend itself refused a turn for quota/rate-limit/auth (issue #51); PM skips to the
+#       next backend in PROJECT.md builder_backends (no failure_count increment). This is the
+#       ONLY availability signal: never route on a handoff sentence about quota.
 #
 # Output capture: every builder's assistant output stays on stdout and is also recorded in the
 # per-run human-readable logfile. Backend diagnostics and verifier output go there too. On any
@@ -925,15 +927,99 @@ run_builder_continue() { "run_${BACKEND}_continue" "$@"; }
 # The caller chooses the output path; the fresh stall guard deliberately reuses STALL_OUT so
 # each silent retry overwrites the prior attempt and `[ -s "$STALL_OUT" ]` remains meaningful.
 TURN_NUMBER=0
+BACKEND_UNAVAILABLE=""
 capture_builder_turn() {
-  local model="$1" out="$2" ec
+  local model="$1" out="$2" ec log_mark events_mark
   shift 2
   TURN_NUMBER=$((TURN_NUMBER + 1))
+  BACKEND_UNAVAILABLE=""
   echo "[dispatch] --- $model turn $TURN_NUMBER stdout ($(date)) ---" >> "$LOG_FILE"
+  log_mark="$(wc -c < "$LOG_FILE" | tr -d ' ')"
+  events_mark=0
+  [ -f "$CODEX_EVENTS" ] && events_mark="$(wc -c < "$CODEX_EVENTS" | tr -d ' ')"
+  rm -f "$CLAUDE_RESULTS.turn"
   "$@" > "$out"; ec=$?
+  # Classify BEFORE the report is appended to the log: everything after log_mark is this
+  # turn's backend stderr, never the builder's own prose.
+  if [ "$ec" -ne 0 ] || [ ! -s "$out" ]; then
+    BACKEND_UNAVAILABLE="$(backend_unavailable_signal "$log_mark" "$events_mark")"
+  fi
   cat "$out" >> "$LOG_FILE"
   cat "$out"
   return "$ec"
+}
+
+# --- [issue #51] Backend availability comes from the backend, never from a handoff -------
+# Field case (gamedaytastic, 2026-09-24): a handoff said "Codex quota is exhausted"; the quota
+# had reset; the orchestrator routed a critique and a build to metered opencode on the
+# strength of that sentence. The deeper gap was here: a quota / rate-limit / auth failure
+# DURING a run exited 1 — an ordinary task failure that burns failure_count toward Gate 2 —
+# so the only "signal" that a backend was out was prose somebody wrote down. Now a failed or
+# silent turn is classified from the backend's own diagnostics, and a quota/auth refusal
+# exits 30 (backend unavailable) so the orchestrator skips to the next backend on live
+# evidence. The next dispatch re-asks the backend; nothing is cached or carried forward.
+#
+# Sources scanned — never the builder's report, which may legitimately discuss rate limits:
+#   - this turn's stderr (the log bytes written after log_mark), error-level lines only
+#   - codex: `error` / `turn.failed` events appended to $CODEX_EVENTS after events_mark
+#   - claude: the turn's result JSON, only when it says is_error
+# A cheap pre-flight probe is deliberately NOT used: no backend exposes remaining quota
+# without spending a turn, and an auth-only probe (e.g. `codex login status`) cannot see
+# quota at all — the first real turn IS the probe, and it costs nothing when refused.
+backend_unavailable_signal() {
+  python3 - "$LOG_FILE" "$1" "$CODEX_EVENTS" "$2" "$CLAUDE_RESULTS.turn" <<'PY' 2>/dev/null || true
+import json, re, sys
+log, log_mark, events, events_mark, claude_turn = sys.argv[1:6]
+QUOTA = re.compile(
+    r"usage[ _-]?limit|quota|rate[ _-]?limit|too many requests|insufficient[ _](?:credits|quota|balance|funds)"
+    r"|credit balance|out of credits|limit (?:reached|exceeded)|\b(?:401|402|429)\b"
+    r"|unauthori[sz]ed|not (?:logged|signed) in|please (?:run )?/?log ?in|invalid api key"
+    r"|authentication (?:failed|required|error)", re.IGNORECASE)
+ERRORISH = re.compile(r"\berror\b|\bfail(?:ed|ure)?\b|\bdenied\b|exceeded|limit", re.IGNORECASE)
+def tail(path, mark):
+    try:
+        with open(path, "rb") as stream:
+            stream.seek(int(mark or 0))
+            return stream.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
+candidates = []
+for line in tail(log, log_mark).splitlines():
+    if line.startswith("[dispatch]") or " INFO " in line or line.startswith("INFO"):
+        continue
+    if ERRORISH.search(line):
+        candidates.append(line)
+for line in tail(events, events_mark).splitlines():
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("type") == "error":
+        candidates.append(str(event.get("message", "")))
+    elif event.get("type") == "turn.failed":
+        error = event.get("error")
+        candidates.append(str(error.get("message", "") if isinstance(error, dict) else error))
+try:
+    result = json.load(open(claude_turn))
+except (OSError, ValueError):
+    result = None
+if isinstance(result, dict) and result.get("is_error"):
+    candidates.append(" ".join(str(result.get(key, "")) for key in ("result", "api_error_status", "subtype")))
+for text in candidates:
+    if QUOTA.search(text):
+        print(" ".join(text.split())[:300])
+        break
+PY
+}
+
+# A failed turn with a quota/auth signal is "backend unavailable" (30), not a task failure.
+finish_failed_turn() {
+  if [ -n "${BACKEND_UNAVAILABLE:-}" ]; then
+    echo "[dispatch] backend unavailable: $BACKEND refused the run (quota/rate-limit/auth): $BACKEND_UNAVAILABLE" >&2
+    echo "[dispatch] --- backend unavailable (exit 30) at $(date): $BACKEND_UNAVAILABLE ---" >> "$LOG_FILE"
+    finish 30
+  fi
+  finish 1
 }
 
 # --- Silent-stall guard (issue #4) ---
@@ -957,6 +1043,13 @@ run_fresh_stall_guarded() {
 
     # The builder spoke: its exit code means what it says.
     [ -s "$STALL_OUT" ] && return "$ec"
+
+    # [issue #51] Silent because the backend refused (quota/rate-limit/auth): a same-model
+    # retry would be refused identically. Report it; the caller exits 30.
+    if [ -n "$BACKEND_UNAVAILABLE" ]; then
+      [ "$ec" -eq 0 ] && ec=1
+      return "$ec"
+    fi
 
     # [0f/B3] It produced NOTHING. Previously an exit 0 here returned success, and with no
     # verify-cmd configured dispatch.sh went straight to `finish 0` — so a run that did no
@@ -1044,14 +1137,17 @@ if [ $? -ne 0 ]; then
   if salvageable_run; then
     echo "[dispatch] $ACTIVE_MODEL exited non-zero but left committed work and a clean tree — skipping fallback; verifying what's there." >&2
     echo "[dispatch] --- $ACTIVE_MODEL exit salvaged (commits present, tree clean) at $(date) ---" >> "$LOG_FILE"
+  elif [ -n "$BACKEND_UNAVAILABLE" ]; then
+    # Same backend, same account: the fallback model would be refused too (issue #51).
+    finish_failed_turn
   elif [ -n "$FALLBACK_MODEL" ]; then
     echo "[dispatch] Primary model ($ACTIVE_MODEL) failed. Retrying with fallback: $FALLBACK_MODEL" >&2
     echo "[dispatch] --- primary ($ACTIVE_MODEL) infra failure at $(date) ---" >> "$LOG_FILE"
     ACTIVE_MODEL="$FALLBACK_MODEL"
     FALLBACK_USED=true
-    run_fresh_stall_guarded "$ACTIVE_MODEL" || { salvageable_run || finish 1; }
+    run_fresh_stall_guarded "$ACTIVE_MODEL" || { salvageable_run || finish_failed_turn; }
   else
-    finish 1
+    finish_failed_turn
   fi
 fi
 
@@ -1097,6 +1193,6 @@ while true; do
     run_builder_continue "$ACTIVE_MODEL" "$FEEDBACK"
   continue_ec=$?
   rm -f "$CONTINUE_OUT"
-  [ "$continue_ec" -eq 0 ] || finish 1
+  [ "$continue_ec" -eq 0 ] || finish_failed_turn
   attempt=$((attempt + 1))
 done

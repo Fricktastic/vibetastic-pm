@@ -86,6 +86,26 @@ must still lint immediately after each write until their adapters are installed.
 
 ---
 
+## Volatile handoff claims (issue #51)
+
+`HANDOFF.md § Volatile — re-verify before use` holds claims, not facts (format:
+`framework/RULES.md` § Session Handoff). The `SessionStart` hook prints that section at the
+top of every session so it cannot be skimmed past.
+
+- **Never act on a volatile line without running its check first.** If the check disagrees,
+  the check wins; if the line has no check command, treat the claim as unknown.
+- **Never carry a volatile line forward into a new handoff unverified.** Re-run its check,
+  then either rewrite the line with today's as-of date or drop it. Copying yesterday's line
+  with yesterday's date is still carrying it forward unverified.
+- **Never write a volatile claim anywhere else** in the handoff — not in prose, not in a
+  header, not in "next action".
+- **Backend choice never comes from a handoff.** Quota/availability is re-derived by
+  dispatching to the first backend in `builder_backends` and handling exit 30
+  (`backend_skipped`), which `dispatch.sh` now returns when the backend itself refuses a run
+  for quota, rate limit or auth. Do not record "quota exhausted" in a handoff at all.
+
+---
+
 ## Failure Handling
 
 A dispatch **exit 31** is an ownership/routing/reconciliation stop: resolve the state or policy; never increment failure_count.

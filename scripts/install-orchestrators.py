@@ -16,6 +16,12 @@ END = "<!-- END VIBETASTIC ORCHESTRATOR HARNESS -->"
 IGNORE_BEGIN = "# BEGIN VIBETASTIC ORCHESTRATOR STATE"
 IGNORE_END = "# END VIBETASTIC ORCHESTRATOR STATE"
 EVENTS = ("PreToolUse", "PostToolUse", "Stop")
+# SessionStart runs a separate script (issue #51): it only prints HANDOFF.md's volatile
+# claims, needs no lease, and must never fail a session, so it does not go through the
+# lease-checking adapter above.
+SESSION_START = "SessionStart"
+MANAGED_EVENTS = EVENTS + (SESSION_START,)
+VOLATILE_SCRIPT = "scripts/handoff-volatile-hook.py"
 
 
 class InstallError(Exception):
@@ -66,6 +72,15 @@ def hook_command(provider, hook_script, pm_dir):
     ))
 
 
+def volatile_command(framework_dir, pm_dir):
+    return " ".join((
+        "python3",
+        shlex.quote(str(Path(framework_dir) / VOLATILE_SCRIPT)),
+        "--pm-dir",
+        shlex.quote(str(pm_dir)),
+    ))
+
+
 def is_managed(command_hook, exact_commands):
     return (
         isinstance(command_hook, dict)
@@ -82,14 +97,15 @@ def command_group(command, matcher=None):
     return group
 
 
-def merged_config(original, provider, hook_script, pm_dir, prior_command=None):
+def merged_config(original, provider, hook_script, pm_dir, prior_commands=()):
     result = copy.deepcopy(original)
     hooks = result.setdefault("hooks", {})
     command = hook_command(provider, hook_script, pm_dir)
-    exact_commands = {command}
-    if prior_command:
-        exact_commands.add(prior_command)
-    for event in EVENTS:
+    # hook_script is <framework>/scripts/orchestrator-hook.py
+    session_command = volatile_command(Path(hook_script).parent.parent, pm_dir)
+    exact_commands = {command, session_command}
+    exact_commands.update(item for item in prior_commands if item)
+    for event in MANAGED_EVENTS:
         kept_groups = []
         for group in hooks.get(event, []):
             kept_hooks = [item for item in group["hooks"] if not is_managed(item, exact_commands)]
@@ -104,6 +120,7 @@ def merged_config(original, provider, hook_script, pm_dir, prior_command=None):
     hooks["PreToolUse"].append(command_group(command, pretool_matcher))
     hooks["PostToolUse"].append(command_group(command, mutation_matcher))
     hooks["Stop"].append(command_group(command))
+    hooks[SESSION_START].append(command_group(session_command))
     return result
 
 
@@ -165,8 +182,9 @@ def prior_hook_commands(marker, marker_path):
         raise InstallError(f"{marker_path} is an invalid managed installation marker") from exc
     if not isinstance(providers, list):
         raise InstallError(f"{marker_path} is an invalid managed installation marker")
+    prior_volatile = volatile_command(Path(marker["framework_dir"]).resolve(), prior_pm)
     return {
-        provider: hook_command(provider, prior_hook, prior_pm)
+        provider: (hook_command(provider, prior_hook, prior_pm), prior_volatile)
         for provider in providers if provider in ("claude", "codex")
     }
 
@@ -215,6 +233,7 @@ def install(pm_dir, framework_dir):
         framework_dir / "scripts/orchestrator-routing.py",
         framework_dir / "scripts/dispatch-role.py",
         framework_dir / "scripts/spec-body-guard.py",
+        framework_dir / VOLATILE_SCRIPT,
         framework_dir / "orchestrate.py",
     )
     missing = [str(path) for path in required if not path.is_file()]
@@ -251,10 +270,10 @@ def install(pm_dir, framework_dir):
     contract_ref = os.path.relpath(framework_dir / "ORCHESTRATOR.md", pm_dir)
     outputs = [
         (claude_path, encode_json(merged_config(
-            claude, "claude", hook_script, pm_dir, prior_commands.get("claude")
+            claude, "claude", hook_script, pm_dir, prior_commands.get("claude", ())
         ))),
         (codex_path, encode_json(merged_config(
-            codex, "codex", hook_script, pm_dir, prior_commands.get("codex")
+            codex, "codex", hook_script, pm_dir, prior_commands.get("codex", ())
         ))),
     ]
     outputs.extend(
