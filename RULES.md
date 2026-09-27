@@ -369,6 +369,19 @@ These override convenience. Each cost real cycles when ignored.
 
 6. **Tight visual/layout tuning does not belong in the dispatch loop.** Build + test + screenshot per nudge is far too slow for "move it up 40pt." Do trivial visual nudges directly, or hand the on-device visual pass to the human. Automated screenshots confirm an artifact's presence/absence; they are weak for landing a precise interaction frame (e.g. a mid-scroll state).
 
+## Checks must be able to fail (issue #34)
+
+Applies to framework changes. A check nobody has seen fail may not be able to: T078 passed
+genuine mutation evidence measured on a tree that no longer existed (#35), and a selftest
+extraction bounded on the wrong line once tested nothing while reporting green.
+
+- **Mutation-test every new check before it ships** — gate, hook, lint rule, selftest
+  assertion. Break the check (delete or invert its condition, drop the field it reads), run
+  its test, see it go red, restore. Name the mutation and the red test in the commit message.
+- **Every reference to a file or section must be checkable.** Write it as `<file>.md §
+  <Heading>`, naming a heading that exists. `scripts/check-refs.py` (run by selftest) fails
+  on a dangling one, so renaming a heading means fixing its references in the same change.
+
 ---
 
 ## Agent Contracts

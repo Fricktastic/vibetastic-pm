@@ -818,6 +818,12 @@ for l in lines[start+1:]:
 done
 rm -rf "$INV_TMP"
 
+echo "[selftest] every '<file>.md § <Section>' reference resolves (issue #34)"
+# RULES.md § Checks must be able to fail: a reference to a section must be checkable. The
+# checker's own ability to fail is asserted by tests/test_check_refs.py.
+if refs_out="$(python3 scripts/check-refs.py 2>&1)"; then pass "${refs_out#check-refs: }"
+else fail "dangling section reference(s):"; printf '%s\n' "$refs_out" | sed 's/^/    /'; fi
+
 echo "[selftest] additive orchestration regression suite"
 if python3 -m unittest discover -s tests -p 'test_*.py'; then
   pass "lease, transaction, telemetry, hook and routing behavior"
