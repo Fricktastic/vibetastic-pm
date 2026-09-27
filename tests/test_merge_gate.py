@@ -442,12 +442,12 @@ class MergeGateTests(unittest.TestCase):
         fake_bin.mkdir()
         calls = Path(self.temp.name) / "gh-calls"
         gh = fake_bin / "gh"
-        gh.write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{calls}"\n')
+        gh.write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{calls}"\npwd -P > "{calls}.cwd"\n')
         gh.chmod(0o755)
         env = dict(os.environ, MERGE_GATE_GH=str(gh))
         sha = self.fix_with_test()
         refused = self.gate("merge", "--task", "T020", "--dir", self.code, "--base", "main",
-                            "--pr", "45", env=env)
+                            "--pr", "45", "--repo", "org/app", env=env)
         self.assertEqual(refused.returncode, 31)
         self.assertFalse(calls.exists(), "a refused merge must never reach gh")
         self.full_evidence()
@@ -458,6 +458,16 @@ class MergeGateTests(unittest.TestCase):
         self.assertEqual(calls.read_text().strip(),
                          f"pr merge 45 --match-head-commit {sha} --repo org/app --squash")
         self.assertEqual(self.ledger()[-1]["event"], "merge")
+        # gh runs in the verified checkout, never the PM directory's own repo.
+        self.assertEqual(Path(str(calls) + ".cwd").read_text().strip(),
+                         str(Path(self.code).resolve()))
+
+    def test_merge_requires_an_explicit_repo(self):
+        # An inferred repo would be the PM directory's own remote (PR #35 review finding 1).
+        self.fix_with_test()
+        result = self.gate("merge", "--task", "T020", "--dir", self.code, "--base", "main", "--pr", "45")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--repo", result.stderr)
 
     # --- the shared ledger ------------------------------------------------------------------
 

@@ -451,11 +451,11 @@ def cmd_merge(args):
     cmd_check(args)
     sha = resolve(args.dir, args.sha or 'HEAD')
     gh = os.environ.get('MERGE_GATE_GH', 'gh')
-    command = [gh, 'pr', 'merge', str(args.pr), '--match-head-commit', sha]
-    if args.repo:
-        command += ['--repo', args.repo]
+    # --repo is required and gh runs in the verified checkout: an inferred repo would be the
+    # PM directory's own remote, which could merge the same PR number in the wrong repo.
+    command = [gh, 'pr', 'merge', str(args.pr), '--match-head-commit', sha, '--repo', args.repo]
     command += [a for a in (args.gh_args or []) if a != '--']
-    result = subprocess.run(command)
+    result = subprocess.run(command, cwd=args.dir)
     append_row(args.log_dir, {'event': 'merge', 'ts': now(), 'task_id': args.task, 'sha': sha,
                               'pr': str(args.pr), 'exit': result.returncode})
     if result.returncode != 0:
@@ -501,7 +501,8 @@ def main(argv=None):
     check = sub.add_parser('check')
     merge = sub.add_parser('merge')
     merge.add_argument('--pr', required=True)
-    merge.add_argument('--repo')
+    merge.add_argument('--repo', required=True,
+                       help='org/repo of the target project; never inferred from the cwd')
     merge.add_argument('gh_args', nargs=argparse.REMAINDER, help='after --: extra gh pr merge flags')
     status = sub.add_parser('status')
     for command in (verify, fob):

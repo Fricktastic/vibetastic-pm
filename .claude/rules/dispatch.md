@@ -553,7 +553,7 @@ dir against the task's worktree, with its branch checked out and committed:
 
 ```bash
 G="python3 framework/scripts/merge_gate.py --pm-dir ."
-WT=<task worktree>; BASE=<base branch, e.g. develop>
+WT=<task worktree>; git -C "$WT" fetch origin <base>; BASE=origin/<base>   # e.g. origin/develop — never a possibly stale local branch
 $G verify       --task T0XX --dir "$WT"                     # PROJECT.md § Test command; --label/--cmd per extra rung
 $G fail-on-base --task T0XX --dir "$WT" --base "$BASE"      # observation: test
 $G observe      --task T0XX --dir "$WT" --evidence <artifact> --summary "<run, state, before vs after>"   # observation: runtime
