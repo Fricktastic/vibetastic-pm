@@ -212,6 +212,21 @@ Then set, **per task section**, by this project's review policy above (issue #50
 State both on a `Verify tier:` / `Risk:` line at the top of each task section, and set the
 result YAML `risk` to `true` if **any** task qualifies.
 
+Also give each task section an `Observation:` line (issue #35; `framework/VERIFY.md` § Merge
+gate): the one observation that **fails on the base tree and passes once the task is done**.
+A green suite is not it — the suite is green before the change too.
+
+- `Observation: test — <test name> — `<command that runs only that test>`` for a new or changed
+  test. At merge the orchestrator runs the command on the base tree with the branch's test
+  files overlaid (it must fail) and on the branch (it must pass). Name the assertion that
+  fails on base.
+- `Observation: runtime — <what to run, the state, what is seen before vs after>` when only
+  running the product shows it, by this project's observation rules above.
+- `Observation: none — <why>` for work with no behaviour change (scaffolding, refactor, docs,
+  test-only). Only these tasks may merge a diff with no production change.
+
+The task's Acceptance criteria must include that observation.
+
 ---
 
 ## Return Format

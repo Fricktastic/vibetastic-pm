@@ -26,11 +26,14 @@ Three of the four telemetry streams are mechanical — no orchestrator disciplin
 | **Orchestrator's own burn** | `Stop` hook, `scripts/log-partner-burn.py` | `logs/cost.jsonl` (`role: partner`) |
 | Role + task attribution | **you**, via `cost_event` below | `TASK_LOG.md` |
 | Critic/reviewer verdicts, adjudications, round-cap overrides | `dispatch.sh` + `scripts/review_gate.py` | `logs/verdicts.jsonl` |
+| Merge evidence pinned to a SHA: verification, fail-on-base, observations, merge overrides and checks | `scripts/merge_gate.py` | `logs/verdicts.jsonl` (+ command output under `logs/merge-gate/`) |
 
-`logs/verdicts.jsonl` is not telemetry — it is **gate state** (issues #18, #50): the critique
-build gate and the round caps are computed from it. Never edit or truncate it; write to it
-only through `review_gate.py` (`adjudicate`, `override-cap`), whose decisions need the lease in
-a managed project.
+`logs/verdicts.jsonl` is not telemetry — it is **gate state** (issues #18, #50, #35): the
+critique build gate, the round caps and the merge gate are computed from it. Never edit or
+truncate it; write to it only through `review_gate.py` (`adjudicate`, `override-cap`,
+`record`) and `merge_gate.py` (`verify`, `fail-on-base`, `observe`, `override`, `check`,
+`merge`). Decisions (`adjudicate`, `override-cap`, `observe`, `override`) need the lease in a
+managed project.
 
 The manual `cost_event` adds what the hooks cannot know: the **role** (Designer vs Tech Lead
 vs Reviewer) and task attribution. Append one after every subagent spawn and before each

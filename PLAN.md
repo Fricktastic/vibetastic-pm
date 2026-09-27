@@ -57,6 +57,8 @@ tasks:
     verify_tier: null   # R0|R1|R2 — the evidence that proves the task (project policy); see framework/VERIFY.md
     risk: null          # true|false — a project risk trigger applies: pre-build critique required
     security: false     # true forces critique and the Sonnet/Opus review floor
+    observation: null   # test|runtime|none — how the change is seen to take effect (fails on base, passes on the branch); framework/VERIFY.md § Merge gate
+    observation_cmd: null   # observation: test only — the command that runs the named new/changed test
     started_at: null
     completed_at: null
     failure_count: 0

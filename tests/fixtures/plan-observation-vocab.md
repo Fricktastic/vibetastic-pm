@@ -9,26 +9,21 @@ stages:
 tasks:
   - id: T001
     stage: 1
-    title: "First task"
+    title: "Legacy task with no observation field"
     agent: codex
     status: done
     depends_on: []
     failure_count: 0
-    tier: fast
     verify_tier: R0
   - id: T002
     stage: 1
-    title: "Second task"
-    agent: opencode
+    title: "Test-observable, but no command to run the test"
+    agent: codex
     status: pending
     depends_on: [T001]
     failure_count: 0
-    tier: standard
-    verify_tier: R1
-    risk: true
-    security: false
-    observation: test
-    observation_cmd: "make test ONLY=DecoderTests/testRealPayload"
+    verify_tier: R0
+    observation: test   # issue #35: needs observation_cmd
 ---
 
 ## Task Overview

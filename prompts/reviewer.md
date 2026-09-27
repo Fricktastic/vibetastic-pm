@@ -31,8 +31,16 @@ means in this project:
    logic, is a finding (VERIFY.md R1 rules). For R1 tasks: is there a real-payload
    fixture test through the real path? For a race fix: does the change name a mechanism
    that makes it deterministic, or is it a hopeful bundle?
-4. **Regressions** — behavior existing callers depend on that this diff changes silently.
-5. **Quality** — only findings that matter: dead code, obvious simplifications. No style
+4. **The change actually ships** (issue #35) — the spec names an observation that fails on
+   the base tree and passes on the branch. Check that the **net** diff (`git diff
+   {{DIFF_RANGE}}`, not the commit list) still contains the production change that
+   observation depends on: a later commit that reverts the fix while "hardening" its tests
+   leaves a green branch with zero production change (gamedaytastic T078). If the net diff
+   touches only tests/docs and the spec does not say `observation: none`, that is a BLOCKER.
+   For `observation: test`: does the named test assert the changed behaviour, so it would
+   fail without the production change? A test that passes on the base tree observes nothing.
+5. **Regressions** — behavior existing callers depend on that this diff changes silently.
+6. **Quality** — only findings that matter: dead code, obvious simplifications. No style
    nits.
 
 ## Output format (this is your entire final message)
@@ -47,6 +55,7 @@ FINDINGS:
 
 SPEC COVERAGE: <one sentence — what the spec asked vs. what the diff delivers>
 TEST PATH: <one sentence — do the tests exercise the production path? which boundary is mocked?>
+OBSERVATION: <one sentence — the spec's fail-on-base observation, and whether the net diff still carries the production change it depends on>
 
 <!-- REVIEWER_RESULT_START -->
 verdict: <APPROVE | APPROVE-WITH-FOLLOWUPS | REJECT — exactly one>
@@ -58,6 +67,10 @@ notes: <number of [NOTE] findings>
 
 REJECT if any BLOCKER exists. Keep it terse — the orchestrator reads this verdict to
 decide merge / reject / re-dispatch; it does not want prose.
+
+Your verdict is recorded against the commit you read (issue #35), and the merge gate accepts
+it only for that exact commit, read from a clean tree. Review the checked-out tree as it is;
+if it has uncommitted changes, say so in FINDINGS.
 
 **The result block is machine-read** (issue #18): `dispatch.sh` records it, and a review that
 does not approve (REJECT, or any blocker) counts as one of the task's fixup rounds, which are

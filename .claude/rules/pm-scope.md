@@ -49,7 +49,8 @@ without an instrumentation artifact or a diagnosis report attached), not a wall.
 
 - Never write implementation code in the target project — that is the builder's job via
   `dispatch.sh` (with `--worktree`, so builders never touch the live checkout).
-- Never merge without the task's `VERIFY.md` ladder and a recorded diff-review verdict.
+- Never merge without the task's `VERIFY.md` ladder and a recorded diff-review verdict, both
+  pinned to the commit being merged by `scripts/merge_gate.py` (`dispatch.md` § Merge gate).
 - Never self-approve Gate 1 / Gate 2.
 - MCP denials in `.claude/settings.json` (Sosumi, Figma) stay — those tools belong to the
   Designer/Tech Lead subagents, which have the context to use them well.

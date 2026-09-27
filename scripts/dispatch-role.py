@@ -31,9 +31,19 @@ def metadata(reply, role, staged, promoted):
     # risk + verify_tier (issue #50): two separate decisions — what evidence proves the task,
     # and whether its plan is critiqued. A task registered without them falls back to the
     # legacy verify_tier rule, so a Tech Lead result that omits them is incomplete.
+    # observation (issue #35): how the change is seen to take effect — the merge gate's
+    # fail-on-base check keys on it, and a test observation needs the command that runs it.
     for field in ('task_title', 'suggested_tier', 'security', 'verify_tier', 'risk'):
         if not re.search(r'^' + field + r':\s*\S', result, re.M):
             raise ValueError('missing Tech Lead metadata: ' + field)
+    kind = re.search(r'^observation:\s*["\']?([A-Za-z]+)', result, re.M)
+    if not kind:
+        raise ValueError('missing Tech Lead metadata: observation')
+    if kind.group(1).lower() not in ('test', 'runtime', 'none'):
+        raise ValueError('Tech Lead observation must be test, runtime or none')
+    if kind.group(1).lower() == 'test' and not re.search(
+            r'^observation_cmd:\s*(?!null\s*$|~\s*$|["\']{2})\S', result, re.M):
+        raise ValueError('Tech Lead observation: test needs observation_cmd')
     result = re.sub(r'^spec_path:.*$', 'spec_path: ' + json.dumps(promoted), result, flags=re.M)
     return '```yaml\n' + result + '\n```\n'
 

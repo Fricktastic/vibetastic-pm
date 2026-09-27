@@ -203,6 +203,17 @@ ${TEST_CMD}
        ## Risk triggers
        - <a kind of change that must be critiqued before it is built>
 
+     The merge gate (issue #35) also reads, when declared:
+
+       ## Observations
+       - <what a recorded runtime observation must carry to count here>
+
+       ## Test paths
+       - <glob of test files, overlaid onto the base tree for the fail-on-base run>
+
+       ## Non-production paths
+       - <glob of files whose change is not a product change, e.g. docs/>
+
      framework/Docs/examples/policy-ios.md is a worked iOS example. Validate with
      python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework -->
 EOF

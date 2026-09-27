@@ -39,4 +39,10 @@ Valid event_type values:
   round_cap_override  - Operator granted extra rounds; fields: role, extra, reason
   lessons_consolidated - Stage-transition lesson pass; fields: before, merged, retired,
                         after, mechanisms
+  observation_recorded - Runtime observation recorded with merge_gate.py observe; fields:
+                        sha, kind, evidence, summary
+  merge_gate          - merge_gate.py check/merge result; fields: sha (the commit merged),
+                        base_sha, allowed, checks (status per check), pr
+  merge_gate_override - Operator waived one merge-gate check for one commit; fields: sha,
+                        check, reason
 -->

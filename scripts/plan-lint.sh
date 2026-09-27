@@ -35,6 +35,8 @@
 #   - risk / security (if present) ∈ {true, false}. `risk` (issue #50) is what forces pre-build
 #     critique; verify_tier only says what evidence proves the change. A task with no `risk:`
 #     field is a pre-#50 task and keeps the old rule (critique at R1/R2) — never an error.
+#   - observation (if present) ∈ {test, runtime, none}; `test` needs observation_cmd (issue #35,
+#     scripts/merge_gate.py). No `observation:` field = a pre-#35 task — never an error.
 set -u
 
 PLAN_FILE="${1:-PLAN.md}"
@@ -138,7 +140,7 @@ for chunk in chunks:
 
     t = {k: field(k) for k in
          ("stage", "title", "agent", "status", "depends_on", "failure_count",
-          "tier", "verify_tier", "risk", "security")}
+          "tier", "verify_tier", "risk", "security", "observation", "observation_cmd")}
     tasks[tid] = t
     order.append(tid)
 
@@ -169,6 +171,15 @@ for chunk in chunks:
         value = (t[flag] or "").split("#")[0].strip().strip("\"'")
         if value and value.lower() not in ("true", "false", "null", "~"):
             vocab.append(f"{tid}: {flag} must be true or false, got '{value}'")
+
+    # Issue #35: how the change is observed to take effect (merge_gate.py). Absent = a
+    # pre-#35 task (legacy default), never an error.
+    obs = (t["observation"] or "").split("#")[0].strip().strip("\"'").lower()
+    if obs and obs not in ("test", "runtime", "none", "null", "~"):
+        vocab.append(f"{tid}: observation must be test, runtime or none, got '{obs}'")
+    cmd = (t["observation_cmd"] or "").strip().strip("\"'")
+    if obs == "test" and cmd.lower() in ("", "null", "~"):
+        vocab.append(f"{tid}: observation: test needs observation_cmd (the command that runs the named test)")
 
 if not tasks:
     errors.append("tasks: section contains no parseable '- id:' entries")

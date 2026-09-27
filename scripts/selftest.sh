@@ -35,6 +35,8 @@ FIXTURES="
 plan-good.md:0
 plan-vocab.md:3
 plan-risk-vocab.md:3
+plan-observation-vocab.md:3
+plan-observation-kind.md:3
 plan-missing-field.md:1
 plan-bad-dep.md:1
 plan-nested-depends.md:1
@@ -815,6 +817,12 @@ for l in lines[start+1:]:
   fi
 done
 rm -rf "$INV_TMP"
+
+echo "[selftest] every '<file>.md § <Section>' reference resolves (issue #34)"
+# RULES.md § Checks must be able to fail: a reference to a section must be checkable. The
+# checker's own ability to fail is asserted by tests/test_check_refs.py.
+if refs_out="$(python3 scripts/check-refs.py 2>&1)"; then pass "${refs_out#check-refs: }"
+else fail "dangling section reference(s):"; printf '%s\n' "$refs_out" | sed 's/^/    /'; fi
 
 echo "[selftest] additive orchestration regression suite"
 if python3 -m unittest discover -s tests -p 'test_*.py'; then
