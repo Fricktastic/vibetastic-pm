@@ -12,6 +12,18 @@ PROJECT.md, which setup writes once and the installer never touches:
     prompts through the ``{{PROJECT_POLICY}}`` placeholder):
         ## Verify tiers        one bullet per tier: ``- R0: <what evidence proves this>``
         ## Risk triggers       one bullet per trigger that forces pre-build critique
+        ## Observations        one bullet per rule for what counts as a recorded runtime
+                               observation (issue #35: fails on base, passes on the branch)
+  * path classes used by the merge gate (scripts/merge_gate.py, issue #35), one glob per
+    bullet. A glob with no ``/`` except a trailing one matches at any depth; ``**`` spans
+    directories, ``*`` stays within one path component; a trailing ``/`` means "everything
+    under this directory":
+        ## Test paths              tests and fixtures: overlaid onto the base tree for the
+                                   fail-on-base run
+        ## Non-production paths    docs and other files whose change is not a product change
+    Any changed path matching neither class is a production change.
+  * ``## Test command`` (a fenced code block written by setup) is the orchestrator's suite
+    command; the merge gate's ``verify`` runs it by default.
 
 Every part is optional. Anything absent falls back to the generic framework default below, so
 a project that has never declared a policy behaves exactly like one that declared the
@@ -23,6 +35,7 @@ CLI:
     project_policy.py --pm-dir . validate          # exit 1 on errors
     project_policy.py --pm-dir . render            # markdown for {{PROJECT_POLICY}}
     project_policy.py --pm-dir . cap --role critic|reviewer
+    project_policy.py --pm-dir . classify <path>...   # test | non_production | production
 """
 import argparse
 import json
@@ -55,8 +68,86 @@ DEFAULT_RISK_TRIGGERS = [
     'Leaves a design decision open that the builder would have to guess.',
 ]
 
+# Issue #35. What a runtime observation must carry to count at task close. Generic: it names
+# a real run of the exact tree being merged, not a claim about one.
+DEFAULT_OBSERVATIONS = [
+    'Record it against the exact commit being merged (the SHA the merge gate pins); an '
+    'observation of any other tree does not count.',
+    'Name what was run and how it was driven to the state in question, and cite the captured '
+    'artifact (screenshot, log excerpt, response body, recording), not a description of it.',
+    'Show the before and after: the behaviour on the base tree (or the defect report it '
+    'reproduces) and the changed behaviour on the branch.',
+    "A builder's or reviewer's report is never an observation; the orchestrator or the "
+    'operator observes.',
+]
+# Path classes for the merge gate's net-production-diff check and the fail-on-base overlay.
+DEFAULT_TEST_PATHS = [
+    'test/', 'tests/', '__tests__/', 'spec/', 'testdata/', 'fixtures/', 'Fixtures/',
+    '*Tests/', '*Test/',
+    'test_*.*', '*_test.*', '*.test.*', '*_spec.*', '*.spec.*', '*Test.*', '*Tests.*',
+]
+DEFAULT_NON_PRODUCTION_PATHS = [
+    '*.md', '*.rst', 'docs/', 'Docs/', 'doc/', 'LICENSE*', 'CHANGELOG*', 'AUTHORS*',
+]
+
 FRONTMATTER = re.compile(r'\A---\n(.*?)\n---', re.S)
-SECTION_TITLES = {'verify tiers': 'verify_tiers', 'risk triggers': 'risk_triggers'}
+SECTION_TITLES = {'verify tiers': 'verify_tiers', 'risk triggers': 'risk_triggers',
+                  'observations': 'observations', 'test paths': 'test_paths',
+                  'non-production paths': 'non_production_paths'}
+LIST_SECTIONS = ('risk_triggers', 'observations', 'test_paths', 'non_production_paths')
+GLOB_SECTIONS = ('test_paths', 'non_production_paths')
+
+
+def glob_regex(pattern):
+    """Compile a path-class glob (see the module docstring) to a regex over repo paths."""
+    pattern = pattern.strip().strip('`')
+    if pattern.startswith('./'):
+        pattern = pattern[2:]
+    if not pattern.strip('/*'):
+        raise ValueError(f'empty or match-everything glob {pattern!r}')
+    if '/' not in pattern.rstrip('/'):
+        pattern = '**/' + pattern
+    if pattern.endswith('/'):
+        pattern += '**'
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith('**/', i):
+            out.append('(?:.*/)?')
+            i += 3
+        elif pattern.startswith('**', i):
+            out.append('.*')
+            i += 2
+        elif pattern[i] == '*':
+            out.append('[^/]*')
+            i += 1
+        elif pattern[i] == '?':
+            out.append('[^/]')
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile(r'\A' + ''.join(out) + r'\Z')
+
+
+def classify(path, policy):
+    """'test', 'non_production' or 'production' for one repo-relative path."""
+    path = path.replace('\\', '/').lstrip('/')
+    for key, label in (('test_paths', 'test'), ('non_production_paths', 'non_production')):
+        if any(glob_regex(glob).match(path) for glob in policy[key]):
+            return label
+    return 'production'
+
+
+def test_command(pm_dir):
+    """The single command in PROJECT.md's ``## Test command`` fenced block, or ''."""
+    try:
+        text = _strip_comments((Path(pm_dir) / 'PROJECT.md').read_text())
+    except OSError:
+        return ''
+    section = re.search(r'(?ms)^##\s+Test command\s*$(.*?)(?=^##\s|\Z)', text)
+    block = re.search(r'```[^\n]*\n(.*?)```', section.group(1), re.S) if section else None
+    lines = [line.strip() for line in (block.group(1) if block else '').splitlines() if line.strip()]
+    return lines[0] if len(lines) == 1 else ''
 
 
 def _frontmatter_value(frontmatter, key):
@@ -95,8 +186,12 @@ def load(pm_dir):
         **DEFAULT_CAPS,
         'verify_tiers': dict(DEFAULT_VERIFY_TIERS),
         'risk_triggers': list(DEFAULT_RISK_TRIGGERS),
+        'observations': list(DEFAULT_OBSERVATIONS),
+        'test_paths': list(DEFAULT_TEST_PATHS),
+        'non_production_paths': list(DEFAULT_NON_PRODUCTION_PATHS),
         'sources': {key: 'default' for key in
-                    ('critic_round_cap', 'reviewer_fixup_round_cap', 'verify_tiers', 'risk_triggers')},
+                    ('critic_round_cap', 'reviewer_fixup_round_cap', 'verify_tiers',
+                     *LIST_SECTIONS)},
         'errors': [],
     }
     path = Path(pm_dir) / 'PROJECT.md'
@@ -145,12 +240,27 @@ def load(pm_dir):
         if not tier_errors:
             policy['verify_tiers'] = tiers
             policy['sources']['verify_tiers'] = 'project'
-    if 'risk_triggers' in sections:
-        if sections['risk_triggers']:
-            policy['risk_triggers'] = sections['risk_triggers']
-            policy['sources']['risk_triggers'] = 'project'
-        else:
-            errors.append('risk triggers section is present but lists no "- <trigger>" bullets')
+    for key in LIST_SECTIONS:
+        if key not in sections:
+            continue
+        title = key.replace('non_production', 'non-production').replace('_', ' ')
+        items = sections[key]
+        if not items:
+            errors.append(f'{title} section is present but lists no "- <item>" bullets')
+            continue
+        if key in GLOB_SECTIONS:
+            items = [item.strip().strip('`') for item in items]
+            bad = []
+            for item in items:
+                try:
+                    glob_regex(item)
+                except ValueError as exc:
+                    bad.append(str(exc))
+            if bad:
+                errors.append(f'{title}: ' + '; '.join(bad) + ' (using the default)')
+                continue
+        policy[key] = items
+        policy['sources'][key] = 'project'
     return policy
 
 
@@ -173,7 +283,22 @@ def render(policy):
     lines += ['- Anything that would set `security: true` (security always forces critique).', '',
               f'**Round caps:** {policy["critic_round_cap"]} pre-build critique round(s) and '
               f'{policy["reviewer_fixup_round_cap"]} reviewer fixup round(s) per task; '
-              '`dispatch.sh` refuses more (exit 31) until the operator decides.']
+              '`dispatch.sh` refuses more (exit 31) until the operator decides.', '',
+              '**Observation — fails on base, passes on the branch (issue #35):** every task '
+              'names one observation of the change taking effect, as `observation: test | '
+              'runtime | none`. `test` — a new or changed test and the exact command that runs '
+              'it (`observation_cmd`); the merge gate runs it on the base tree with the '
+              "branch's test files overlaid and requires it to fail there and pass on the "
+              'branch. `runtime` — an observation the orchestrator records against the commit '
+              'being merged. `none` — no behaviour change (refactor, docs, test-only); the only '
+              'kind whose net diff may contain no production change.', '',
+              f'**What counts as a runtime observation{source("observations")}:**', '']
+    lines += [f'- {rule}' for rule in policy['observations']]
+    lines += ['', f'**Test paths{source("test_paths")}:** '
+              + ', '.join(f'`{glob}`' for glob in policy['test_paths']),
+              f'**Non-production paths{source("non_production_paths")}:** '
+              + ', '.join(f'`{glob}`' for glob in policy['non_production_paths'])
+              + '. Any other changed path is a production change.']
     return '\n'.join(lines) + '\n'
 
 
@@ -187,6 +312,8 @@ def main(argv=None):
     sub.add_parser('render')
     cap_parser = sub.add_parser('cap')
     cap_parser.add_argument('--role', choices=sorted(CAP_KEYS), required=True)
+    classify_parser = sub.add_parser('classify')
+    classify_parser.add_argument('paths', nargs='+')
     args = parser.parse_args(argv)
     policy = load(args.pm_dir)
     if args.command == 'validate':
@@ -198,6 +325,9 @@ def main(argv=None):
         print('project-policy: warning: ' + error, file=sys.stderr)
     if args.command == 'cap':
         print(policy[CAP_KEYS[args.role]])
+    elif args.command == 'classify':
+        for path in args.paths:
+            print(f'{classify(path, policy)}\t{path}')
     elif args.command == 'render':
         sys.stdout.write(render(policy))
     elif args.json:

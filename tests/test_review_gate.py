@@ -409,6 +409,21 @@ class DispatchGateTests(unittest.TestCase):
         self.assertIn("configuration error", result.stderr)
         self.assertEqual(self.calls_made(), 0)
 
+    def test_reviewer_verdict_is_pinned_to_the_reviewed_commit(self):
+        """Issue #35: the merge gate accepts a review only for the commit it read, clean."""
+        self.reply.write_text(reviewer_reply("APPROVE"))
+        prompt = self.pm / "prompts/review-T010.md"
+        prompt.write_text("Review the diff.\n\n{{PROJECT_POLICY}}\n")
+        head = subprocess.run(["git", "-C", self.code, "rev-parse", "HEAD"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        review = lambda: self.dispatch("--read-only", "--role", "reviewer", "--author-model", "sonnet",
+                                       "--backend", "codex", "gpt-5.6-terra", self.code, prompt)
+        self.assertEqual(review().returncode, 0)
+        (self.code / "scratch.txt").write_text("uncommitted\n")
+        self.assertEqual(review().returncode, 0)
+        rows = [json.loads(l) for l in (self.pm / "logs/verdicts.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["head_sha"], r["tree_clean"]) for r in rows], [(head, True), (head, False)])
+
 
 if __name__ == "__main__":
     unittest.main()

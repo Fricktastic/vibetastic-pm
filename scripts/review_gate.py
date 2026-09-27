@@ -8,7 +8,9 @@ module gives each of those a durable, machine-readable record in ``logs/verdicts
 the checks ``dispatch.sh`` runs against it:
 
   record       dispatch.sh, after a ``--role critic|reviewer`` run exits 0: parse the role's
-               structured result block and append a ``verdict`` row (round-numbered).
+               structured result block and append a ``verdict`` row (round-numbered),
+               pinned to the reviewed commit (``--head-sha``/``--tree-clean``, issue #35).
+               The orchestrator records a subagent review the same way.
   check-cap    dispatch.sh, before a ``--role critic|reviewer`` run: exit 31 when the task has
                used its rounds (critic) or its fixup rounds (reviewer).
   build-gate   dispatch.sh, before a build run: exit 31 when the task needs critique and has no
@@ -48,6 +50,9 @@ CRITIC_COUNTS = ('blocking_plan', 'blocking_preexistent', 'advisory')
 REVIEWER_COUNTS = ('blockers', 'followups', 'notes')
 BLOCK = {'critic': 'CRITIC_RESULT', 'reviewer': 'REVIEWER_RESULT'}
 TASK_ID = re.compile(r'^T[0-9]+[A-Za-z0-9]*$')  # must match dispatch.sh GATE_TASK_ID
+# PLAN.md task scalars the gates read. observation / observation_cmd are the merge gate's
+# (issue #35, scripts/merge_gate.py).
+PLAN_FIELDS = ('risk', 'security', 'verify_tier', 'agent', 'status', 'observation', 'observation_cmd')
 
 
 class GateError(Exception):
@@ -178,10 +183,16 @@ def plan_task(plan_path, task_id):
         if not head or head.group(1).strip('"\'') != task_id:
             continue
         fields = {}
-        for key in ('risk', 'security', 'verify_tier', 'agent', 'status'):
-            match = re.search(r'(?m)^\s+' + key + r':\s*([^\n#]*)', chunk)
-            if match:
-                fields[key] = match.group(1).strip().strip('"\'')
+        for key in PLAN_FIELDS:
+            # A quoted value may carry '#' (an observation_cmd); an unquoted one ends at a comment.
+            match = re.search(r'(?m)^\s+' + key + r':[ \t]*(?:"((?:[^"\\\n]|\\.)*)"|\'([^\'\n]*)\'|([^\n#]*))', chunk)
+            if not match:
+                continue
+            double, single, bare = match.groups()
+            if double is not None:
+                fields[key] = re.sub(r'\\(.)', r'\1', double)
+            else:
+                fields[key] = single if single is not None else bare.strip()
         return fields
     return None
 
@@ -237,6 +248,11 @@ def cmd_record(args):
     parsed = parse_result(args.role, text)
     row = {'event': 'verdict', 'ts': now(), 'task_id': args.task, 'role': args.role,
            'run_id': args.run_id, 'prompt': args.prompt, 'model': args.model, **parsed}
+    if args.head_sha:
+        # Issue #35: pin the tree the verdict is about. The merge gate accepts a review only
+        # for the exact commit being merged, read from a clean checkout.
+        row['head_sha'] = args.head_sha
+        row['tree_clean'] = args.tree_clean == 'true'
     row['round'] = rounds_used(args.log_dir, args.role, args.task) + 1 if counts_as_round(row) else None
     append_row(args.log_dir, row)
     if parsed['problem']:
@@ -355,6 +371,10 @@ def main(argv=None):
     record.add_argument('--run-id', default=None)
     record.add_argument('--prompt', default=None)
     record.add_argument('--model', default=None)
+    record.add_argument('--head-sha', default=None,
+                        help='commit the reviewed/critiqued checkout was at (issue #35)')
+    record.add_argument('--tree-clean', choices=('true', 'false'), default='false',
+                        help='whether that checkout had no uncommitted or untracked changes')
     for name in ('record', 'check-cap', 'override-cap'):
         command = sub.choices.get(name) or sub.add_parser(name)
         command.add_argument('--role', choices=ROLES, required=True)

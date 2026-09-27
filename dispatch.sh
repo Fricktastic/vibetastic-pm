@@ -17,6 +17,8 @@
 #                           (risk/security, or legacy R1/R2) and has no proceed/override
 #                           adjudication newer than its latest critic verdict, or when its
 #                           reviewer fixups exceed the cap.
+#   Recorded verdicts carry the commit the role read (head_sha, tree_clean — issue #35); the
+#   merge gate (scripts/merge_gate.py) accepts a review only for the exact commit it merges.
 #
 # --backend: which builder CLI runs the task. Default is inferred from the model slug:
 #   gpt-* → codex; claude-*/sonnet/opus/haiku → claude; anything else (openrouter/*) → opencode.
@@ -1290,9 +1292,15 @@ fi
 record_verdict() {
   case "$PM_ROLE" in critic|reviewer) ;; *) return 0 ;; esac
   [ -n "$GATE_TASK_ID" ] || return 0
+  # [issue #35] Pin the verdict to the commit it read. The merge gate accepts a review only
+  # for the exact SHA being merged, from a clean checkout — review the task worktree.
+  local reviewed_sha reviewed_clean=false
+  reviewed_sha="$(git -C "$DIR_ABS" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$reviewed_sha" ] && [ -z "$(git -C "$DIR_ABS" status --porcelain 2>/dev/null)" ] && reviewed_clean=true
   RUN_VERDICT="$(python3 "$DISPATCH_HERE/scripts/review_gate.py" --pm-dir "$DISPATCH_PM_DIR" \
     --log-dir "$LOG_DIR" record --role "$PM_ROLE" --task "$GATE_TASK_ID" --output "$STALL_OUT" \
-    --run-id "$RUN_ID" --prompt "$(basename "$PROMPT_FILE")" --model "$ACTIVE_MODEL")" \
+    --run-id "$RUN_ID" --prompt "$(basename "$PROMPT_FILE")" --model "$ACTIVE_MODEL" \
+    ${reviewed_sha:+--head-sha "$reviewed_sha" --tree-clean "$reviewed_clean"})" \
     || echo "[dispatch] warning: the $PM_ROLE verdict could not be recorded — rounds will undercount" >&2
   echo "[dispatch] $PM_ROLE verdict for $GATE_TASK_ID: ${RUN_VERDICT:-unrecorded} (recorded in ${LOG_DIR}/verdicts.jsonl)" >&2
 }
@@ -1320,6 +1328,8 @@ while true; do
   if run_verify; then
     RUN_VERIFY_PASSED=true
     echo "[dispatch] verify passed on attempt $attempt/$MAX_ATTEMPTS." >&2
+    # [issues #21, #35] Say what that green covers: the project's verify-cmd, nothing more.
+    echo "[dispatch] scope: verify-cmd only — not the task's acceptance observation; the merge gate (scripts/merge_gate.py) pins and checks that." >&2
     finish 0
   fi
   RUN_VERIFY_PASSED=false

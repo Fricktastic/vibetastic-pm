@@ -52,7 +52,8 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy["risk_triggers"], ["audio ownership", "shared playback state"])
         rendered = project_policy.render(policy)
         self.assertIn("audio ownership", rendered)
-        self.assertNotIn("framework default", rendered)
+        self.assertIn("proves a change:**", rendered)          # declared: no default marker
+        self.assertIn("pre-build critique:**", rendered)
         self.assertNotIn("not policy", rendered)
 
     def test_malformed_declarations_are_errors_and_fall_back(self):
@@ -68,6 +69,60 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("2 times", joined)
         self.assertEqual((policy["critic_round_cap"], policy["reviewer_fixup_round_cap"]), (2, 3))
         self.assertEqual(policy["verify_tiers"], project_policy.DEFAULT_VERIFY_TIERS)
+
+    def test_default_path_classes(self):
+        """Issue #35: the net-production-diff check and the fail-on-base overlay key on these."""
+        policy = project_policy.load(self.pm)
+        cases = {
+            "GamedaytasticTests/ChainRunnerTests.swift": "test",   # the T078 test file
+            "Gamedaytastic/Audio/ChainRunner.swift": "production",  # the T078 reverted fix
+            "tests/test_merge.py": "test", "pkg/foo_test.go": "test", "web/a.spec.ts": "test",
+            "src/__tests__/a.js": "test", "App/Fixtures/feed.json": "test",
+            "README.md": "non_production", "Docs/guide.txt": "non_production",
+            "LICENSE": "non_production", "app/Contest.swift": "production",
+            "scripts/review_gate.py": "production", "pkg/testutil/x.go": "production",
+        }
+        for path, expected in cases.items():
+            self.assertEqual(project_policy.classify(path, policy), expected, path)
+
+    def test_project_declares_observations_and_path_classes(self):
+        self.write_project(body=(
+            "## Observations\n- a simulator screenshot at the merged SHA\n\n"
+            "## Test paths\n- `Checks/`\n- *Spec.swift\n\n"
+            "## Non-production paths\n- design/**\n"))
+        policy = project_policy.load(self.pm)
+        self.assertEqual(policy["errors"], [])
+        self.assertEqual(policy["observations"], ["a simulator screenshot at the merged SHA"])
+        self.assertEqual(project_policy.classify("App/Checks/A.swift", policy), "test")
+        self.assertEqual(project_policy.classify("App/FooSpec.swift", policy), "test")
+        self.assertEqual(project_policy.classify("design/x/y.sketch", policy), "non_production")
+        # Declaring a class replaces the default: tests/ is no longer a test path here.
+        self.assertEqual(project_policy.classify("tests/test_a.py", policy), "production")
+        self.assertEqual(project_policy.classify("README.md", policy), "production")
+        rendered = project_policy.render(policy)
+        self.assertIn("a simulator screenshot at the merged SHA", rendered)
+        self.assertIn("`Checks/`", rendered)
+
+    def test_match_everything_or_empty_path_class_is_an_error(self):
+        self.write_project(body="## Test paths\n- **\n\n## Non-production paths\n\n## Notes\n")
+        policy = project_policy.load(self.pm)
+        joined = "\n".join(policy["errors"])
+        self.assertIn("match-everything", joined)
+        self.assertIn("non-production paths section is present", joined)
+        # A glob that classifies everything as a test would empty every production diff:
+        # the default must stay in force.
+        self.assertEqual(policy["test_paths"], project_policy.DEFAULT_TEST_PATHS)
+
+    def test_test_command_is_read_from_its_fenced_block(self):
+        self.assertEqual(project_policy.test_command(self.pm), "")
+        self.write_project(body="## Test command\n\n<!-- a comment with ```fences``` -->\n\n"
+                                "```\nmake test ONLY=Foo\n```\n\n## Notes\n```\nnot it\n```\n")
+        self.assertEqual(project_policy.test_command(self.pm), "make test ONLY=Foo")
+        self.write_project(body="## Test command\n\n```\n\n```\n")
+        self.assertEqual(project_policy.test_command(self.pm), "")
+        # Two commands is not "the" suite command: refuse to guess which one verifies.
+        self.write_project(body="## Test command\n\n```\nmake a\nmake b\n```\n")
+        self.assertEqual(project_policy.test_command(self.pm), "")
 
     def test_commented_example_sections_are_not_policy(self):
         self.write_project(body="<!--\n## Risk triggers\n- example only\n-->\n")

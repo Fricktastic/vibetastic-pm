@@ -35,6 +35,8 @@ FIXTURES="
 plan-good.md:0
 plan-vocab.md:3
 plan-risk-vocab.md:3
+plan-observation-vocab.md:3
+plan-observation-kind.md:3
 plan-missing-field.md:1
 plan-bad-dep.md:1
 plan-nested-depends.md:1
