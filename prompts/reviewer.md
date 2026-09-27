@@ -11,8 +11,10 @@ grep). This run is enforced read-only; any modification fails the dispatch.
 
 {{TASK_SPEC}}
 
-**Verify tier:** {{VERIFY_TIER}} (R0 = pure logic, R1 = integration boundary, R2 = UI /
-user-visible data path — see framework/VERIFY.md for what each tier requires)
+**Verify tier:** {{VERIFY_TIER}} — the evidence this change must carry. What each tier
+means in this project:
+
+{{PROJECT_POLICY}}
 
 **Diff under review:** run `git diff {{DIFF_RANGE}}` in the project directory.
 
@@ -45,7 +47,20 @@ FINDINGS:
 
 SPEC COVERAGE: <one sentence — what the spec asked vs. what the diff delivers>
 TEST PATH: <one sentence — do the tests exercise the production path? which boundary is mocked?>
+
+<!-- REVIEWER_RESULT_START -->
+verdict: <APPROVE | APPROVE-WITH-FOLLOWUPS | REJECT — exactly one>
+blockers: <number of [BLOCKER] findings>
+followups: <number of [FOLLOWUP] findings>
+notes: <number of [NOTE] findings>
+<!-- REVIEWER_RESULT_END -->
 ```
 
 REJECT if any BLOCKER exists. Keep it terse — the orchestrator reads this verdict to
 decide merge / reject / re-dispatch; it does not want prose.
+
+**The result block is machine-read** (issue #18): `dispatch.sh` records it, and a review that
+does not approve (REJECT, or any blocker) counts as one of the task's fixup rounds, which are
+capped (the project's `reviewer_fixup_round_cap`, default 3). Put every blocker in this pass —
+a blocker held back for the next round may arrive after the cap. A missing or malformed block
+is recorded as `MALFORMED` and also counts as a fixup round.

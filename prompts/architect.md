@@ -11,6 +11,7 @@ result_delimiter: "<!-- ARCHITECT_RESULT_START -->"
   {{SPEC_CONTENT}}          ← full body of SPEC.md
   {{DESIGN_SPEC_CONTENT}}   ← full contents of prompts/design-spec.md
   {{TARGET_PROJECT_PATH}}   ← absolute path to the target project directory
+  {{PROJECT_POLICY}}        ← `python3 framework/scripts/project_policy.py --pm-dir . render`
 
   After the agent returns, parse the return as follows:
   1. Everything BEFORE <!-- ARCHITECT_RESULT_START --> → write to prompts/build-spec.md
@@ -42,6 +43,12 @@ Do all three before returning. Do not skip assessment even if the target project
 ## Design Spec
 
 {{DESIGN_SPEC_CONTENT}}
+
+---
+
+## Project Review Policy
+
+{{PROJECT_POLICY}}
 
 ---
 
@@ -164,7 +171,8 @@ If the spec's Success Criteria include observable behaviors, map each one to a s
 
 ### Section 8 — OpenCode Execution Notes
 
-Instructions specifically for the OpenCode agent executing this spec:
+Instructions specifically for the OpenCode agent executing this spec (the builder runs
+non-interactively: it must not stop to ask for confirmation, so settle open choices here):
 - Working directory (relative to project root)
 - Any setup commands to run before implementation begins (install, migrate, seed, etc.)
 - Any environment variables that must be set (name only — not values)
@@ -193,6 +201,17 @@ rung up (Sonnet-minimum first pass, mandatory Opus adjudication; see `framework/
 security exposure, note the per-task flag in each task section and set the result YAML flag
 to `true` if **any** task qualifies.
 
+Then set, **per task section**, by this project's review policy above (issue #50):
+
+- `verify_tier: R0|R1|R2` — the evidence that proves that task, as the project defines the
+  tiers. It decides what runs before merge, not whether the plan is critiqued.
+- `risk: true|false` — `true` if any of the project's risk triggers applies to that task (or it
+  is `security: true`). Only `risk: true` tasks go through pre-build critique; a task that
+  merely needs a run-and-look to verify is not risky for that reason alone.
+
+State both on a `Verify tier:` / `Risk:` line at the top of each task section, and set the
+result YAML `risk` to `true` if **any** task qualifies.
+
 ---
 
 ## Return Format
@@ -210,6 +229,8 @@ model_rationale: "<one sentence>"
 model_fallback_used: <true | false>
 security: <true | false>
 security_rationale: "<one sentence — which trigger applies, or why none does>"
+risk: <true | false>
+risk_rationale: "<one sentence — which project risk trigger applies, or why none does>"
 ```
 <!-- ARCHITECT_RESULT_END -->
 ```

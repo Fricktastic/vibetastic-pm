@@ -25,6 +25,12 @@ Three of the four telemetry streams are mechanical — no orchestrator disciplin
 | Agent tool spawns | `PostToolUse` hook, `scripts/log-agent-spawn.py` | `logs/agent-spawns.jsonl` |
 | **Orchestrator's own burn** | `Stop` hook, `scripts/log-partner-burn.py` | `logs/cost.jsonl` (`role: partner`) |
 | Role + task attribution | **you**, via `cost_event` below | `TASK_LOG.md` |
+| Critic/reviewer verdicts, adjudications, round-cap overrides | `dispatch.sh` + `scripts/review_gate.py` | `logs/verdicts.jsonl` |
+
+`logs/verdicts.jsonl` is not telemetry — it is **gate state** (issues #18, #50): the critique
+build gate and the round caps are computed from it. Never edit or truncate it; write to it
+only through `review_gate.py` (`adjudicate`, `override-cap`), whose decisions need the lease in
+a managed project.
 
 The manual `cost_event` adds what the hooks cannot know: the **role** (Designer vs Tech Lead
 vs Reviewer) and task attribution. Append one after every subagent spawn and before each

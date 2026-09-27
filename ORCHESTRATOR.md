@@ -162,15 +162,26 @@ OpenCode review as satisfying the security floor. Never route Anthropic through 
 
 Dispatch exits: 0 success; 2 invalid invocation; 20 verification exhausted (escalate);
 21 read-only violation (inspect); 30 backend unavailable (next legal backend);
-31 ownership/routing/reconciliation blocked (**do not** increment failure_count).
+31 ownership/routing/reconciliation blocked, or a review gate refused the run — critique
+not yet adjudicated, or a critique / reviewer-fixup round cap reached (**do not** increment
+failure_count; resolve or escalate per `.claude/rules/dispatch.md` § Round caps).
 Only true failures after the configured ladder is exhausted trigger the failure rules.
 
 ## Gates that remain unchanged
 
 - Gate 1: a draft SPEC needs the user's explicit approval before planning/building.
 - Gate 2: failure_count reaches 2; wait for the user's retry/skip/abort decision.
-- Stage transitions auto-advance with a summary; never invent a new approval gate.
-- R1/R2 or security work requires family-diverse pre-build critique; resolve BLOCKING findings.
+- Stage transitions auto-advance with a summary; never invent a new approval gate. Each
+  transition also runs the lesson-consolidation pass (RULES.md § Lesson consolidation) without
+  holding up the next stage's dispatches.
+- `risk: true` or `security: true` work requires family-diverse pre-build critique; resolve
+  BLOCKING findings. Legacy tasks without a `risk:` field keep the R1/R2 rule. dispatch.sh
+  refuses the build until `scripts/review_gate.py adjudicate` records `proceed` or a logged
+  operator `override` (issues #18, #50).
+- Critique and reviewer-fixup rounds are capped per task (project policy, default 2 / 3);
+  dispatch.sh refuses the next round and the operator chooses redesign / override / abort.
+- What the verify tiers mean, which risk triggers force critique, and the round caps are
+  **project policy** in PROJECT.md (VERIFY.md § Project policy); the framework enforces it.
 - Merge only after VERIFY.md's tier ladder and first-pass review/adjudication pass.
 - R2 inspection and human/device-only verification remain the partner/operator's responsibility.
   A builder's claim is not test evidence. Preserve the device-only exceptions explicitly.

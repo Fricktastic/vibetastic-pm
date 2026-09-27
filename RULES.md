@@ -168,9 +168,42 @@ A stage moves to `done` when all tasks with that `stage:` id have `status: done`
 2. Summarize the completed stage in chat: what was built/produced, key outputs, and what Stage N+1 will do.
 3. Say: *"Stage N ([name]) is complete — auto-advancing to Stage N+1 ([name]). Reply now if you want to adjust or pause."*
 4. **Do not wait.** Immediately mark the next stage `status: in_progress`, append `stage_transition` to TASK_LOG, and dispatch the first ready tasks.
-5. If the user sends adjustments before or during Stage N+1, accept them and update PLAN.md/SPEC.md (re-dispatch as needed).
+5. Run the **lesson consolidation** pass below while those dispatches run.
+6. If the user sends adjustments before or during Stage N+1, accept them and update PLAN.md/SPEC.md (re-dispatch as needed).
 
 **Rationale:** the self-correction loop and tier escalation keep per-task quality bounded without a human, so the stage boundary no longer needs a hard stop. Gate 1 still guarantees the spec was right before any of this runs.
+
+---
+
+### Lesson consolidation (every stage transition, issue #50)
+
+Projects accumulate lessons — hard-won rules in the project's own instructions (its CLAUDE.md /
+AGENTS.md outside the managed harness block, a `LESSONS.md`, or wherever the project keeps
+them). They only ever grow: one field project reached ~150, most restating each other or
+guarding against failures a mechanism now blocks, and a long rule list is the kind of prose
+that erodes. The lessons are **project-owned**; the framework supplies only this trigger and
+procedure.
+
+**Trigger:** every Gate 3 stage transition, after the next stage's first dispatches are
+running. Never block a dispatch on it. It can also be run on the operator's request.
+
+**Procedure:**
+
+1. **Inventory** the active lessons (a read-only cheap-tier dispatch can do the first pass
+   and propose the edits; the orchestrator decides and applies).
+2. **Merge duplicates** — lessons naming the same failure and the same remedy become one,
+   keeping every evidence pointer (task ids, issue numbers).
+3. **Retire what a mechanism now enforces** — if a hook, a `dispatch.sh` refusal, plan-lint,
+   the review gates or a doctor check now blocks the failure a lesson warns about, move the
+   lesson to an archive section with one line naming the mechanism. Archive, never delete: the
+   evidence is why the mechanism exists.
+4. **Cap the active set** — keep it at or below the project's cap (30 unless the project's
+   PROJECT.md Notes state another number). Over the cap, archive the lessons with the least
+   recent evidence first, and propose the most expensive recurring ones as framework issues
+   (§ Self-Improvement Capture): a rule that must hold everywhere, or only works when
+   enforced, belongs upstream as a mechanism.
+5. **Log** `lessons_consolidated` in TASK_LOG with `before`, `merged`, `retired`, `after`,
+   and the mechanisms cited for each retirement.
 
 ---
 
@@ -347,21 +380,21 @@ These override convenience. Each cost real cycles when ignored.
 
 ### Architect
 - **Receives:** SPEC.md, `prompts/design-spec.md`, target project path, RULES.md (model selection section)
-- **Returns:** Structured build spec (markdown) to be written to `prompts/build-spec.md`, plus a selected tier (`fast`/`standard`/`heavy`) and a `security: true|false` flag per task in the result YAML
+- **Returns:** Structured build spec (markdown) to be written to `prompts/build-spec.md`, plus a selected tier (`fast`/`standard`/`heavy`), a `security: true|false` flag and a `risk: true|false` flag in the result YAML, and a `Verify tier:` / `Risk:` line per task section (judged against the project's review policy — `VERIFY.md` § Project policy)
 - **Does:** Classify task complexity against the tier definitions in `framework/MODELS.md` (the curated inventory — it does **not** query OpenRouter); set `security: true` on any Stage-2 task whose diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data (see `VERIFY.md` § Security-sensitive tasks)
 - **Does not:** Execute OpenCode or pick raw model slugs — the PM resolves tier → model/fallback from MODELS.md
 
 ### Tech Lead
 - **Receives:** Issue description, full build-spec, PLAN.md summary, target project path, optional error output
 - **Does:** Reads actual source files in the target project to understand current state; fetches Apple/framework docs via Sosumi MCP if relevant; writes a precise task spec
-- **Returns:** Task spec section (appended to build-spec.md) + structured YAML metadata (task title, branch, issue refs, depends_on, suggested tier, and a `security: true|false` flag). Sets `security: true` when the diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data — this forces the review rung up (see `VERIFY.md` § Security-sensitive tasks). Bias toward `true` when unsure.
+- **Returns:** Task spec section (appended to build-spec.md) + structured YAML metadata (task title, branch, issue refs, depends_on, suggested tier, `verify_tier`, a `risk: true|false` flag set from the project's risk triggers — it alone decides pre-build critique — and a `security: true|false` flag). Sets `security: true` when the diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data — this forces the review rung up (see `VERIFY.md` § Security-sensitive tasks). Bias toward `true` when unsure.
 - **Does not:** Write code, execute commands in the target project, or make implementation decisions beyond speccing
 - **Model:** Sonnet by default; PM may use Opus for complex architectural tasks
 
 ### Reviewer (first-pass diff review — cheap tier, read-only)
 - **Invoked with:** `bash framework/dispatch.sh --read-only <standard-tier-model> <target-project-path> <rendered-reviewer-prompt>` (template: `framework/prompts/reviewer.md`), or as a Sonnet `Agent` subagent with the same rendered prompt
 - **Receives:** task spec, `verify_tier`, diff range
-- **Returns:** VERDICT (APPROVE / APPROVE-WITH-FOLLOWUPS / REJECT) + findings; the orchestrator adjudicates against the spec and decides merge / reject / re-dispatch
+- **Returns:** VERDICT (APPROVE / APPROVE-WITH-FOLLOWUPS / REJECT) + findings + a machine-readable `REVIEWER_RESULT` block that `dispatch.sh --role reviewer` records in `logs/verdicts.jsonl`; the orchestrator adjudicates against the spec and decides merge / reject / re-dispatch. Non-approving reviews count against the task's reviewer fixup cap (`.claude/rules/dispatch.md` § Round caps)
 - **Does not:** modify any file (enforced — dispatch exits 21 on a dirty tree), merge, or decide
 - **Why:** the intent-review rung of the gate (`VERIFY.md`) must run on every diff; running it on Opus was the measured top cost sink, so Opus only adjudicates
 - **Family diversity (hard rule):** the reviewer must be a different model family than the builder backend that produced the diff — claude-backend diffs never use the Sonnet subagent (route to opencode `standard`/deepseek); codex/opencode diffs may use either. See `VERIFY.md` § Diff review.

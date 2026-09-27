@@ -3,7 +3,20 @@
 #
 # Usage:
 #   bash dispatch.sh [--read-only] [--worktree <branch>] [--backend <codex|claude|opencode>] \
+#     [--role <role>] [--author-model <m>] [--task <T0XX>] \
 #     <model> <project-dir> <prompt-file> [fallback-model] [verify-cmd] [max-attempts] [tier]
+#
+# --task <T0XX>: the PLAN.md task this run belongs to. Defaults to the id in the prompt name
+#   (task-/fixup-/critic-/review-/reviewer-T0XX*.md). It keys the review gates below.
+#
+# Review gates (issues #18, #50 — scripts/review_gate.py, ledger logs/verdicts.jsonl):
+#   --role critic|reviewer  refused (exit 31) once the task has used its critique rounds /
+#                           reviewer fixup rounds (caps from the project policy in PROJECT.md);
+#                           on exit 0 the run's structured verdict block is recorded.
+#   build (non --read-only) refused (exit 31) when the PLAN.md task needs pre-build critique
+#                           (risk/security, or legacy R1/R2) and has no proceed/override
+#                           adjudication newer than its latest critic verdict, or when its
+#                           reviewer fixups exceed the cap.
 #
 # --backend: which builder CLI runs the task. Default is inferred from the model slug:
 #   gpt-* → codex; claude-*/sonnet/opus/haiku → claude; anything else (openrouter/*) → opencode.
@@ -55,7 +68,8 @@
 #   1   builder infra/model failure — could not produce a run even via the fallback model
 #   20  verify never passed within max-attempts — code runs but is wrong -> PM escalates tier
 #   21  --read-only violated — the run modified the target tree (changes left for inspection)
-#   31  managed session state/policy blocked — reconcile; never increment failure_count
+#   31  managed session state/policy blocked, or a review gate / round cap refused the run —
+#       resolve or escalate to the operator; never increment failure_count
 #   30  backend unavailable — CLI not installed, bad model slug, burn gate closed, or the
 #       backend itself refused a turn for quota/rate-limit/auth (issue #51); PM skips to the
 #       next backend in PROJECT.md builder_backends (no failure_count increment). This is the
@@ -71,6 +85,9 @@ PM_AUTHOR_MODEL=""
 PM_SECURITY=false
 PM_EXCEPTIONAL=false
 PM_RESERVED=false
+PM_MANAGED=false
+PM_TASK=""
+RUN_VERDICT=""
 READ_ONLY=false
 WORKTREE_BRANCH=""
 BACKEND=""
@@ -80,6 +97,7 @@ while true; do
     --author-model) PM_AUTHOR_MODEL="$2"; shift 2 ;;
     --security) PM_SECURITY=true; shift ;;
     --exceptional-adjudication) PM_EXCEPTIONAL=true; shift ;;
+    --task) PM_TASK="$2"; shift 2 ;;
     --read-only) READ_ONLY=true; shift ;;
     --worktree)  WORKTREE_BRANCH="$2"; shift 2 ;;
     --backend)   BACKEND="$2"; shift 2 ;;
@@ -105,6 +123,10 @@ RUN_PROMPT="$(basename "${PROMPT_FILE:-unknown}")"
 RUN_ROLE=build; $READ_ONLY && RUN_ROLE=read-only
 RUN_TASK_ID=""
 case "$RUN_PROMPT" in task-T[0-9]*) RUN_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -n 's/^task-\(T[0-9][0-9]*\).*$/\1/p')" ;; esac
+# The task the review gates key on: --task, else the id in any task-scoped prompt name.
+# (RUN_TASK_ID above keeps its narrower meaning — it is the reservation key.)
+GATE_TASK_ID="$PM_TASK"
+[ -n "$GATE_TASK_ID" ] || GATE_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -nE 's/^(task|fixup|critic|review|reviewer)-(T[0-9]+[A-Za-z0-9]*)([._-].*)?$/\2/p')"
 if [ -z "$BACKEND" ]; then
   case "$MODEL" in
     gpt-*|codex-*) RUN_BACKEND=codex ;;
@@ -143,7 +165,47 @@ fi
 # Resolve explicit PM context first; installed projects require a current lease even
 # when hooks are disabled. Legacy projects keep the old dispatch contract.
 DISPATCH_PM_DIR="${PM_DIR:-$(dirname "$LOG_DIR")}"
+
+# --- [issues #18, #50] Review gates: round caps and the critique build gate ----------------
+# The critique gate and the "2 rounds, then the operator" limit were prose. T211 ran 5
+# critique rounds and 10 reviewer fixups under them. Round counts and adjudications now live
+# in a ledger (logs/verdicts.jsonl) written by this script and by review_gate.py, and the
+# refusals happen here, where the tokens would be spent. Exit 31: a policy stop, never a
+# failure_count event. Runs before the reservation so a refusal never strands one.
+# review_gate.py exits 31 for a policy refusal and anything else for a broken call (bad
+# --task, crash). Only the former is an exit-31 stop; the latter is a configuration error
+# (exit 2) and must not send the operator to redesign/override/abort.
+review_gate_call() {
+  local log_dir="$1"; shift
+  local rc=0
+  python3 "$DISPATCH_HERE/scripts/review_gate.py" --pm-dir "$DISPATCH_PM_DIR" --log-dir "$log_dir" "$@" >/dev/null || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 31 ] && return 31
+  echo "[dispatch] review gate could not run ($1 exited $rc) — configuration error, not a policy stop" >&2
+  return 2
+}
+
+review_gates() {  # $1 = ledger dir
+  case "$PM_ROLE" in
+    critic|reviewer)
+      if [ -z "$GATE_TASK_ID" ]; then
+        echo "[dispatch] --role $PM_ROLE needs its task: pass --task T0XX or name the prompt ${PM_ROLE}-T0XX.md" >&2
+        echo "           (round caps are counted per task — framework/.claude/rules/dispatch.md § Round caps)." >&2
+        return 31
+      fi
+      review_gate_call "$1" check-cap --role "$PM_ROLE" --task "$GATE_TASK_ID" || return $? ;;
+  esac
+  # No PLAN.md, no task to gate (a framework checkout, an ad-hoc run). A missing
+  # review_gate.py beyond this point fails closed.
+  if ! $READ_ONLY && [ -n "$GATE_TASK_ID" ] && [ -f "$DISPATCH_PM_DIR/PLAN.md" ]; then
+    review_gate_call "$1" build-gate --task "$GATE_TASK_ID" || return $?
+  fi
+  return 0
+}
+# --- [issues #18, #50] end of review gates ---------------------------------------------------
+
 if [ -f "$DISPATCH_PM_DIR/.orchestrator/config.json" ]; then
+  PM_MANAGED=true
   LOG_DIR="$DISPATCH_PM_DIR/logs"
   PM_LEASE="$(python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" check --token "${PM_ORCHESTRATOR_TOKEN:-}")" || exit 31
   PM_PROFILE="$(printf '%s' "$PM_LEASE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])')" || exit 31
@@ -161,10 +223,14 @@ if [ -f "$DISPATCH_PM_DIR/.orchestrator/config.json" ]; then
   if [ "$PM_ROLE" != build ] && ! $READ_ONLY; then
     echo "[dispatch] planning/review roles require --read-only" >&2; exit 31
   fi
+  review_gates "$LOG_DIR" || exit $?
   python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" reserve \
     --token "${PM_ORCHESTRATOR_TOKEN:-}" --run-id "$RUN_ID" \
     --task-id "${RUN_TASK_ID:-$RUN_PROMPT}" --pid "$$" --worktree "$RUN_WORKTREE" --branch "$RUN_BRANCH" >/dev/null || exit 31
   PM_RESERVED=true
+fi
+if ! $PM_MANAGED; then
+  review_gates "$LOG_DIR" || exit $?
 fi
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="${LOG_DIR}/$(basename "${PROMPT_FILE%.md}")-${RUN_ID}.log"
@@ -181,7 +247,7 @@ for k,v in zip(keys,sys.argv[2:]):
  o[k]=None if v=="__NULL__" else (int(v) if k in ("pid","duration_s","exit","commits") else (None if v=="null" else v=="true") if k=="verify_passed" else v)
 print(json.dumps(o,separators=(",",":")))' "$@"
 }
-RUN_START_ROW="$(run_json 'event,run_id,ts_start,pid,role,prompt,task_id,model,backend,tier,dir,branch,worktree,base_sha,log,orchestrator_provider,orchestrator_session,routing_profile' run_start "$RUN_ID" "$RUN_TS_START" "$$" "$RUN_ROLE" "$RUN_PROMPT" "${RUN_TASK_ID:-__NULL__}" "${MODEL:-__NULL__}" "${RUN_BACKEND:-__NULL__}" "${TIER:-__NULL__}" "${RUN_DIR:-__NULL__}" "${RUN_BRANCH:-__NULL__}" "${RUN_WORKTREE:-__NULL__}" "${RUN_BASE_SHA:-__NULL__}" "$(basename "$LOG_FILE")" "${PM_ORCHESTRATOR_PROVIDER:-__NULL__}" "${PM_ORCHESTRATOR_SESSION:-__NULL__}" "${PM_PROFILE:-__NULL__}")"
+RUN_START_ROW="$(run_json 'event,run_id,ts_start,pid,role,pm_role,gate_task_id,prompt,task_id,model,backend,tier,dir,branch,worktree,base_sha,log,orchestrator_provider,orchestrator_session,routing_profile' run_start "$RUN_ID" "$RUN_TS_START" "$$" "$RUN_ROLE" "${PM_ROLE:-__NULL__}" "${GATE_TASK_ID:-__NULL__}" "$RUN_PROMPT" "${RUN_TASK_ID:-__NULL__}" "${MODEL:-__NULL__}" "${RUN_BACKEND:-__NULL__}" "${TIER:-__NULL__}" "${RUN_DIR:-__NULL__}" "${RUN_BRANCH:-__NULL__}" "${RUN_WORKTREE:-__NULL__}" "${RUN_BASE_SHA:-__NULL__}" "$(basename "$LOG_FILE")" "${PM_ORCHESTRATOR_PROVIDER:-__NULL__}" "${PM_ORCHESTRATOR_SESSION:-__NULL__}" "${PM_PROFILE:-__NULL__}")"
 [ -n "$RUN_START_ROW" ] && printf '%s\n' "$RUN_START_ROW" >> "$RUNS_FILE" 2>/dev/null || true
 
 emit_run_finish() {
@@ -192,7 +258,7 @@ emit_run_finish() {
   head_sha="$(git -C "$RUN_REPO_PATH" rev-parse HEAD 2>/dev/null || true)"
   commits=""
   if [ -n "$RUN_BASE_SHA" ] && [ -n "$head_sha" ]; then commits="$(git -C "$RUN_REPO_PATH" rev-list --count "${RUN_BASE_SHA}..${head_sha}" 2>/dev/null || true)"; fi
-  row="$(run_json 'event,run_id,ts_end,duration_s,exit,verify_passed,head_sha,commits' run_finish "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((end_epoch - RUN_START_EPOCH))" "$code" "$RUN_VERIFY_PASSED" "${head_sha:-__NULL__}" "${commits:-__NULL__}")"
+  row="$(run_json 'event,run_id,ts_end,duration_s,exit,verify_passed,head_sha,commits,verdict' run_finish "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((end_epoch - RUN_START_EPOCH))" "$code" "$RUN_VERIFY_PASSED" "${head_sha:-__NULL__}" "${commits:-__NULL__}" "${RUN_VERDICT:-__NULL__}")"
   [ -n "$row" ] && printf '%s\n' "$row" >> "$RUNS_FILE" 2>/dev/null || true
   if $PM_RESERVED; then
     python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" finish \
@@ -299,8 +365,23 @@ prompt_preamble() {
   case "$VERIFY_CMD $PROMPT_TASK_HINT" in
     *xcodebuild*|*xcodegen*|*.xcodeproj*|*.xcworkspace*|*simctl*|*xcrun*) shape="xcode" ;;
   esac
-  [ -n "$shape" ] || return 0
   $READ_ONLY && return 0
+
+  # [issue #50] Every build turn is non-interactive: nobody answers a question until the run
+  # has ended and been paid for. Field case (gamedaytastic T144): one whole fixup round was a
+  # no-op because the builder stopped to ask for design approval.
+  echo "## Working agreement (injected by dispatch.sh — read before you plan)"
+  echo
+  cat <<'PREAMBLE_AUTONOMY'
+This run is non-interactive: nobody reads your messages until it has finished. **Do not stop
+to ask for confirmation, clarification or design approval, and do not end your turn with a
+question.** Where the spec leaves a choice open, take the most reasonable reading that stays
+inside the spec's scope, implement it, and state the assumption in your final report. Only
+stop early for something you truly cannot do (a missing file, a contradiction in the spec),
+and then report exactly what blocked you and what you completed.
+
+PREAMBLE_AUTONOMY
+  [ -n "$shape" ] || { echo "---"; echo; return 0; }
 
   echo "## Verification boundary (injected by dispatch.sh — read before you plan)"
   echo
@@ -345,9 +426,22 @@ if [ -n "$PROMPT_PREAMBLE" ]; then
 else
   PROMPT_TEXT="$(cat "$PROMPT_FILE")"
 fi
-if [ -n "$PROMPT_PREAMBLE" ]; then
-  echo "[dispatch] injected Xcode verification-boundary preamble (backend=$BACKEND)" >&2
-fi
+case "$PROMPT_PREAMBLE" in
+  *"Verification boundary"*) echo "[dispatch] injected working-agreement + Xcode verification-boundary preamble (backend=$BACKEND)" >&2 ;;
+  ?*) echo "[dispatch] injected working-agreement preamble (backend=$BACKEND)" >&2 ;;
+esac
+# [issue #50] Role prompts carry {{PROJECT_POLICY}} (the project's verify-tier meanings, risk
+# triggers and round caps). The orchestrator normally renders it; fill any placeholder still
+# left so a dispatched role never sees the raw token or a stale copy of the framework default.
+case "$PROMPT_TEXT" in
+  *'{{PROJECT_POLICY}}'*)
+    PROMPT_TEXT="$(PROMPT_TEXT="$PROMPT_TEXT" python3 -c 'import os, sys
+sys.path.insert(0, sys.argv[1])
+import project_policy as p
+sys.stdout.write(os.environ["PROMPT_TEXT"].replace("{{PROJECT_POLICY}}", p.render(p.load(sys.argv[2]))))' \
+      "$DISPATCH_HERE/scripts" "$DISPATCH_PM_DIR")" \
+      || { echo "[dispatch] could not render {{PROJECT_POLICY}} into the prompt" >&2; exit 2; } ;;
+esac
 
 # codex model slugs may carry an effort suffix (gpt-5.6-sol@low) — parsed per call so the
 # fallback model can carry its own effort.
@@ -1189,6 +1283,20 @@ if [ $? -ne 0 ]; then
   fi
 fi
 
+# --- [issue #18] Record a critic/reviewer run's structured verdict --------------------------
+# The verdict is parsed from the role's CRITIC_RESULT / REVIEWER_RESULT block (never from its
+# prose) and appended to logs/verdicts.jsonl, which is what the round caps and the critique
+# build gate count. A missing/invalid block is recorded as MALFORMED and still uses a round.
+record_verdict() {
+  case "$PM_ROLE" in critic|reviewer) ;; *) return 0 ;; esac
+  [ -n "$GATE_TASK_ID" ] || return 0
+  RUN_VERDICT="$(python3 "$DISPATCH_HERE/scripts/review_gate.py" --pm-dir "$DISPATCH_PM_DIR" \
+    --log-dir "$LOG_DIR" record --role "$PM_ROLE" --task "$GATE_TASK_ID" --output "$STALL_OUT" \
+    --run-id "$RUN_ID" --prompt "$(basename "$PROMPT_FILE")" --model "$ACTIVE_MODEL")" \
+    || echo "[dispatch] warning: the $PM_ROLE verdict could not be recorded — rounds will undercount" >&2
+  echo "[dispatch] $PM_ROLE verdict for $GATE_TASK_ID: ${RUN_VERDICT:-unrecorded} (recorded in ${LOG_DIR}/verdicts.jsonl)" >&2
+}
+
 # --- Read-only mode: enforce that nothing changed; no verify loop ---
 if $READ_ONLY; then
   TREE_AFTER="$(tree_state)"
@@ -1198,6 +1306,7 @@ if $READ_ONLY; then
     echo "[dispatch] changes left in place for inspection (not reverted)." >&2
     finish 21
   fi
+  record_verdict
   finish 0
 fi
 

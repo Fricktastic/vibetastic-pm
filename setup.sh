@@ -141,6 +141,8 @@ codex_weekly_burn_threshold: 4000000
 claude_window_burn_threshold: null   # ungated until telemetry supports a number (issue #14)
 max_concurrent: {codex: 2, claude_builder: 1, claude_review: 2, opencode: 4}
 max_concurrent_total: 6
+critic_round_cap: 2           # pre-build critique rounds per task (project policy, issue #50)
+reviewer_fixup_round_cap: 3   # reviewer-driven fixup rounds per task
 ---
 
 ## Project Paths
@@ -186,6 +188,23 @@ ${TEST_CMD}
 ## Notes
 
 <!-- Add any project-specific notes here for future PM sessions. -->
+
+<!-- Review policy (issue #50). The framework enforces the critique gate and the round caps
+     above; what the verify tiers mean for THIS project and which changes are risky enough to
+     need a pre-build critique are yours to declare. Until you add them, the generic framework
+     defaults apply (python3 framework/scripts/project_policy.py --pm-dir . show).
+     To declare them, add two sections below this comment (outside it):
+
+       ## Verify tiers
+       - R0: <what evidence proves a logic-only change here>
+       - R1: <... a change that crosses a boundary>
+       - R2: <... a change you can only verify by running the product>
+
+       ## Risk triggers
+       - <a kind of change that must be critiqued before it is built>
+
+     framework/Docs/examples/policy-ios.md is a worked iOS example. Validate with
+     python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework -->
 EOF
 
 python3 "$FRAMEWORK_DIR/scripts/install-orchestrators.py" --pm-dir "$PM_DIR" --framework-dir "$FRAMEWORK_DIR"

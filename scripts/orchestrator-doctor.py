@@ -11,6 +11,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import project_policy  # noqa: E402
+
 
 EVENTS = ("PreToolUse", "PostToolUse", "Stop")
 BEGIN = "<!-- BEGIN VIBETASTIC ORCHESTRATOR HARNESS -->"
@@ -274,15 +277,33 @@ def runtime_evidence(pm_dir):
     return seen
 
 
+def check_policy(pm_dir):
+    """Issue #50: the project's review policy in PROJECT.md must parse as declared.
+
+    Absent keys/sections are fine (framework defaults apply); a malformed declaration is an
+    error, because enforcement would silently fall back to a default the project did not pick.
+    """
+    policy = project_policy.load(pm_dir)
+    return {
+        "ok": not policy["errors"],
+        "errors": policy["errors"],
+        "sources": policy["sources"],
+        "critic_round_cap": policy["critic_round_cap"],
+        "reviewer_fixup_round_cap": policy["reviewer_fixup_round_cap"],
+    }
+
+
 def diagnose(pm_dir, framework_dir):
     pm_dir = pm_dir.resolve()
     framework_dir = framework_dir.resolve()
     configuration = check_configuration(pm_dir, framework_dir)
     selftest = run_adapter_selftest(framework_dir)
+    policy = check_policy(pm_dir)
     return {
-        "ok": configuration["ok"] and selftest["ok"],
+        "ok": configuration["ok"] and selftest["ok"] and policy["ok"],
         "configuration": configuration,
         "adapter_selftest": selftest,
+        "policy": policy,
         "runtime_evidence": runtime_evidence(pm_dir),
     }
 
@@ -299,9 +320,14 @@ def main(argv=None):
     else:
         print("configuration:", "ok" if report["configuration"]["ok"] else "failed")
         print("adapter selftest:", "ok" if report["adapter_selftest"]["ok"] else "failed")
+        policy = report["policy"]
+        print("project policy:", "ok" if policy["ok"] else "failed",
+              f"(critic rounds {policy['critic_round_cap']}, reviewer fixups "
+              f"{policy['reviewer_fixup_round_cap']}; "
+              + ", ".join(f"{k} {v}" for k, v in sorted(policy["sources"].items())) + ")")
         for provider, observed in report["runtime_evidence"].items():
             print(f"{provider} runtime hook evidence:", "observed" if observed else "not observed")
-        for section in ("configuration", "adapter_selftest"):
+        for section in ("configuration", "adapter_selftest", "policy"):
             for error in report[section]["errors"]:
                 print(f"- {error}", file=sys.stderr)
     return 0 if report["ok"] else 1

@@ -1,6 +1,6 @@
 ---
 framework: vibetastic-pm
-version: "2.0"
+version: "2.1"
 ---
 
 # VERIFY — the risk-tiered merge gate
@@ -14,17 +14,31 @@ branch protection alone does not.
 
 ---
 
-## Risk tiers
+## Verify tiers — what evidence proves a change
 
-The orchestrator assigns a tier at spec time = the **highest** tier any changed file or
-behavior touches (bias up when unsure). Record it as `verify_tier:` on the task in PLAN.md
-and state it in the task prompt.
+`verify_tier` answers one question: **what evidence proves this change works?** It decides
+what must run before merge. It does **not** decide whether the plan gets a pre-build critique
+— that is the task's `risk` flag (§ Pre-build critique, issue #50). Keeping the two apart is
+the point: a UI tweak that needs a run-and-look is a high verify tier but may carry no design
+risk at all.
 
-| Tier | Applies to | Gate (cumulative) |
+The orchestrator (or the Tech Lead / Architect that writes the spec) assigns the tier at spec
+time = the **highest** tier any changed behavior needs (bias up when unsure). Record it as
+`verify_tier:` on the task in PLAN.md and state it in the task prompt.
+
+The framework defines the tiers as **kinds of evidence**; each is cumulative:
+
+| Tier | Evidence kind | Gate (cumulative) |
 |---|---|---|
-| **R0 — pure logic** | internal refactor, algorithms; no external I/O, no UI, no (de)serialization boundary | build + unit tests + **diff review** (see below) |
-| **R1 — integration boundary** | JSON decode/encode, HTTP, service calls, persistence, config parsing | R0 **+ real-path integration test**: a representative **real payload** through the **production code path** |
-| **R2 — UI / user-visible data path** | views, tiles, anything whose correctness is visual or depends on live data rendering | R1 **+ "run the app and look"**: build, launch, drive to the state, screenshot, orchestrator inspects |
+| **R0 — logic** | the change is fully proven by compiling and running unit tests that exercise the changed logic; it crosses no external boundary | build + unit tests + **diff review** (see below) |
+| **R1 — real-path integration** | the change crosses a boundary (serialization, network, persistence, IPC, configuration, a third-party API) | R0 **+ real-path integration test**: a representative **real input** through the **production code path** |
+| **R2 — run-and-observe** | correctness is only visible by running the product (rendered output, timing, runtime or device behavior) | R1 **+ run it and observe**: build, run, drive to the state, capture the outcome (screenshot, response, log), orchestrator inspects |
+
+**What falls in each tier is project policy.** A project states its own meanings in
+`PROJECT.md § Verify tiers` (and its round caps and risk triggers alongside — see § Project
+policy below); the definitions above are the generic default when it does not.
+`Docs/examples/policy-ios.md` is a copyable iOS/iPadOS policy: views and tiles are R2,
+JSON/URLSession/persistence are R1, and what counts as a valid R2 pass on a simulator.
 
 ### Who runs what — and what a green dispatch actually means
 
@@ -36,8 +50,8 @@ exited 0" and nothing more. It does not mean tests ran.
 |---|---|---|
 | Compile (incl. the **test target**) | `dispatch.sh` verify loop, out-of-sandbox | verify-cmd in `PROJECT.md` |
 | R1 fixture / integration test | verify loop **iff** the verify-cmd invokes it | verify-cmd |
-| **Test execution** (unit + simulator) | after the dispatch, on a real simulator/device | **orchestrator** |
-| R2 app-run + screenshot | after the dispatch | orchestrator |
+| **Test execution** (unit + simulator/device) | after the dispatch, on real hardware or a simulator | **orchestrator** |
+| R2 run-and-observe | after the dispatch | orchestrator |
 | Diff review | after the dispatch returns green | orchestrator (cheap first pass) |
 
 **Builders cannot execute simulator-dependent tests.** CoreSimulatorService is a Mach
@@ -121,7 +135,7 @@ configuration keys and issue #14.
 
 ---
 
-## Pre-build critique — shift-left review (R1+ / security, 2026-07-20)
+## Pre-build critique — shift-left review (risk / security; decoupled from the tier, issue #50)
 
 Diff review reacts: it runs *after* the builder has already burned budget, and it can only
 find the gotcha once it is in the diff. The **pre-build critique** is the mirror rung — it
@@ -130,18 +144,38 @@ which is the cheapest place to fix a design-level gotcha. It exists to catch the
 the Partner and let it go" failure: a technically-correct diff that passes verify and still
 does the wrong thing or breaks something adjacent.
 
-**Applies to** any build task at **R1 / R2 or `security: true`** — whatever its origin (a Tech
-Lead task spec, an Architect Stage-2 task, or a change the Partner talked itself into
-conversationally). **R0 / isolated tasks skip it** (bias up when unsure — the rung is cheap, a
-missed consequence is not). Because every target-code change flows through `dispatch.sh` (the
-Partner never writes target code), wiring the rung to the dispatch boundary catches the
-conversational path for free — see `.claude/rules/dispatch.md` § Pre-Build Critique.
+**Applies to** any build task with **`risk: true` or `security: true`** — whatever its origin
+(a Tech Lead task spec, an Architect Stage-2 task, or a change the Partner talked itself into
+conversationally). The spec author sets `risk: true` when any of the **project's risk
+triggers** applies (`PROJECT.md § Risk triggers`; generic defaults: shared state or
+invariants, a persisted format / contract / API, concurrency or timing, an open design
+decision). `risk: false` tasks skip it **whatever their verify tier**. Because every
+target-code change flows through `dispatch.sh` (the Partner never writes target code), wiring
+the rung to the dispatch boundary catches the conversational path for free — see
+`.claude/rules/dispatch.md` § Pre-Build Critique.
+
+**Why not the tier any more.** Critique used to run on every R1/R2 task. With R2 defined as
+"UI / user-visible data path", nearly every task in an app was R2, so a layout tweak that
+needed a device check dragged a critic in with it. The gamedaytastic tier trial (issue #50):
+T228 ran as R0 plus a device check with 0 escapes; on T144 the diff reviewer caught every
+defect that mattered and critique caught none. Evidence and design risk are different axes.
+
+**Legacy tasks** (no `risk:` field — every task written before #50) keep the old rule:
+critique when `verify_tier` is R1/R2 or `security: true`. Upgrading the framework therefore
+never silently drops a critique a task was planned under; set `risk: false` explicitly to
+opt a legacy task out.
+
+**Enforced, not advised (issue #18).** `dispatch.sh` refuses (exit 31) a build dispatch for a
+PLAN.md task that needs critique until `logs/verdicts.jsonl` holds a `proceed` or `override`
+adjudication newer than the task's latest critic verdict. Critic runs record their verdict
+there themselves (a structured `CRITIC_RESULT` block, never parsed from prose); the Partner
+records its decision with `scripts/review_gate.py adjudicate`.
 
 Cost structure — identical cheap-first / Opus-adjudicates split as diff review:
 
-1. **The critique runs on a cheap read-only tier.** Dispatch `dispatch.sh --read-only` with
-   `prompts/critic.md` rendered for the task. The critic returns a verdict + findings, changes
-   nothing.
+1. **The critique runs on a cheap read-only tier.** Dispatch `dispatch.sh --read-only --role
+   critic` with `prompts/critic.md` rendered for the task. The critic returns a verdict +
+   findings + a machine-readable result block, and changes nothing.
 2. **The Partner adjudicates only.** It reads the findings against SPEC and decides
    dispatch / rework / escalate — it does not perform the plan critique itself at Opus rates.
 
@@ -169,14 +203,34 @@ subagent. **Fable is never used** (policy-restricted from security work — MODE
 The Partner reads the critic's output:
 
 - **BLOCKING findings must be resolved before dispatch** — fold them into the spec / re-plan via
-  the Tech Lead, or record an explicit **user override** in TASK_LOG (`critic_override`, with the
-  finding and the reason). No silent proceed.
+  the Tech Lead and re-run the critic, or record an explicit **user override**
+  (`review_gate.py adjudicate --outcome override --reason ...`, plus `critic_override` in
+  TASK_LOG with the finding and the reason). `adjudicate --outcome proceed` is refused while
+  the latest verdict carries a `[BLOCKING-PLAN]` finding. No silent proceed.
 - **ADVISORY findings** are logged (`critic_returned`); fold in at the Partner's discretion.
 - **`RECOMMENDED_VERIFY_TIER`**, if higher than the task's stated `verify_tier`, **raises it**
   (bias up) before dispatch.
 
-**A R1+/security task dispatched to a builder with an unresolved BLOCKING finding is a gate
-violation**, exactly as a diff merged without the diff-review rung is.
+**A risk/security task dispatched to a builder with an unresolved BLOCKING finding is a gate
+violation**, exactly as a diff merged without the diff-review rung is — and `dispatch.sh` now
+refuses it.
+
+### Round caps — then the operator (issue #50)
+
+Neither rung converges on its own: T211 ran **5** critique rounds and **10** reviewer fixup
+rounds. Both are capped per task, counted from the verdict ledger (never from prose):
+
+| Rung | Counts as a round | Default cap | Project key |
+|---|---|---|---|
+| Pre-build critique | every recorded critic verdict except `ERROR` (could not read the plan) | 2 | `critic_round_cap` |
+| Reviewer fixup | every recorded review that did not approve (`REJECT`, any blocker, or `MALFORMED`) | 3 | `reviewer_fixup_round_cap` |
+
+`dispatch.sh --role critic` refuses round cap+1; `--role reviewer` and the fixup build refuse
+once non-approving reviews exceed the cap (the review of the last allowed fixup still runs).
+All refusals are exit 31 — a policy stop, never a `failure_count` event. The Partner then
+escalates to the operator with a Gate-2-style choice (`.claude/rules/dispatch.md` § Round
+caps): **redesign** (re-spec, usually as a new task), **override** (a logged
+`review_gate.py override-cap --reason ...` or `adjudicate --outcome override`), or **abort**.
 
 ---
 
@@ -211,49 +265,69 @@ bias, and why the token cost of an Opus read is not a consideration here.
 
 ---
 
-## R1 rules — real payloads through the real path
+## R1 rules — real inputs through the real path
 
 - **Never mock the boundary under test.** Mocks above the boundary (to isolate logic that
   *consumes* it) are fine; the decode/transport/persistence code itself must run for real.
 - **No replicas.** A test that rebuilds its own decoder/client "equivalent to" production
   stays green when production drifts (the #74 near-miss). The test must call the
-  production function. If the dependency isn't injectable (e.g. code hard-wired to
-  `URLSession.shared`), stub the transport underneath it (`URLProtocol` stub) and feed the
-  fixture through the real call.
-- **Fixtures are captured, not invented.** Pull representative payloads from the live
-  system (e.g. via the project's MCP integration or a curl against the real API) and
-  commit them under the target project's test fixtures directory (convention:
-  `<Tests>/Fixtures/<source>-<endpoint>.json`, with a comment noting capture date/source).
+  production function. If the dependency isn't injectable, stub the transport *underneath*
+  it and feed the fixture through the real call.
+- **Fixtures are captured, not invented.** Pull representative inputs from the live system
+  and commit them under the target project's test fixtures directory with a note of the
+  capture date and source.
 
-## R2 rules — run the app and look
+## R2 rules — run it and observe
 
-- **Reproduce the triggering interaction**, not just a static launch. A scroll bug needs a
-  scroll; a tap bug needs a tap. Synthetic input (e.g. Quartz drag scripts) is valid for
-  artifact presence/absence, weak for landing a precise frame — flag precise-frame checks
-  as a human pass.
-- **Races need N cold launches.** For launch-timing / nondeterministic renders: kill and
-  relaunch **5–10×** (cold starts); pass only if the defect never appears. A single
-  screenshot is not a valid pass for a race. `scripts/app_screenshot.sh` automates this
-  for iOS simulators.
+- **Reproduce the triggering interaction**, not just a static start. A scroll bug needs a
+  scroll; a request bug needs the request. Synthetic input is valid for presence/absence,
+  weak for precise timing — flag precise checks as a human pass.
+- **Races need N cold runs.** For start-up timing / nondeterministic output: restart
+  **5–10×**; pass only if the defect never appears. A single observation is not a valid
+  pass for a race.
 - **Demand a named mechanism, not a bundle.** A race fix must state *why* it is now
   deterministic. Two or three "complementary" changes shipped hoping one wins is a tell
   the race wasn't pinned — reject and ask for the mechanism.
-- **Verify the data source before the pixels.** Before judging rendering, confirm the
-  component actually receives the data it should (trace the binding/fetch). An empty data
-  source mimics layout bugs and burns cycles (RULES.md operating lesson 1).
-- **Use a build configuration where the real data path runs.** e.g. unsigned iOS sim
-  builds can fail Keychain access and silently fall back to demo data — a demo-mode
-  screenshot is NOT a valid R2 pass.
+- **Verify the data source before the output.** Before judging what is shown, confirm the
+  component actually receives the data it should. An empty data source mimics rendering
+  bugs and burns cycles (RULES.md operating lesson 1).
+- **Run a configuration where the real data path runs.** A build that silently falls back
+  to demo or cached data is not a valid R2 pass.
 - **Scope discipline:** one bug = one mechanism per PR. Split unrelated changes so the
   fix's effect is attributable.
+
+Platform-specific R1/R2 practice (stubbing `URLProtocol` under `URLSession`, simulator
+cold-launch loops with `scripts/app_screenshot.sh`, the unsigned-simulator Keychain trap)
+lives in the project's policy; `Docs/examples/policy-ios.md` carries the iOS version.
+
+---
+
+## Project policy — the framework enforces, the project decides (issue #50)
+
+The framework owns the mechanisms: the critique gate, the round caps, the verdict ledger and
+the evidence ladder. What they apply to is **project policy**, declared in the project's own
+`PROJECT.md` (setup writes it once; the installer never touches it):
+
+- frontmatter `critic_round_cap`, `reviewer_fixup_round_cap` — positive integers;
+- `## Verify tiers` — one bullet per tier, `- R0: <what evidence proves this>`, all of R0–R2;
+- `## Risk triggers` — one bullet per trigger that sets `risk: true`.
+
+Everything is optional; absent parts use the generic defaults in
+`scripts/project_policy.py`. `orchestrator-doctor.py` fails on a malformed declaration, and
+`project_policy.py --pm-dir . render` produces the block the Tech Lead, Architect, critic and
+reviewer prompts receive as `{{PROJECT_POLICY}}` (`dispatch.sh` fills any placeholder left
+unrendered). A project changes its policy by editing PROJECT.md — never by forking the
+framework. Policy that a second project also needs, or that only works when enforced,
+graduates into the framework.
 
 ---
 
 ## Enforcement
 
-- Task specs and PLAN.md tasks carry `verify_tier: R0|R1|R2` and `security: true|false`.
-  A `security: true` task forces the review rung up (Sonnet-minimum first pass, mandatory
-  Opus adjudication — see Security-sensitive tasks above).
+- Task specs and PLAN.md tasks carry `verify_tier: R0|R1|R2`, `risk: true|false` and
+  `security: true|false`. `risk` or `security` requires the pre-build critique (enforced by
+  `dispatch.sh`); a `security: true` task also forces the review rung up (Sonnet-minimum
+  first pass, mandatory Opus adjudication — see Security-sensitive tasks above).
 - The orchestrator does not merge until the tier's full ladder has passed and the diff
   review verdict is recorded (TASK_LOG event or PR comment).
 - Genuinely device-only checks (GPU effects, haptics, perf feel) are flagged as an

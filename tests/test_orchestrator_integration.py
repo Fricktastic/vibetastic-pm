@@ -432,6 +432,20 @@ class DoctorTests(unittest.TestCase):
         expected_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
         self.assertNotEqual(actual_record["config_sha256"], expected_hash)
 
+    def test_doctor_fails_an_otherwise_healthy_install_on_a_malformed_project_policy(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+        (self.pm / "PROJECT.md").write_text("---\ncritic_round_cap: two\n---\n")
+        bad = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        self.assertEqual(bad.returncode, 1, bad.stdout)
+        report = json.loads(bad.stdout)
+        self.assertTrue(report["configuration"]["ok"])
+        self.assertFalse(report["policy"]["ok"])
+        (self.pm / "PROJECT.md").write_text("---\ncritic_round_cap: 3\n---\n")
+        good = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        self.assertEqual(good.returncode, 0, good.stdout + good.stderr)
+        self.assertEqual(json.loads(good.stdout)["policy"]["critic_round_cap"], 3)
+
     def test_doctor_rejects_a_managed_hook_with_the_wrong_matcher(self):
         install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
         self.assertEqual(install.returncode, 0, install.stderr)

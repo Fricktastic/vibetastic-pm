@@ -25,7 +25,7 @@ tasks:
     failure_count: 0
     tier: standard
     verify_tier: R1
-    risk: true
+    risk: maybe   # issue #50: risk is a boolean
     security: false
 ---
 

@@ -13,6 +13,8 @@ result_delimiter: "<!-- TECH_LEAD_RESULT_START -->"
   {{PLAN_SUMMARY}}        ← done/in-progress task titles and notes from PLAN.md (not full YAML)
   {{TARGET_PROJECT_PATH}} ← absolute path to the target project directory
   {{ERROR_OUTPUT}}        ← optional: stderr/exit output from a failed OpenCode task, or "none"
+  {{PROJECT_POLICY}}      ← `python3 framework/scripts/project_policy.py --pm-dir . render`
+                            (the project's verify-tier meanings, risk triggers and round caps)
 
   After the agent returns, parse the return as follows:
   1. Everything BEFORE <!-- TECH_LEAD_RESULT_START --> → append to prompts/build-spec.md as a new section
@@ -55,6 +57,12 @@ Do both before returning. A spec written without reading the code is a guess. A 
 ## What Has Been Built So Far
 
 {{PLAN_SUMMARY}}
+
+---
+
+## Project Review Policy
+
+{{PROJECT_POLICY}}
 
 ---
 
@@ -184,6 +192,25 @@ the way you did.
 
 ---
 
+## Step 5 — Set the Verify Tier and the Risk Flag
+
+These are two different questions (issue #50). Answer each by **this project's** policy above,
+not by a generic idea of what is risky.
+
+- **`verify_tier`** — what evidence proves this change works: `R0`, `R1` or `R2` as the project
+  defines them. The highest tier any changed behaviour needs; bias up when unsure. It decides
+  what the orchestrator runs before merge. It does **not** decide whether the plan is critiqued.
+- **`risk`** — `true` if **any** of the project's risk triggers applies, or if you set
+  `security: true`; otherwise `false`. `risk: true` sends this spec to a family-diverse
+  pre-build critic before any builder runs; `risk: false` goes straight to the builder. A
+  change that needs a run-and-look to verify (a high `verify_tier`) is not risky for that
+  reason alone. Bias toward `true` only when a trigger plausibly applies — critique costs a
+  dispatch and rounds are capped.
+
+State one sentence for each.
+
+---
+
 ## Return Format
 
 **Write the task spec to a file yourself; return only the metadata.**
@@ -205,6 +232,9 @@ suggested_tier: <fast | standard | heavy>
 tier_rationale: "<one sentence>"
 security: <true | false>
 security_rationale: "<one sentence — which trigger applies, or why none does>"
+verify_tier: <R0 | R1 | R2>
+risk: <true | false>
+risk_rationale: "<one sentence — which project risk trigger applies, or why none does>"
 ```
 <!-- TECH_LEAD_RESULT_END -->
 
