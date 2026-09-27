@@ -32,6 +32,9 @@
 #   - task ids unique; every depends_on target exists; dependency graph has no cycles
 #   - failure_count is a non-negative integer
 #   - tier (if present) ∈ {fast, standard, heavy}; verify_tier (if present) ∈ {R0, R1, R2}
+#   - risk / security (if present) ∈ {true, false}. `risk` (issue #50) is what forces pre-build
+#     critique; verify_tier only says what evidence proves the change. A task with no `risk:`
+#     field is a pre-#50 task and keeps the old rule (critique at R1/R2) — never an error.
 set -u
 
 PLAN_FILE="${1:-PLAN.md}"
@@ -135,7 +138,7 @@ for chunk in chunks:
 
     t = {k: field(k) for k in
          ("stage", "title", "agent", "status", "depends_on", "failure_count",
-          "tier", "verify_tier")}
+          "tier", "verify_tier", "risk", "security")}
     tasks[tid] = t
     order.append(tid)
 
@@ -161,6 +164,11 @@ for chunk in chunks:
         vt = t["verify_tier"].split("#")[0].strip()
         if vt not in ("R0", "R1", "R2", "null", "~", ""):
             vocab.append(f"{tid}: unrecognised verify_tier '{vt}'")
+
+    for flag in ("risk", "security"):
+        value = (t[flag] or "").split("#")[0].strip().strip("\"'")
+        if value and value.lower() not in ("true", "false", "null", "~"):
+            vocab.append(f"{tid}: {flag} must be true or false, got '{value}'")
 
 if not tasks:
     errors.append("tasks: section contains no parseable '- id:' entries")

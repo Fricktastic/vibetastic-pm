@@ -27,8 +27,13 @@ because it is indistinguishable from a real finding.
 If this is round 2+, do not re-derive from scratch: for each prior finding state
 `RESOLVED` / `UNRESOLVED` / `PARTIAL` and only then look for anything new.
 
-**Verify tier:** {{VERIFY_TIER}} (R0 = pure logic, R1 = integration boundary, R2 = UI /
-user-visible data path — see framework/VERIFY.md). **Security-sensitive:** {{SECURITY}}.
+**Verify tier:** {{VERIFY_TIER}} (what evidence will prove the change). **Risk flag:**
+{{RISK}}. **Security-sensitive:** {{SECURITY}}.
+
+**This project's review policy** (its tier meanings and the risk triggers that put this plan
+in front of you):
+
+{{PROJECT_POLICY}}
 
 **Code to read for blast radius:** {{TARGET_PROJECT_PATH}} — trace what the plan will touch
 and who depends on it. Do not assume; grep for the callers.
@@ -67,8 +72,10 @@ State each as "preserve X because Y."
 
 ## Verify-tier check
 
-Does the planned tier match the real risk? If the plan touches an integration boundary (R1)
-or a user-visible data path (R2) above its stated tier, say so and recommend the tier (bias up).
+Does the planned tier name the evidence this change actually needs, by **this project's**
+tier definitions above? If proving it needs a stronger kind of evidence than the stated tier
+provides, say so and recommend the tier (bias up). The tier is about evidence only; whether
+the plan needed critique at all is the risk flag, not the tier.
 
 ## Output format (this is your entire final message)
 
@@ -87,7 +94,21 @@ MUST NOT LOSE:
 - <preserve X because Y>   (or "nothing at risk")
 
 RECOMMENDED_VERIFY_TIER: R0|R1|R2   (one clause on why, only if it differs from the stated tier)
+
+<!-- CRITIC_RESULT_START -->
+verdict: <PROCEED | PROCEED-WITH-CHANGES | REWORK | ERROR — exactly one>
+blocking_plan: <number of [BLOCKING-PLAN] findings>
+blocking_preexistent: <number of [BLOCKING-PREEXISTENT] findings>
+advisory: <number of [ADVISORY] findings>
+recommended_verify_tier: <R0 | R1 | R2 | null>
+<!-- CRITIC_RESULT_END -->
 ```
+
+**The result block is machine-read** (issue #18). `dispatch.sh` parses it — not your prose —
+to record this round, and the orchestrator cannot clear the build while `blocking_plan` is
+above zero. Fill every line with a single value; the counts must match the FINDINGS list. A
+missing or malformed block is recorded as `MALFORMED` and still uses one of the task's
+critique rounds.
 
 ## Classifying a finding
 
@@ -102,10 +123,12 @@ RECOMMENDED_VERIFY_TIER: R0|R1|R2   (one clause on why, only if it differs from 
 `REWORK` **only** if a `[BLOCKING-PLAN]` finding exists. `PROCEED-WITH-CHANGES` if the only
 blockers are pre-existent. `ERROR` if you could not read the plan.
 
-You are not being asked to be softer — you are being asked to converge. The orchestrator
-stops after **2 rounds** (framework `.claude/rules/dispatch.md` § Pre-Build Critique) and
-escalates to the operator, so a finding you could have raised in round 1 and raise in round 3
-is a finding that arrives after the decision has already been taken out of your hands.
+You are not being asked to be softer — you are being asked to converge. Each task gets a
+fixed number of critique rounds (the project's `critic_round_cap`, default **2**, stated in
+the policy above); `dispatch.sh` refuses the next one and the orchestrator escalates to the
+operator (framework `.claude/rules/dispatch.md` § Round caps). A finding you could have raised
+in round 1 and raise in the last round arrives after the decision has been taken out of your
+hands.
 
 Keep it terse — the orchestrator reads this verdict to decide dispatch / rework / escalate;
 it does not want prose.

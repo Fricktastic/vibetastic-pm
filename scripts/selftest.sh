@@ -34,6 +34,7 @@ echo "[selftest] plan-lint fixture expectations"
 FIXTURES="
 plan-good.md:0
 plan-vocab.md:3
+plan-risk-vocab.md:3
 plan-missing-field.md:1
 plan-bad-dep.md:1
 plan-nested-depends.md:1
