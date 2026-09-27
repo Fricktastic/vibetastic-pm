@@ -103,6 +103,23 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("a simulator screenshot at the merged SHA", rendered)
         self.assertIn("`Checks/`", rendered)
 
+    def test_test_support_paths_overlay_but_stay_production(self):
+        """Issue #58: test wiring in a production file (.pbxproj) is overlaid, not reclassified."""
+        policy = project_policy.load(self.pm)
+        self.assertEqual(policy["test_support_paths"], [])
+        self.assertFalse(project_policy.is_test_support("App.xcodeproj/project.pbxproj", policy))
+        self.assertNotIn("Test support paths", project_policy.render(policy))
+        self.write_project(body="## Test support paths\n- *.pbxproj\n")
+        policy = project_policy.load(self.pm)
+        self.assertEqual(policy["errors"], [])
+        self.assertEqual(policy["sources"]["test_support_paths"], "project")
+        self.assertTrue(project_policy.is_test_support("App.xcodeproj/project.pbxproj", policy))
+        self.assertFalse(project_policy.is_test_support("App/Main.swift", policy))
+        self.assertEqual(project_policy.classify("App.xcodeproj/project.pbxproj", policy), "production")
+        self.assertIn("`*.pbxproj`", project_policy.render(policy))
+        self.write_project(body="## Test support paths\n- **\n")
+        self.assertIn("match-everything", "\n".join(project_policy.load(self.pm)["errors"]))
+
     def test_match_everything_or_empty_path_class_is_an_error(self):
         self.write_project(body="## Test paths\n- **\n\n## Non-production paths\n\n## Notes\n")
         policy = project_policy.load(self.pm)
@@ -147,7 +164,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy["errors"], [])
         self.assertEqual(policy["sources"]["verify_tiers"], "project")
         self.assertEqual(policy["sources"]["risk_triggers"], "project")
-        for key in ("observations", "test_paths", "non_production_paths"):
+        for key in ("observations", "test_paths", "non_production_paths", "test_support_paths"):
             self.assertEqual(policy["sources"][key], "project", key)
         self.assertEqual(project_policy.classify("AppUITests/LaunchTests.swift", policy), "test")
         self.assertEqual(project_policy.classify("App/Audio/ChainRunner.swift", policy), "production")

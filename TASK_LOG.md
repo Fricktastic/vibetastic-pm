@@ -45,6 +45,15 @@ Valid event_type values:
                         base_sha, allowed, checks (status per check), pr
   merge_gate_override - Operator waived one merge-gate check for one commit; fields: sha,
                         check, reason
+  merge_adjudicated   - Partner adjudicated a commit's approving review (merge_gate.py
+                        adjudicate; mandatory, Opus-class, for security: true); fields: sha,
+                        model, review_model
+  close_exempted      - Operator let a merge-gated task close without a passing merge gate
+                        (merge_gate.py exempt-close); fields: kind (gate2-skip |
+                        state-correction | operator), reason
+  pr_failed           - gh pr create failed; the task stays in_progress; fields: error
+  acceptance_unmet    - dispatch.sh exited 22 (builder reported ACCEPTANCE: UNMET); fields:
+                        reason (the builder's line), route (merge_gate | fixup | respec)
   inline_authored     - Orchestrator authored a change itself under the inline authoring
                         gate; fields: model, file, branch, observation, conditions (one line
                         per condition met)

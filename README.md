@@ -38,8 +38,12 @@ Review gates are enforced by the scripts, not left to the orchestrator's discipl
 - **Exit 31** is a gate or policy refusal - ownership, an unadjudicated critique, a round
   cap, a merge-gate check. It is never a task failure and never touches `failure_count`.
 - **Merges** go through `scripts/merge_gate.py`, which pins the verification, the approving
-  review and the task's fail-on-base or runtime observation to the exact commit merged, then
-  runs `gh pr merge --match-head-commit`.
+  review, the task's fail-on-base or runtime observation and (for `security: true`) an Opus
+  adjudication to the exact commit merged, fetches the base itself, then runs
+  `gh pr merge --match-head-commit`. A task closes only after that gate passes, or on the
+  operator's recorded exemption.
+- **Exit 22**: the verify command passed but the builder reported `ACCEPTANCE: UNMET` - not
+  green, not a failure; the orchestrator routes it.
 - **Project policy** - what the verify tiers mean, the risk triggers, the caps, test and
   non-production paths - lives in the project's `PROJECT.md`, with generic defaults in
   `scripts/project_policy.py`. `Docs/examples/policy-ios.md` is a worked example.
@@ -71,7 +75,11 @@ Enforced:
 | Critic or reviewer run as a mutating build turn | `--role critic`/`reviewer` without `--read-only` refused (exit 2) | `dispatch.sh` |
 | Same-family review or critique | Author and reviewer/critic families compared (managed projects, exit 31) | `scripts/orchestrator-routing.py` |
 | Merge of a tree nobody verified or reviewed; green-but-inert change | Verification, review and observation pinned to the merged SHA; a diff with no production change refused; `gh pr merge --match-head-commit` | `scripts/merge_gate.py` |
-| A "regression test" that passes without the fix | `fail-on-base` must see the named test fail on the base tree | `scripts/merge_gate.py` |
+| A "regression test" that passes without the fix | `fail-on-base` must see the named test fail on the base tree; test wiring in production files (`## Test support paths`) is overlaid with it | `scripts/merge_gate.py` |
+| Security diff merged without Opus adjudication | `security: true` refused at merge unless an Opus-class `adjudicate` is recorded at the merged commit | `scripts/merge_gate.py` |
+| Merge gate computed against a stale base | Remote-tracking `--base` fetched first; a local base behind its upstream refused | `scripts/merge_gate.py` |
+| Task marked `done` at PR-open time or on a refused merge check | `plan-update.py` refuses to close a task with an `observation:` field without a passing `check`/`merge` or an operator `exempt-close` | `scripts/pm_state.py`, `scripts/merge_gate.py` |
+| "verify passed" while the builder says acceptance was not met | A report ending `ACCEPTANCE: UNMET` exits 22, not 0; `cost.jsonl` records `acceptance` and `verify_scope` | `dispatch.sh` |
 | Orchestrator reads whole task/critic specs into context | Read/`cat` of `prompts/task-T*.md` / `critic-T*.md` blocked | `scripts/spec-body-guard.py` via `scripts/orchestrator-hook.py` |
 | Hand-edited or corrupted PLAN | Direct `PLAN.md` writes blocked; hash-checked, linted transactions | `scripts/orchestrator-hook.py`, `scripts/plan-update.py` |
 | Two orchestrators writing state at once | Single-writer lease | `orchestrate.py`, `scripts/orchestrator-state.py` |
@@ -85,9 +93,11 @@ Advisory (a rule or prompt, nothing refuses):
 - A plain `gh pr merge` is not intercepted; the merge gate holds only when merges go through
   `merge_gate.py`.
 - A build dispatch with no task id (no `--task`, prompt not `task-`/`fixup-T0XX*.md`) is not
-  gated; a managed project only warns. The security Opus floor is checked on the critique
-  adjudication, not yet on the merge-time diff adjudication (issue #58). The adjudicating
-  model is declared by the caller, not verified.
+  gated; a managed project only warns. The adjudicating model (critique and merge-time) is
+  declared by the caller, not verified, and the Sonnet-minimum first-pass review of a security
+  diff is a routing choice (the reviewer's model is recorded, not ranked).
+- The builder's `ACCEPTANCE:` line is its own claim: `UNMET` is acted on (exit 22), `MET`
+  proves nothing, and a builder that omits the line is not caught.
 - Root cause before fix: defect-fix specs carry Symptom / Mechanism / Evidence, and the
   critic blocks reasoning-only Evidence, but only on `risk`/`security` tasks
   (`VERIFY.md` § Pre-build critique). Diagnosis itself is `investigate.sh`, by choice.

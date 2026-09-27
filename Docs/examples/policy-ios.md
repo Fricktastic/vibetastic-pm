@@ -74,3 +74,13 @@ reviewer_fixup_round_cap: 3
 - *.md
 - Docs/
 - fastlane/metadata/
+
+## Test support paths
+
+<!-- Production files that carry test wiring. A new XCTest file only compiles into the test
+target once the project file lists it, so fail-on-base overlays the branch's project file
+with the tests; without it the base run fails on "no such test", not on the assertion. Pair
+it with --expect-fail-pattern: the overlaid project file may also reference new production
+sources the base tree lacks. With XcodeGen, list project.yml instead. -->
+
+- *.pbxproj

@@ -432,6 +432,13 @@ class PMState:
                                       capture_output=True, text=True)
             if lint.returncode not in (0, 3):
                 raise StateError('candidate PLAN rejected: ' + lint.stderr.strip())
+            # Issue #58: a merge-gated task closes only on merge-gate evidence (a passing
+            # merge_gate.py check/merge) or the operator's recorded exemption.
+            import merge_gate
+            closing = merge_gate.close_problems(
+                self.pm, plan.read_text() if plan.exists() else '', candidate)
+            if closing:
+                raise StateError('candidate PLAN rejected: ' + ' '.join(closing))
             result = {'operation_id': operation_id, 'plan_hash': digest(candidate.encode()),
                       'lint_exit': lint.returncode, 'lint_output': lint.stdout + lint.stderr}
             marker = '\n<!-- pm-operation: ' + operation_id + ' -->\n'

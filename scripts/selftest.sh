@@ -536,7 +536,7 @@ prompt_preamble" 2>/dev/null)"
     has() { printf '%s' "$out" | grep -q "$1"; }
     case "$4" in
       none)     [ -z "$out" ] && pass "$5" || fail "$5 (expected no preamble, got ${#out} chars)" ;;
-      autonomy) if has 'Do not stop' && ! has 'Verification boundary'; then
+      autonomy) if has 'Do not stop' && has 'ACCEPTANCE: UNMET' && ! has 'Verification boundary'; then
                   pass "$5"; else fail "$5 (expected the working agreement only)"; fi ;;
       generic)  if has 'Do not stop' && has 'never report a test result' && ! has 'workspace-write'; then
                   pass "$5"; else fail "$5 (expected working agreement + generic evidence rule)"; fi ;;
@@ -714,6 +714,63 @@ if grep -q 'handoff-volatile-hook.py' scripts/install-orchestrators.py \
 else
   fail "the volatile hook is not wired/checked — it would look shipped and do nothing"
 fi
+
+echo "[selftest] builder ACCEPTANCE: UNMET is exit 22, never green (issues #21, #58)"
+# gamedaytastic T073: the builder said the red-first proof could not run and dispatch exited 0
+# with "verify passed". The fake emits a report per turn; the verifier passes on attempt 1 or,
+# with a flag, only after the resume turn. cost.jsonl must carry acceptance + verify_scope.
+ACC_TMP="$(mktemp -d)"; ACC_BIN="$ACC_TMP/bin"; ACC_PROJ="$ACC_TMP/project"
+mkdir -p "$ACC_BIN" "$ACC_PROJ"; git -C "$ACC_PROJ" init -q
+printf 'fake task\n' > "$ACC_TMP/task-T996.md"
+cat > "$ACC_BIN/codex" <<'SH'
+#!/bin/bash
+if [[ " $* " == *" resume "* ]]; then
+  touch "$ACC_FLAG"
+  printf '%s\n' "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"$ACC_RESUME\"}}"
+else
+  printf '%s\n' '{"type":"thread.started","thread_id":"thread-acc"}'
+  printf '%s\n' "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"$ACC_FRESH\"}}"
+fi
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+SH
+chmod +x "$ACC_BIN/codex"
+ACC_N=0
+acc_case() {  # want_exit, want "acceptance scope verify_passed", fresh, resume, verify ('' = read-only), label
+  local logs got row
+  ACC_N=$((ACC_N + 1)); logs="$ACC_TMP/logs-$ACC_N"; rm -f "$ACC_TMP/flag"
+  if [ -n "$5" ]; then
+    PATH="$ACC_BIN:$PATH" ACC_FRESH="$3" ACC_RESUME="$4" ACC_FLAG="$ACC_TMP/flag" CODEX_FIRST_EVENT_TIMEOUT=0 \
+      OPENCODE_DISPATCH_LOG_DIR="$logs" DISPATCH_ALLOW_NO_WORKTREE=1 bash dispatch.sh --backend codex \
+      gpt-5.6-terra "$ACC_PROJ" "$ACC_TMP/task-T996.md" '' "$5" 2 standard > /dev/null 2> "$ACC_TMP/stderr"
+  else
+    PATH="$ACC_BIN:$PATH" ACC_FRESH="$3" ACC_FLAG="$ACC_TMP/flag" CODEX_FIRST_EVENT_TIMEOUT=0 \
+      OPENCODE_DISPATCH_LOG_DIR="$logs" bash dispatch.sh --read-only --backend codex gpt-5.6-terra \
+      "$ACC_PROJ" "$ACC_TMP/task-T996.md" > /dev/null 2> "$ACC_TMP/stderr"
+  fi
+  got=$?
+  row="$(python3 -c 'import json,sys
+r=[json.loads(l) for l in open(sys.argv[1]) if l.strip()][-1]
+print(r.get("acceptance"), r.get("verify_scope"), r.get("verify_passed"), r.get("exit"))' "$logs/cost.jsonl" 2>/dev/null)"
+  if [ "$got" = "$1" ] && [ "$row" = "$2 $1" ]; then pass "$6"
+  else fail "$6 (expected exit $1 / '$2 $1', got exit $got / '$row')"; fi
+}
+acc_case 22 "unmet verify_cmd True" 'Implemented it.\nACCEPTANCE: UNMET — the red-first proof needs a simulator' '' true \
+  "UNMET after a passing verify exits 22, recorded as acceptance unmet with verify_passed true"
+grep -q "acceptance UNMET (builder's report): the red-first proof needs a simulator" "$ACC_TMP/stderr" \
+  && pass "exit 22 prints the builder's reason" || fail "exit 22 did not print the builder's reason"
+acc_case 0 "met verify_cmd True" 'Done.\nACCEPTANCE: MET' '' true "MET stays exit 0 and is recorded"
+acc_case 0 "None verify_cmd True" 'Done, no acceptance line.' '' true "no acceptance line: exit 0, acceptance null"
+acc_case 0 "None verify_cmd True" 'Note: the ACCEPTANCE: UNMET line is required by the preamble.' '' true \
+  "an UNMET mention mid-line is not the acceptance line"
+acc_case 22 "unmet verify_cmd True" 'Done.\n**ACCEPTANCE: UNMET** — could not observe it' '' true \
+  "markdown-decorated UNMET is still read"
+acc_case 0 "met verify_cmd True" 'Partial.\nACCEPTANCE: UNMET — build broke' 'Fixed the build.\nACCEPTANCE: MET' \
+  "test -f $ACC_TMP/flag" "a later turn's MET supersedes an earlier UNMET (last line wins)"
+acc_case 22 "unmet verify_cmd True" 'Partial.\nACCEPTANCE: UNMET — no simulator here' 'Fixed the build.' \
+  "test -f $ACC_TMP/flag" "an UNMET is not dropped by a verify-fix turn that does not repeat the line"
+acc_case 0 "None none None" 'Review.\nACCEPTANCE: UNMET — n/a' '' '' \
+  "read-only runs ignore the acceptance line; verify_scope none"
+rm -rf "$ACC_TMP"
 
 echo "[selftest] dispatch classifies backend quota/auth refusals as exit 30 (issue #51)"
 # Before #51 a quota refusal mid-run exited 1 — a task failure toward Gate 2 — so the only

@@ -165,7 +165,9 @@ blocked pending that judgment. The Codex partner cannot impersonate Opus or trea
 OpenCode review as satisfying the security floor. Never route Anthropic through OpenRouter.
 
 Dispatch exits: 0 success; 2 invalid invocation; 20 verification exhausted (escalate);
-21 read-only violation (inspect); 30 backend unavailable (next legal backend);
+21 read-only violation (inspect); 22 verify passed but the builder reported `ACCEPTANCE:
+UNMET` (not green, not a failure — route it per `.claude/rules/dispatch.md`, issue #58);
+30 backend unavailable (next legal backend);
 31 ownership/routing/reconciliation blocked, or a review gate refused the run — critique
 not yet adjudicated, or a critique / reviewer-fixup round cap reached (**do not** increment
 failure_count; resolve or escalate per `.claude/rules/dispatch.md` § Round caps).
@@ -191,7 +193,12 @@ Only true failures after the configured ladder is exhausted trigger the failure 
   through `scripts/merge_gate.py` (issue #35): the verification, the approving review and the
   task's fail-on-base / runtime observation must all be pinned to the exact commit merged, and
   its net diff must carry a production change unless the task is `observation: none`. A
-  refusal is exit 31; the operator's waiver is a logged `merge_gate.py override`.
+  refusal is exit 31; the operator's waiver is a logged `merge_gate.py override`. A
+  `security: true` task also needs an Opus-class `merge_gate.py adjudicate` at that commit,
+  and the gate fetches `origin/<base>` itself and refuses a stale local base (issue #58).
+- A task with an `observation:` field closes (`done`) only after its merge gate passes;
+  `plan-update.py` refuses otherwise. A Gate-2 skip or a state correction closes it through
+  the operator's recorded `merge_gate.py exempt-close` (issue #58).
 - R2 inspection and human/device-only verification remain the partner/operator's responsibility.
   A builder's claim is not test evidence. Preserve the device-only exceptions explicitly.
 - Never push framework updates into deployed projects without the user's instruction.
