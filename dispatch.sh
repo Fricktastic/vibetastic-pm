@@ -126,7 +126,7 @@ case "$RUN_PROMPT" in task-T[0-9]*) RUN_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" |
 # The task the review gates key on: --task, else the id in any task-scoped prompt name.
 # (RUN_TASK_ID above keeps its narrower meaning — it is the reservation key.)
 GATE_TASK_ID="$PM_TASK"
-[ -n "$GATE_TASK_ID" ] || GATE_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -nE 's/^(task|fixup|critic|review|reviewer)-(T[0-9]+[A-Z]*).*$/\2/p')"
+[ -n "$GATE_TASK_ID" ] || GATE_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -nE 's/^(task|fixup|critic|review|reviewer)-(T[0-9]+[A-Za-z0-9]*)([._-].*)?$/\2/p')"
 if [ -z "$BACKEND" ]; then
   case "$MODEL" in
     gpt-*|codex-*) RUN_BACKEND=codex ;;
@@ -172,6 +172,19 @@ DISPATCH_PM_DIR="${PM_DIR:-$(dirname "$LOG_DIR")}"
 # in a ledger (logs/verdicts.jsonl) written by this script and by review_gate.py, and the
 # refusals happen here, where the tokens would be spent. Exit 31: a policy stop, never a
 # failure_count event. Runs before the reservation so a refusal never strands one.
+# review_gate.py exits 31 for a policy refusal and anything else for a broken call (bad
+# --task, crash). Only the former is an exit-31 stop; the latter is a configuration error
+# (exit 2) and must not send the operator to redesign/override/abort.
+review_gate_call() {
+  local log_dir="$1"; shift
+  local rc=0
+  python3 "$DISPATCH_HERE/scripts/review_gate.py" --pm-dir "$DISPATCH_PM_DIR" --log-dir "$log_dir" "$@" >/dev/null || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 31 ] && return 31
+  echo "[dispatch] review gate could not run ($1 exited $rc) — configuration error, not a policy stop" >&2
+  return 2
+}
+
 review_gates() {  # $1 = ledger dir
   case "$PM_ROLE" in
     critic|reviewer)
@@ -180,14 +193,12 @@ review_gates() {  # $1 = ledger dir
         echo "           (round caps are counted per task — framework/.claude/rules/dispatch.md § Round caps)." >&2
         return 31
       fi
-      python3 "$DISPATCH_HERE/scripts/review_gate.py" --pm-dir "$DISPATCH_PM_DIR" --log-dir "$1" \
-        check-cap --role "$PM_ROLE" --task "$GATE_TASK_ID" >/dev/null || return 31 ;;
+      review_gate_call "$1" check-cap --role "$PM_ROLE" --task "$GATE_TASK_ID" || return $? ;;
   esac
   # No PLAN.md, no task to gate (a framework checkout, an ad-hoc run). A missing
   # review_gate.py beyond this point fails closed.
   if ! $READ_ONLY && [ -n "$GATE_TASK_ID" ] && [ -f "$DISPATCH_PM_DIR/PLAN.md" ]; then
-    python3 "$DISPATCH_HERE/scripts/review_gate.py" --pm-dir "$DISPATCH_PM_DIR" --log-dir "$1" \
-      build-gate --task "$GATE_TASK_ID" >/dev/null || return 31
+    review_gate_call "$1" build-gate --task "$GATE_TASK_ID" || return $?
   fi
   return 0
 }
@@ -212,14 +223,14 @@ if [ -f "$DISPATCH_PM_DIR/.orchestrator/config.json" ]; then
   if [ "$PM_ROLE" != build ] && ! $READ_ONLY; then
     echo "[dispatch] planning/review roles require --read-only" >&2; exit 31
   fi
-  review_gates "$LOG_DIR" || exit 31
+  review_gates "$LOG_DIR" || exit $?
   python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" reserve \
     --token "${PM_ORCHESTRATOR_TOKEN:-}" --run-id "$RUN_ID" \
     --task-id "${RUN_TASK_ID:-$RUN_PROMPT}" --pid "$$" --worktree "$RUN_WORKTREE" --branch "$RUN_BRANCH" >/dev/null || exit 31
   PM_RESERVED=true
 fi
 if ! $PM_MANAGED; then
-  review_gates "$LOG_DIR" || exit 31
+  review_gates "$LOG_DIR" || exit $?
 fi
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="${LOG_DIR}/$(basename "${PROMPT_FILE%.md}")-${RUN_ID}.log"

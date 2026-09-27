@@ -68,6 +68,16 @@ PLAN = textwrap.dedent("""\
         verify_tier: R0
         risk: true
         security: false
+      - id: T010b
+        stage: 1
+        title: "Risky sub-task with a letter suffix"
+        agent: codex
+        status: pending
+        depends_on: []
+        failure_count: 0
+        verify_tier: R0
+        risk: true
+        security: false
       - id: T011
         stage: 1
         title: "UI tweak that needs a device check but no critique"
@@ -375,6 +385,29 @@ class DispatchGateTests(unittest.TestCase):
         result = self.dispatch("--task", "T010", "--worktree", "task/T010-b", "--backend", "codex",
                                "gpt-5.6-terra", self.code, prompt, "", "true", "1", "standard")
         self.assertEqual(result.returncode, 31, result.stderr)
+
+    def test_suffixed_task_id_is_gated_not_truncated(self):
+        # A prompt named for T010b must key the gate on T010b, not fall through as "T010"
+        # or an unknown task (PR #56 review finding 1).
+        self.reply.write_text("done\n")
+        refused = self.build("T010b")
+        self.assertEqual(refused.returncode, 31, refused.stderr)
+        self.assertEqual(self.calls_made(), 0)
+        self.reply.write_text(critic_reply("REWORK", 1))
+        self.assertEqual(self.critic("T010b").returncode, 0)
+        rows = [json.loads(l) for l in (self.pm / "logs/verdicts.jsonl").read_text().splitlines()]
+        self.assertEqual({r["task_id"] for r in rows}, {"T010b"})
+
+    def test_broken_gate_call_is_a_config_error_not_a_policy_stop(self):
+        # review_gate.py rejecting its own invocation (exit 2) must not surface as exit 31,
+        # which would send the operator to redesign/override/abort (review finding 2).
+        prompt = self.pm / "prompts/fix-something.md"
+        prompt.write_text("Build it.\n")
+        result = self.dispatch("--task", "T010.1", "--worktree", "task/T010-c", "--backend", "codex",
+                               "gpt-5.6-terra", self.code, prompt, "", "true", "1", "standard")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("configuration error", result.stderr)
+        self.assertEqual(self.calls_made(), 0)
 
 
 if __name__ == "__main__":

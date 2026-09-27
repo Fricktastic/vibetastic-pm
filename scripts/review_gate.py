@@ -47,7 +47,7 @@ REVIEWER_VERDICTS = ('APPROVE', 'APPROVE-WITH-FOLLOWUPS', 'REJECT')
 CRITIC_COUNTS = ('blocking_plan', 'blocking_preexistent', 'advisory')
 REVIEWER_COUNTS = ('blockers', 'followups', 'notes')
 BLOCK = {'critic': 'CRITIC_RESULT', 'reviewer': 'REVIEWER_RESULT'}
-TASK_ID = re.compile(r'^T[0-9]+[A-Za-z0-9._-]*$')
+TASK_ID = re.compile(r'^T[0-9]+[A-Za-z0-9]*$')  # must match dispatch.sh GATE_TASK_ID
 
 
 class GateError(Exception):
