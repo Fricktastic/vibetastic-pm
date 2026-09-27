@@ -479,6 +479,22 @@ for live in "$@"; do
   live_lint "$live"
 done
 
+echo "[selftest] state_correction is a documented event type carrying evidence (issue #29)"
+# TASK_LOG events have no mechanical validator; the vocabulary lives in the shipped TASK_LOG
+# template and state.md. Assert both define it, and that the state.md entry template requires
+# `evidence:` — a correction must carry its own proof.
+if python3 - TASK_LOG.md .claude/rules/state.md <<'PY'
+import re, sys
+log, state = (open(p).read() for p in sys.argv[1:3])
+vocab = log.split('Valid event_type values:', 1)[1].split('-->', 1)[0]
+assert re.search(r'^\s+state_correction\s+-', vocab, re.M), 'missing from TASK_LOG template'
+block = re.search(r'### <ISO8601> · state_correction\n```yaml\n(.*?)\n```', state, re.S)
+assert block, 'no state_correction entry template in state.md'
+assert re.search(r'^evidence:.*REQUIRED', block.group(1), re.M), 'evidence: not required'
+PY
+then pass "TASK_LOG template and state.md define state_correction with required evidence"
+else fail "state_correction is undocumented or does not require evidence"; fi
+
 echo "[selftest] Xcode verification-boundary preamble (issue #37)"
 # Sourcing dispatch.sh is not possible (it runs), so exercise prompt_preamble in isolation by
 # extracting the function and driving it with the four cases that matter. Bound the extraction

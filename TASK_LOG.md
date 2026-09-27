@@ -28,4 +28,7 @@ Valid event_type values:
   stage_complete      - All tasks in a stage reached done; Gate 3 triggered
   stage_transition    - User confirmed Gate 3; PM advancing to next stage
   user_escalation     - PM halted and escalated to user with reason (Gate 2 or fatal)
+  state_correction    - PM corrected PLAN.md to match evidence (e.g. a shipped task left
+                        in_progress); fields: field, from, to, evidence (required), note.
+                        Never touches failure_count.
 -->
