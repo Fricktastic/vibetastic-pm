@@ -130,14 +130,15 @@ RUN_BASE_SHA="$(git -C "$RUN_DIR" rev-parse HEAD 2>/dev/null || true)"
 # Derive the log location lexically, before prompt readability validation can exit.
 if [ -n "${OPENCODE_DISPATCH_LOG_DIR:-}" ]; then LOG_DIR="$OPENCODE_DISPATCH_LOG_DIR"
 else
-  # Resolve via cd so "." and other unnormalised dirnames collapse before taking the parent.
-  # A purely lexical $(pwd)/$(dirname ...) yields ".../prompts/." whose parent is ".../prompts",
-  # putting logs one level too deep whenever the caller's cwd IS the prompts dir.
-  RUN_PROMPT_DIR="$(cd "$(dirname "$PROMPT_FILE")" 2>/dev/null && pwd)"
-  if [ -z "$RUN_PROMPT_DIR" ]; then
-    case "$PROMPT_FILE" in /*) RUN_PROMPT_DIR="$(dirname "$PROMPT_FILE")" ;; *) RUN_PROMPT_DIR="$(pwd)/$(dirname "$PROMPT_FILE")" ;; esac
-  fi
-  LOG_DIR="$(dirname "$RUN_PROMPT_DIR")/logs"
+  # [issue #17] Anchor logs to the PM directory, never to wherever the prompt file lives: a
+  # prompt in /tmp wrote /tmp/logs/, and specs kept in logs/specs/ produced logs/logs/. The PM
+  # dir is $PM_DIR when set (as the managed path already requires), else the directory that
+  # holds the framework subtree (<pm>/framework/dispatch.sh), else — in a framework source
+  # checkout — this script's own directory.
+  if [ -n "${PM_DIR:-}" ]; then LOG_PM_DIR="$PM_DIR"
+  elif [ "$(basename "$DISPATCH_HERE")" = framework ]; then LOG_PM_DIR="$(dirname "$DISPATCH_HERE")"
+  else LOG_PM_DIR="$DISPATCH_HERE"; fi
+  LOG_DIR="$LOG_PM_DIR/logs"
 fi
 # Resolve explicit PM context first; installed projects require a current lease even
 # when hooks are disabled. Legacy projects keep the old dispatch contract.
@@ -533,10 +534,10 @@ fi
 # silently truncated at the first block and three gates went untested — a check that cannot
 # fail (#34). Do not remove; the selftest fails loudly if either marker goes missing.
 
-# Logs anchor to the PM directory, not the caller's cwd: the task prompt always lives in
-# <pm-dir>/prompts/, so default LOG_DIR to the prompts dir's sibling logs/. This keeps
-# cost.jsonl and run logs in one place no matter where the orchestrator invokes dispatch
-# from (e.g. a git worktree or any other cwd). OPENCODE_DISPATCH_LOG_DIR overrides.
+# Logs anchor to the PM directory, not the caller's cwd or the prompt file's location (see
+# the LOG_DIR resolution near the top, issue #17). This keeps cost.jsonl and run logs in one
+# place no matter where the orchestrator invokes dispatch from or where a prompt was written.
+# OPENCODE_DISPATCH_LOG_DIR overrides.
 mkdir -p "$LOG_DIR"
 # Per-run uniqueness (issue #5): the second-granularity timestamp alone collides when the same
 # prompt is dispatched twice within one second (tier escalation, retries) and the fixed

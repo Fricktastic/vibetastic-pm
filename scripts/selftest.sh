@@ -98,6 +98,29 @@ else
 fi
 rm -rf "$LIFECYCLE_TMP"
 
+echo "[selftest] dispatch logs anchor to the PM dir, not the prompt's dir (issue #17)"
+# A prompt in /tmp wrote /tmp/logs/; specs under logs/specs/ produced logs/logs/. Drive an
+# early exit (no verify-cmd) from copies of dispatch.sh in each supported layout and check
+# where runs.jsonl lands. The prompt deliberately lives outside every PM dir.
+LD_TMP="$(cd "$(mktemp -d)" && pwd -P)"
+mkdir -p "$LD_TMP/pm/framework" "$LD_TMP/src" "$LD_TMP/explicit" "$LD_TMP/elsewhere/specs"
+cp dispatch.sh "$LD_TMP/pm/framework/"; cp dispatch.sh "$LD_TMP/src/"
+printf 'selftest prompt\n' > "$LD_TMP/elsewhere/specs/task-T996.md"
+ld_case() {  # dispatch.sh copy, PM_DIR ('' = unset), expected log dir, label
+  env -u OPENCODE_DISPATCH_LOG_DIR -u PM_DIR ${2:+PM_DIR="$2"} \
+    bash "$1" test-model "$LD_TMP" "$LD_TMP/elsewhere/specs/task-T996.md" >/dev/null 2>&1
+  if [ -s "$3/runs.jsonl" ] && [ ! -e "$LD_TMP/elsewhere/logs" ] && [ ! -e "$LD_TMP/elsewhere/specs/logs" ]; then
+    pass "$4"
+  else
+    fail "$4 (expected $3/runs.jsonl; logs followed the prompt instead)"
+  fi
+  rm -rf "$3" "$LD_TMP/elsewhere/logs" "$LD_TMP/elsewhere/specs/logs"
+}
+ld_case "$LD_TMP/pm/framework/dispatch.sh" "" "$LD_TMP/pm/logs" "installed subtree logs to <pm>/logs"
+ld_case "$LD_TMP/src/dispatch.sh" "" "$LD_TMP/src/logs" "a framework source checkout logs beside dispatch.sh"
+ld_case "$LD_TMP/pm/framework/dispatch.sh" "$LD_TMP/explicit" "$LD_TMP/explicit/logs" "PM_DIR, when set, decides the log dir"
+rm -rf "$LD_TMP"
+
 echo "[selftest] dispatch captures human reports across fake backend turns"
 # These fake CLIs make the capture/session assertions hermetic: no credentials, network, or
 # real model invocation. They deliberately emit the same JSON payload shapes dispatch parses.
