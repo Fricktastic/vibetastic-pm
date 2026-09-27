@@ -259,6 +259,51 @@ for fm_case in "codex gpt-5.6-terra" "claude sonnet" "opencode openrouter/minima
 done
 rm -rf "$FM_TMP"
 
+echo "[selftest] --worktree paths are keyed on the branch, not the prompt (issue #45)"
+# Field case: three parallel dispatches of ONE prompt on three branches shared one worktree
+# and one branch; two branches were never created. Sequential runs reproduce it — the second
+# dispatch silently reused the first one's path.
+WT_TMP="$(mktemp -d)"; WT_BIN="$WT_TMP/bin"; WT_PROJ="$WT_TMP/project"
+mkdir -p "$WT_BIN" "$WT_PROJ"; git -C "$WT_PROJ" init -q
+git -C "$WT_PROJ" -c user.name=selftest -c user.email=selftest@example.invalid commit -q --allow-empty -m init
+printf 'task\n' > "$WT_TMP/task-T990.md"; printf 'fixup\n' > "$WT_TMP/fixup-T990.md"
+cat > "$WT_BIN/claude" <<'SH'
+#!/bin/bash
+printf '%s %s\n' "$(pwd -P)" "$(git symbolic-ref --short HEAD)" >> "$WT_SEEN"
+printf '%s\n' '{"session_id":"wt","result":"wt report"}'
+SH
+chmod +x "$WT_BIN/claude"
+wt_dispatch() {  # branch, prompt -> dispatch exit code
+  PATH="$WT_BIN:$PATH" WT_SEEN="$WT_TMP/seen" OPENCODE_DISPATCH_LOG_DIR="$WT_TMP/logs" \
+    bash dispatch.sh --worktree "$1" --backend claude sonnet "$WT_PROJ" "$WT_TMP/$2" '' true 1 standard \
+    > /dev/null 2> "$WT_TMP/stderr"
+}
+WT_ROOT_REAL="$(cd "$WT_TMP" && pwd -P)/project-worktrees"
+wt_dispatch modeltest/a task-T990.md; got_a=$?
+wt_dispatch modeltest/b task-T990.md; got_b=$?
+if [ "$got_a" = 0 ] && [ "$got_b" = 0 ] \
+  && grep -qx "$WT_ROOT_REAL/modeltest-a modeltest/a" "$WT_TMP/seen" \
+  && grep -qx "$WT_ROOT_REAL/modeltest-b modeltest/b" "$WT_TMP/seen"; then
+  pass "one prompt on two branches builds in two worktrees, each on its own branch"
+else
+  fail "same-prompt dispatches on different branches collided (exits $got_a/$got_b): $(tr '\n' ';' < "$WT_TMP/seen")"
+fi
+: > "$WT_TMP/seen"
+wt_dispatch modeltest/a fixup-T990.md; got=$?
+if [ "$got" = 0 ] && grep -qx "$WT_ROOT_REAL/modeltest-a modeltest/a" "$WT_TMP/seen"; then
+  pass "a fixup prompt on an existing branch reuses that branch's worktree (issue #2)"
+else
+  fail "re-dispatch on an existing branch did not reuse its worktree (exit $got)"
+fi
+: > "$WT_TMP/seen"
+wt_dispatch modeltest-a task-T990.md; got=$?
+if [ "$got" = 2 ] && [ ! -s "$WT_TMP/seen" ] && grep -q 'Refusing to reuse' "$WT_TMP/stderr"; then
+  pass "a path holding a different branch is refused, never reused"
+else
+  fail "a worktree path holding another branch was reused (exit $got)"
+fi
+rm -rf "$WT_TMP"
+
 echo "[selftest] partner-burn hook records orchestrator usage"
 # The whole cost of issue #30 was that this hook's failure and success looked identical from
 # outside: it read usage off the Stop payload (which carries none), silently wrote nothing for

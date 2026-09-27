@@ -20,9 +20,12 @@
 #   The verify loop is skipped in this mode.
 #
 # --worktree <branch>: run the builder in an isolated git worktree instead of the live
-#   checkout. The worktree is created at <project-dir>/../<project>-worktrees/<prompt-basename>
-#   on <branch> (created from the current HEAD if it doesn't exist; reused if the path
-#   already exists from a prior dispatch of the same task, e.g. a tier-escalation re-run).
+#   checkout. The worktree is created at <project-dir>/../<project>-worktrees/<branch-dirname>
+#   (the branch with every character outside [A-Za-z0-9._-] replaced by '-', so task/T012 ->
+#   task-T012) on <branch> (created from the current HEAD if it doesn't exist; reused on a
+#   re-dispatch of the same branch, e.g. a tier-escalation re-run). The path is keyed on the
+#   branch, never the prompt filename (issue #45); an existing path holding a different branch
+#   is refused (exit 2), never silently reused.
 #   If <branch> is already checked out in ANY existing worktree (e.g. a fixup dispatch with a
 #   different prompt name onto the same PR branch), that worktree is reused instead of
 #   attempting a colliding `worktree add`.
@@ -111,10 +114,14 @@ else RUN_BACKEND="$BACKEND"; fi
 RUN_DIR="$(cd "$DIR" 2>/dev/null && pwd || printf '%s' "$DIR")"
 RUN_BRANCH="$WORKTREE_BRANCH"
 [ -n "$RUN_BRANCH" ] || RUN_BRANCH="$(git -C "$RUN_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+# [issue #45] The worktree directory is keyed on the BRANCH, never the prompt filename: two
+# dispatches of the same prompt on different branches used to share one worktree (and one
+# branch), silently. `task/T012` -> `task-T012`; anything outside [A-Za-z0-9._-] becomes '-'.
+worktree_dirname() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'; }
 RUN_WORKTREE=""
 if [ -n "$WORKTREE_BRANCH" ]; then
   RUN_WORKTREE="$(git -C "$RUN_DIR" worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/${WORKTREE_BRANCH}" '/^worktree /{p=substr($0,10)} $0==b{print p; exit}')"
-  [ -n "$RUN_WORKTREE" ] || RUN_WORKTREE="$(dirname "$RUN_DIR")/$(basename "$RUN_DIR")-worktrees/$(basename "${PROMPT_FILE%.md}")"
+  [ -n "$RUN_WORKTREE" ] || RUN_WORKTREE="$(dirname "$RUN_DIR")/$(basename "$RUN_DIR")-worktrees/$(worktree_dirname "$WORKTREE_BRANCH")"
 fi
 RUN_REPO_PATH="$RUN_DIR"
 RUN_BASE_SHA="$(git -C "$RUN_DIR" rev-parse HEAD 2>/dev/null || true)"
@@ -568,7 +575,7 @@ DIR_ABS="$(cd "$DIR" 2>/dev/null && pwd || echo "$DIR")"
 BUILDER_ENV=(env -u PM_ORCHESTRATOR_TOKEN -u PM_ORCHESTRATOR_SESSION -u PM_ORCHESTRATOR_PROVIDER -u PM_DIR)
 if [ -n "$WORKTREE_BRANCH" ]; then
   WT_ROOT="$(dirname "$DIR_ABS")/$(basename "$DIR_ABS")-worktrees"
-  WT_PATH="${WT_ROOT}/$(basename "${PROMPT_FILE%.md}")"
+  WT_PATH="${WT_ROOT}/$(worktree_dirname "$WORKTREE_BRANCH")"
   # If the branch is already checked out in some worktree (re-dispatch, review fixup on the
   # same PR branch under a different prompt name), reuse that path — `worktree add` would
   # hard-fail on an already-checked-out branch (issue #2).
@@ -576,7 +583,18 @@ if [ -n "$WORKTREE_BRANCH" ]; then
     | awk -v b="branch refs/heads/${WORKTREE_BRANCH}" '/^worktree /{p=substr($0,10)} $0==b{print p; exit}')"
   if [ -n "$EXISTING_WT" ]; then
     WT_PATH="$EXISTING_WT"
-  elif [ ! -d "$WT_PATH" ]; then
+  elif [ -d "$WT_PATH" ]; then
+    # [issue #45] The path exists but the branch is checked out nowhere, so whatever is there
+    # is NOT this branch (a sanitised-name collision such as a/b vs a-b, a detached or foreign
+    # checkout, a stale directory). Reusing it would silently build on the wrong branch —
+    # refuse instead; this is the check that can fail.
+    WT_HAS="$(git -C "$WT_PATH" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "<no branch>")"
+    if [ "$WT_HAS" != "$WORKTREE_BRANCH" ]; then
+      echo "[dispatch] worktree path $WT_PATH exists but holds '$WT_HAS', not '$WORKTREE_BRANCH'." >&2
+      echo "           Refusing to reuse it (issue #45). Remove it, or pick a distinct branch name." >&2
+      exit 2
+    fi
+  else
     mkdir -p "$WT_ROOT"
     if git -C "$DIR_ABS" show-ref --verify --quiet "refs/heads/${WORKTREE_BRANCH}"; then
       git -C "$DIR_ABS" worktree add "$WT_PATH" "$WORKTREE_BRANCH" >&2 \

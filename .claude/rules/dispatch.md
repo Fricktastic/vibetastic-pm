@@ -283,9 +283,12 @@ signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monit
 (`.claude/rules/economy.md`).
 
 - `--worktree <branch>`: **always pass it for build tasks.** The builder runs in an isolated
-  git worktree (`../<project-name>-worktrees/task-T0XX/`) on `<branch>`, never in the live
-  checkout — the human's uncommitted work is untouchable and parallel dispatches can't
-  collide. `<branch>` is the task's `branch_name` from its notes (Tech Lead tasks), or
+  git worktree (`../<project-name>-worktrees/<branch-dirname>/`, e.g. `task-T0XX/` for
+  branch `task/T0XX`) on `<branch>`, never in the live checkout — the human's uncommitted
+  work is untouchable and parallel dispatches can't collide. The path is keyed on the
+  branch, not the prompt filename (issue #45): two dispatches of one prompt on different
+  branches get separate worktrees, and a path already holding another branch is refused
+  (exit 2). `<branch>` is the task's `branch_name` from its notes (Tech Lead tasks), or
   `task/<task-id>` if the task has none. dispatch.sh creates the branch from current HEAD if
   it doesn't exist, reuses the worktree on a re-dispatch (tier escalation) — including when
   the branch is already checked out under a *different* prompt name, so fixup dispatches onto
