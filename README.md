@@ -24,6 +24,30 @@ Two hard gates require explicit human sign-off: approving the SPEC before planni
 and deciding what to do after a task fails twice in a row. Everything else - stage
 transitions, tier escalation, backend fallback - proceeds without asking.
 
+## Gates and policy
+
+Review gates are enforced by the scripts, not left to the orchestrator's discipline:
+
+- **Pre-build critique** runs on any task with `risk: true` or `security: true`, set by the
+  spec author from the project's risk triggers. `verify_tier` says what evidence proves a
+  task; it no longer decides critique (legacy tasks with no `risk:` field keep the old R1/R2
+  rule). `dispatch.sh` refuses the build until `scripts/review_gate.py adjudicate` records
+  the orchestrator's `proceed` or the operator's logged `override`.
+- **Round caps**: critique rounds and reviewer fixup rounds are capped per task (default
+  2 / 3). The next round is refused and the operator chooses redesign, override or abort.
+- **Exit 31** is a gate or policy refusal - ownership, an unadjudicated critique, a round
+  cap, a merge-gate check. It is never a task failure and never touches `failure_count`.
+- **Merges** go through `scripts/merge_gate.py`, which pins the verification, the approving
+  review and the task's fail-on-base or runtime observation to the exact commit merged, then
+  runs `gh pr merge --match-head-commit`.
+- **Project policy** - what the verify tiers mean, the risk triggers, the caps, test and
+  non-production paths - lives in the project's `PROJECT.md`, with generic defaults in
+  `scripts/project_policy.py`. `Docs/examples/policy-ios.md` is a worked example.
+- **`logs/verdicts.jsonl`** is the ledger all of these are computed from: critic and reviewer
+  verdicts, adjudications, cap overrides and merge evidence. It is gate state; never edit it.
+
+See `VERIFY.md` for the rules and `.claude/rules/dispatch.md` for the procedure.
+
 ## What's in this repo
 
 - `ORCHESTRATOR.md` - shared contract; `CLAUDE.md` and `AGENTS.md` are provider entry points
@@ -35,7 +59,9 @@ transitions, tier escalation, backend fallback - proceeds without asking.
 - `setup.sh` - one-time setup for a new `<project>-pm/` directory
 - `.claude/rules/` - the mechanics behind lifecycle, dispatch, state, and token economy
 - `prompts/` - prompt templates for each role (architect, designer, tech lead, reviewer, critic)
-- `scripts/` - support scripts (plan linting, cost reporting, screenshotting, etc.)
+- `scripts/` - support scripts: review and merge gates (`review_gate.py`, `merge_gate.py`),
+  project policy, plan linting, cost reporting, screenshotting
+- `Docs/` - the upgrade guide, a worked project-policy example, design history
 
 ## Setup
 
@@ -67,6 +93,11 @@ For an existing project, use the idempotent adapter installer instead of setup:
 python3 framework/scripts/install-orchestrators.py --pm-dir . --framework-dir framework
 python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework
 ```
+
+Merges go through `scripts/merge_gate.py` (`.claude/rules/dispatch.md` § Merge gate).
+An existing project pulling framework updates should follow
+[the upgrade guide](Docs/upgrading.md): newer releases add enforced gates that refuse work an
+unmigrated project would otherwise dispatch.
 
 See [the shared operating guide](ORCHESTRATOR.md) for state commands, recovery, role dispatch,
 and hook limitations. [The trial protocol](Docs/codex-orchestrator-trial.md) distinguishes
