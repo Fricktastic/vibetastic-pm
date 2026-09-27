@@ -29,6 +29,8 @@ bash framework/setup.sh <project-name> /absolute/path/to/code-dir <org/repo> ['v
 ```bash
 git subtree pull --prefix framework framework main --squash
 ```
+An existing project also follows [the upgrade guide](Docs/upgrading.md) when an update adds
+enforced gates.
 
 ---
 
@@ -67,7 +69,11 @@ bash framework/setup.sh my-app /absolute/path/to/my-app my-org/my-app 'npm run b
 To pull framework updates later (project files are never touched):
 ```bash
 git subtree pull --prefix framework framework main --squash
+python3 framework/scripts/install-orchestrators.py --pm-dir . --framework-dir framework
 ```
+
+Rerun the installer after each pull so new hooks land, then follow `Docs/upgrading.md` for
+anything the update asks of project state.
 
 Project-specific files (`SPEC.md`, `PLAN.md`, `TASK_LOG.md`, `PROJECT.md`, `prompts/`) live in the root alongside the `framework/` directory — they are not tracked by upstream.
 
@@ -226,7 +232,8 @@ No user input required during any of that. When T001 is done, Gate 3 fires for S
 ## 8. Stage 2 → Stage 3
 
 The same pattern auto-advances through Stage 2. The Architect role produces
-`prompts/build-spec.md` plus tier and security metadata. The lease owner validates and
+`prompts/build-spec.md` plus per-task tier, `verify_tier`, `risk`, `security` and
+`observation` metadata. The lease owner validates and
 promotes the staged result, then resolves each task's effective backend/model from the
 session routing profile. Gate 3 posts a summary and immediately starts Stage 3.
 
@@ -263,14 +270,21 @@ project routing; Codex fallback uses OpenCode only for child work.
 
 ```bash
 bash framework/dispatch.sh --worktree <branch> --backend <backend> \
-  <model> ../my-app/ prompts/task-T00X.md [fallback] [verify-cmd]
+  <model> ../my-app/ prompts/task-T00X.md "<fallback-or-empty>" "<verify-cmd>" 3 <tier>
 ```
+
+`--worktree`, the verify command and the tier are required on a build dispatch (exit 2
+without them). The worktree lands at `../my-app-worktrees/<branch>` with `/` replaced by `-`
+(`task/T003` → `task-T003`); a re-dispatch on the same branch reuses it.
 
 The model comes from the task tier, backend order, and routing profile. Anthropic models run
 only through the Claude subscription backend; OpenCode never routes Anthropic through
 OpenRouter.
 
-PM captures exit code and output. On success: task marked `done`. Tasks with no inter-dependencies within a stage may run in parallel at the PM's discretion.
+PM captures exit code and output. Exit 0 means the verify command passed — its scope only.
+A task with `risk: true` or `security: true` is critiqued before this dispatch (§14); after
+it, the diff is reviewed and merged through `scripts/merge_gate.py`. Tasks with no
+inter-dependencies within a stage may run in parallel at the PM's discretion.
 
 ---
 
@@ -291,14 +305,15 @@ The Architect's build-spec covers the work known at project start. It will not c
 1. Reads relevant source files in the target project to understand current state
 2. Fetches Apple/framework docs via Sosumi MCP if the issue involves Apple APIs
 3. Writes a precise, self-contained task spec (root cause, files to change, implementation steps, commit plan)
-4. Returns structured metadata: task title, branch, issue refs, suggested OpenCode model
+4. Returns structured metadata: task title, branch, issue refs, suggested tier, and the
+   `verify_tier`, `risk`, `security` and `observation` flags
 
 **What you see in chat:**
 
 > New work identified: OAuth redirect URI rejected by HA server.
 > Running Tech Lead to spec the fix before dispatch.
 
-The PM appends the Tech Lead's spec to `prompts/build-spec.md`, creates the new task in `PLAN.md`, and dispatches it to OpenCode — all without requiring your input unless a gate fires.
+The Tech Lead writes its spec to `prompts/task-T0XX.md`; the PM registers the task in `PLAN.md` from the returned metadata and dispatches it — all without requiring your input unless a gate fires.
 
 **Model:** Tech Lead runs on Sonnet by default. It suggests the OpenCode model in its returned metadata based on task complexity — simple bugs get Gemini Flash, complex architectural changes get Sonnet.
 
@@ -372,10 +387,17 @@ builder's blind spots. Concretely: a diff built by the **claude** backend (sonne
 reviewed by the opencode `standard` tier (deepseek), **never** the Sonnet subagent; diffs from
 `codex` or `opencode` may use either reviewer. See `VERIFY.md` § Diff review.
 
-**Security-sensitive tasks.** The Tech Lead (and Architect, for Stage-2 tasks) sets a
-`security: true` flag when a diff touches auth, credentials, keychain, entitlements, network
-trust, sandboxing, or input validation on external data. It rides in the task's result YAML
-and lands on the PLAN.md task next to `verify_tier`. Effect: the review rung is forced up —
+**Risk and security flags.** The Tech Lead (and Architect, for Stage-2 tasks) sets
+`risk: true` when one of the project's risk triggers applies (`PROJECT.md § Risk triggers`;
+generic defaults: shared state or invariants, a persisted format or contract, concurrency or
+timing, an open design decision), and `security: true` when a diff touches auth, credentials,
+keychain, entitlements, network trust, sandboxing, or input validation on external data. Both
+ride in the task's result YAML and land on the PLAN.md task next to `verify_tier` and
+`observation`. Either flag requires the pre-build critique; `verify_tier` only says what
+evidence proves the task. A legacy task with no `risk:` field is critiqued at R1/R2, as
+before. See `VERIFY.md` § Pre-build critique.
+
+**Security-sensitive tasks.** `security: true` also forces the review rung up —
 first-pass review runs on **Sonnet minimum** (not the cheap opencode tier) and adjudication is
 **mandatory Opus, never delegated, never Fable**. This is the one place the cheap-first bias is
 wrong: a missed security bug ships silently rather than failing a verify loop. See `VERIFY.md`
@@ -408,6 +430,32 @@ state matches its understanding, flushes anything missing, and confirms **"safe 
 A fresh session reads `HANDOFF.md` **first** at startup and treats needing to re-explore as a
 logged failure signal. Use `checkpoint` before clearing context at cache expiry.
 
+Time-bound claims — a branch head, a PR's state, what build is on a device, whether a run is
+still going — go only in a section headed exactly `## Volatile — re-verify before use`, one
+per line with an as-of date and a check command (`RULES.md` § Session Handoff). A
+`SessionStart` hook (`scripts/handoff-volatile-hook.py`, installed for both providers) prints
+that section at the top of every session under a "claims, not facts" banner. The partner runs
+a line's check before acting on it and re-verifies it before carrying it forward. Backend
+availability is never a handoff claim: dispatch and branch on exit 30.
+
+**Critique and review — enforced gates.** The critic reads the plan of every `risk`/`security`
+task before a builder runs; the reviewer reads the diff after. Both run read-only through
+`dispatch.sh --role critic|reviewer`, which records a structured verdict in
+`logs/verdicts.jsonl`. The partner adjudicates a critique with `scripts/review_gate.py
+adjudicate` (`proceed`, or an operator `override` with a reason); until it does,
+`dispatch.sh` refuses the build with exit 31. Critique rounds (default 2) and reviewer fixup
+rounds (default 3) are capped per task in `PROJECT.md`; at the cap the next round is refused
+and the operator chooses redesign, override or abort. Exit 31 never counts as a failure.
+See `.claude/rules/dispatch.md` § Round caps.
+
+**Merge gate.** Nothing merges through a plain `gh pr merge`. `scripts/merge_gate.py` records
+the test-suite run, the approving review and the task's observation — a test that fails on
+the base tree and passes on the branch (`observation: test`), or a recorded run of the
+product (`runtime`) — each pinned to a commit SHA, and `merge` refuses unless all of them are
+for the commit being merged and its net diff carries a production change. It then runs
+`gh pr merge --match-head-commit`, so GitHub refuses too if the branch moved. See `VERIFY.md`
+§ Merge gate.
+
 **Self-improvement capture — file a GitHub issue.** The PM runs the framework but never edits
 it (read-only subtree). When it observes a framework defect in the field — a repeated tier
 failure, a rule forcing a bad outcome, a stall, a mispriced escalation — it files an issue on
@@ -428,6 +476,7 @@ proposes, the maintainer disposes.**
 | **Gate 1** | SPEC status is `draft` | User types `approved` |
 | **Gate 2** | Task `failure_count` reaches 2 | User chooses retry / skip / abort |
 | **Gate 3** | All tasks in a stage reach `done` | Nothing — auto-advances with a posted summary (user can interject) |
+| Round cap | A task exhausts its critique or reviewer-fixup rounds (`dispatch.sh` exit 31) | User chooses redesign / override / abort |
 
 Gate numbers refer to gate *type*, not the order they appear in a session. On a clean run, the only hard stop is Gate 1. Gate 2 only appears when something breaks.
 
@@ -445,7 +494,9 @@ python3 framework/orchestrate.py claude  # or codex
   ↓ Gate 3 posts summary and auto-starts Stage 2: Architecture
   ↓ Architect role produces build spec + tier metadata
   ↓ Gate 3 posts summary and auto-starts Stage 3: Implementation
+  ↓ critic reads each risk/security plan; partner adjudicates
   ↓ builders run through the effective backend order
+  ↓ reviewer reads each diff; merge_gate.py merges the verified commit
   ↓ [new bug or requirement]
   ↓ Tech Lead role specs the fix autonomously
   ↓ selected builder runs autonomously
@@ -461,5 +512,6 @@ On a clean run, `approved` at Gate 1 is the only required stage-flow response.
 | Designer | Sonnet (escalate Opus) | Once + per new UI work | Design spec |
 | Architect | Opus | Once | Build spec + OpenCode tier selection |
 | Tech Lead | Sonnet (escalate Opus) | Per new mid-project task | Bug/feature → task spec |
+| Critic | codex or opencode `standard` tier, read-only, different family than the plan's author (capable rung for `security`) | Per `risk`/`security` task | Pre-build plan critique; orchestrator adjudicates |
 | Reviewer | opencode `standard` tier, read-only (Sonnet min for `security` tasks) | Per builder diff | First-pass diff review; must be a different family than the builder (§14); orchestrator adjudicates |
 | OpenCode | tier ladder `fast`→`standard`→`heavy` | Per implementation task | Write code (in a per-task worktree) |
