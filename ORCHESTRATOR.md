@@ -181,7 +181,8 @@ Only true failures after the configured ladder is exhausted trigger the failure 
 - `risk: true` or `security: true` work requires family-diverse pre-build critique; resolve
   BLOCKING findings. Legacy tasks without a `risk:` field keep the R1/R2 rule. dispatch.sh
   refuses the build until `scripts/review_gate.py adjudicate` records `proceed` or a logged
-  operator `override` (issues #18, #50).
+  operator `override` (issues #18, #50), and again if the spec changes after it; a
+  `security: true` `proceed` must be recorded with an Opus-class `--model` (issue #57).
 - Critique and reviewer-fixup rounds are capped per task (project policy, default 2 / 3);
   dispatch.sh refuses the next round and the operator chooses redesign / override / abort.
 - What the verify tiers mean, which risk triggers force critique, and the round caps are

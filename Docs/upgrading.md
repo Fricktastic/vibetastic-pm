@@ -1,7 +1,7 @@
 # Upgrading an existing project
 
 For a `<project>-pm/` directory set up before PRs #52, #53, #55, #56 and #59 (issues #15,
-#18, #35, #45, #50, #51). Those changes turned the critique gate, the round caps, the
+#18, #35, #45, #50, #51), and the issue #57 review-gate follow-ups (step 10). Those changes turned the critique gate, the round caps, the
 worktree rule and the merge gate from prose into refusals, so an unmigrated project will hit
 exit 2 / exit 31 stops it did not see before. Work through the steps in order, at a quiet
 point with no build dispatch running.
@@ -163,7 +163,29 @@ $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <org/repo
       net-reverted diff is still refused.
 - [ ] Path classes come from `## Test paths` / `## Non-production paths` (step 2).
 
-## 10. New TASK_LOG events
+## 10. Adjudications record the model and the spec (issue #57)
+
+- [ ] Pass `--model <your session's model>` to every `review_gate.py adjudicate`. A
+      `security: true` task's `--outcome proceed` is refused unless it is Opus-class
+      (`opus`, `claude-opus-*`), and the build gate refuses a security task whose clearing
+      `proceed` names another model. The operator's `--outcome override --reason ...` stands
+      whatever model records it. A Codex partner records the exceptional Opus adjudication
+      (`ORCHESTRATOR.md`) with that run's model.
+- [ ] Adjudications written before this change carry no `model` field and are **accepted as
+      legacy** (the build gate warns on a security task). Nothing to migrate.
+- [ ] `adjudicate` now records the SHA-256 of `prompts/task-T0XX.md` (or `--spec <path>`, for
+      an extracted build-spec section kept elsewhere). Editing that file afterwards voids the
+      adjudication: re-run the critic, or re-adjudicate the changed spec. Fold advisory
+      findings into the spec **before** adjudicating. An adjudication with no spec file on
+      disk pins nothing.
+- [ ] `dispatch.sh --role critic|reviewer` without `--read-only` is now refused (exit 2) in
+      unmanaged projects too. A second critic/reviewer run on a task while one is in flight is
+      refused (exit 31); lock files live in `logs/locks/` and need no cleanup.
+- [ ] A managed build dispatch with no resolvable task id (no `--task`, prompt not
+      `task-`/`fixup-T0XX*.md`) prints a `WARNING ... NO review gate applies` line. Treat it
+      as a mistake unless the run is deliberately ad hoc.
+
+## 11. New TASK_LOG events
 
 | Event | When | Required fields |
 |---|---|---|
@@ -183,11 +205,11 @@ The full vocabulary is in the `TASK_LOG.md` template header (also `critic_return
 | Exit | From | Meaning | Action |
 |---|---|---|---|
 | `0` | all | ran; for a build, the verify command passed (its scope only) | continue |
-| `2` | dispatch.sh, gate scripts | invalid invocation — no `--worktree`, no verify command or tier on a build, model contradicts tier, worktree path holds another branch | fix the call |
+| `2` | dispatch.sh, gate scripts | invalid invocation — no `--worktree`, no verify command or tier on a build, model contradicts tier, worktree path holds another branch, a critic or reviewer run without `--read-only` | fix the call |
 | `20` | dispatch.sh | verifier never passed | tier / backend escalation, not a failure |
 | `21` | dispatch.sh `--read-only` | the run modified the tree | inspect; changes are left in place |
 | `30` | dispatch.sh | backend unavailable (quota, auth, burn gate, CLI missing) | next backend, same tier |
-| `31` | dispatch.sh, `review_gate.py`, `merge_gate.py` | ownership/routing stop or gate refusal: critique not adjudicated, round cap reached, merge evidence not pinned to this commit | resolve or escalate to the operator; **never** a `failure_count` event |
+| `31` | dispatch.sh, `review_gate.py`, `merge_gate.py` | ownership/routing stop or gate refusal: critique not adjudicated, spec changed since adjudication, security proceed not by Opus, round cap reached, another critic/reviewer run in flight on the task, merge evidence not pinned to this commit | resolve or escalate to the operator; **never** a `failure_count` event |
 
 `merge_gate.py verify` / `fail-on-base` also exit 1 when the command they ran failed (the
 result is recorded).

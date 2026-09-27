@@ -171,7 +171,15 @@ opt a legacy task out.
 PLAN.md task that needs critique until `logs/verdicts.jsonl` holds a `proceed` or `override`
 adjudication newer than the task's latest critic verdict. Critic runs record their verdict
 there themselves (a structured `CRITIC_RESULT` block, never parsed from prose); the Partner
-records its decision with `scripts/review_gate.py adjudicate`.
+records its decision with `scripts/review_gate.py adjudicate --model <its model>`.
+
+The adjudication is bound to what it decided on (issue #57). It records the SHA-256 of the
+task spec (`prompts/task-T0XX.md`, or `--spec <path>`), and the build gate refuses once that
+file has changed or disappeared: re-critique the changed spec, or re-adjudicate it. It
+records the adjudicating model, and for a `security: true` task the build gate accepts only an
+Opus-class `proceed` (§ Security-sensitive tasks) or the operator's `override`. A critic
+never runs as a build turn (`--role critic` without `--read-only` is exit 2), and only one
+critic run per task is in flight at a time, so concurrent runs cannot share a round.
 
 **Defect fixes carry their evidence (issue #46).** A Tech Lead defect-fix spec names
 **Symptom**, **Mechanism** and **Evidence**, and the Evidence is an observed artifact cited by
@@ -238,6 +246,9 @@ rounds. Both are capped per task, counted from the verdict ledger (never from pr
 
 `dispatch.sh --role critic` refuses round cap+1; `--role reviewer` and the fixup build refuse
 once non-approving reviews exceed the cap (the review of the last allowed fixup still runs).
+A per-task round lock (`logs/locks/`, issue #57) is held from the cap check to the verdict
+record, so a second concurrent critic/reviewer run on the same task is refused rather than
+sharing a round; the lock dies with the dispatch, so there is nothing stale to clear.
 All refusals are exit 31 — a policy stop, never a `failure_count` event. The Partner then
 escalates to the operator with a Gate-2-style choice (`.claude/rules/dispatch.md` § Round
 caps): **redesign** (re-spec, usually as a new task), **override** (a logged
@@ -262,6 +273,14 @@ Effect — the review rung is forced up, in two places:
    Codex partner requests the exceptional Claude adjudication defined in `ORCHESTRATOR.md`
    and records its result; if Opus is unavailable, the task remains blocked. **Fable must
    never be used** for security adjudication or security review.
+   For the pre-build critique this is enforced (issue #57): `review_gate.py adjudicate
+   --outcome proceed` on a `security: true` task is refused unless `--model` is Opus-class
+   (`opus`, `claude-opus-*`; never Fable, never via OpenRouter), and the build gate refuses a
+   security task whose clearing adjudication names another model. The operator's logged
+   `--outcome override --reason ...` stands whatever model records it. Adjudications
+   recorded before #57 carry no model and are accepted as legacy, with a warning. The
+   check is `review_gate.security_floor_problem`; the merge-time diff adjudication is not
+   yet checked by it (issue #58).
 
 Where this collides with the family-diversity rule above (a claude-built security diff),
 both gates apply: use a non-Anthropic reviewer at or above the Sonnet capability rung in

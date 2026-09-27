@@ -65,7 +65,10 @@ Enforced:
 | Tier that doesn't match the model; unladdered or over-budget `sol@high` | Model/tier mismatch and first-attempt `@high` refused (exit 2); weekly burn gate (exit 30) | `dispatch.sh` |
 | A read-only review or diagnosis run that edits files | Tree snapshot compared after the run (exit 21) | `dispatch.sh` |
 | Risky plan built without critique; critique ignored | Build refused (exit 31) until a `proceed`/`override` adjudication is recorded; `proceed` refused over a `[BLOCKING-PLAN]` | `dispatch.sh`, `scripts/review_gate.py` |
-| Critic or reviewer loops that never converge | Round caps per task (exit 31) | `dispatch.sh`, `scripts/review_gate.py` |
+| Spec edited after its critique was adjudicated | Adjudication pins the spec's SHA-256; build refused (exit 31) once it changes | `scripts/review_gate.py` |
+| Security plan cleared by a non-Opus partner | `security: true` `proceed` refused unless recorded by an Opus-class model; operator `override` still possible | `scripts/review_gate.py` |
+| Critic or reviewer loops that never converge | Round caps per task (exit 31); a per-task round lock stops concurrent runs sharing a round | `dispatch.sh`, `scripts/review_gate.py` |
+| Critic or reviewer run as a mutating build turn | `--role critic`/`reviewer` without `--read-only` refused (exit 2) | `dispatch.sh` |
 | Same-family review or critique | Author and reviewer/critic families compared (managed projects, exit 31) | `scripts/orchestrator-routing.py` |
 | Merge of a tree nobody verified or reviewed; green-but-inert change | Verification, review and observation pinned to the merged SHA; a diff with no production change refused; `gh pr merge --match-head-commit` | `scripts/merge_gate.py` |
 | A "regression test" that passes without the fix | `fail-on-base` must see the named test fail on the base tree | `scripts/merge_gate.py` |
@@ -81,6 +84,10 @@ Advisory (a rule or prompt, nothing refuses):
   (`.claude/rules/dispatch.md` § Backend & Tier Escalation).
 - A plain `gh pr merge` is not intercepted; the merge gate holds only when merges go through
   `merge_gate.py`.
+- A build dispatch with no task id (no `--task`, prompt not `task-`/`fixup-T0XX*.md`) is not
+  gated; a managed project only warns. The security Opus floor is checked on the critique
+  adjudication, not yet on the merge-time diff adjudication (issue #58). The adjudicating
+  model is declared by the caller, not verified.
 - Root cause before fix: defect-fix specs carry Symptom / Mechanism / Evidence, and the
   critic blocks reasoning-only Evidence, but only on `risk`/`security` tasks
   (`VERIFY.md` § Pre-build critique). Diagnosis itself is `investigate.sh`, by choice.

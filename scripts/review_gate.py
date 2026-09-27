@@ -12,13 +12,20 @@ the checks ``dispatch.sh`` runs against it:
                pinned to the reviewed commit (``--head-sha``/``--tree-clean``, issue #35).
                The orchestrator records a subagent review the same way.
   check-cap    dispatch.sh, before a ``--role critic|reviewer`` run: exit 31 when the task has
-               used its rounds (critic) or its fixup rounds (reviewer).
+               used its rounds (critic) or its fixup rounds (reviewer). With ``--lock-fd`` it
+               first takes the task+role lock on that descriptor (issue #57), which the
+               caller holds until the verdict is recorded, so two concurrent runs on one task
+               cannot both pass the cap; a run already holding it is exit 31.
   build-gate   dispatch.sh, before a build run: exit 31 when the task needs critique and has no
-               ``proceed``/``override`` adjudication newer than its latest critic verdict, or
-               when reviewer fixups exceed the cap.
-  adjudicate   orchestrator: record the partner's decision on the latest critic verdict.
-               ``proceed`` is refused while that verdict carries a BLOCKING-PLAN finding;
-               ``override`` is the operator's logged decision to build anyway (needs --reason).
+               ``proceed``/``override`` adjudication newer than its latest critic verdict, when
+               the task spec changed since that adjudication, when a ``security: true`` task's
+               ``proceed`` was not recorded by an Opus-class model, or when reviewer fixups
+               exceed the cap.
+  adjudicate   orchestrator: record the partner's decision on the latest critic verdict, with
+               the adjudicating model (``--model``) and the spec's SHA-256 (issue #57).
+               ``proceed`` is refused while that verdict carries a BLOCKING-PLAN finding, and
+               on a ``security: true`` task unless ``--model`` is Opus-class; ``override`` is
+               the operator's logged decision to build anyway (needs --reason).
   override-cap orchestrator, on the operator's instruction: grant extra rounds (needs --reason).
   status       print the task's rounds, caps, latest verdicts and gate state as JSON.
 
@@ -32,6 +39,9 @@ Exit codes: 0 allowed / recorded; 2 invalid invocation; 31 policy stop (never a 
 never a failure_count increment).
 """
 import argparse
+import errno
+import fcntl
+import hashlib
 from datetime import datetime, timezone
 import json
 import os
@@ -102,7 +112,9 @@ def parse_result(role, text):
             return result
         result['counts'][key] = int(raw)
     if role == 'critic':
-        tier = (fields.get('recommended_verify_tier') or '').upper()
+        # Parse the leading tier token: 'R1 (bumped)' is R1 (issue #57); garbage stays None.
+        token = re.match(r'([A-Za-z0-9]+)', fields.get('recommended_verify_tier') or '')
+        tier = token.group(1).upper() if token else ''
         result['recommended_verify_tier'] = tier if tier in project_policy.TIERS else None
     result['verdict'] = verdict
     return result
@@ -228,6 +240,103 @@ def critique_state(log_dir, task_id):
     return latest_verdict, cleared_by
 
 
+# --- [issue #57] security floor: who adjudicated -------------------------------------------
+
+def is_opus_class(model):
+    """Whether a recorded model name is an Opus-class Anthropic model on subscription Claude.
+
+    Same test orchestrator-routing.py applies to a security adjudicator ('opus' in the name),
+    restricted to the Anthropic family and never via OpenRouter (Anthropic never routes
+    through it). Fable is not Opus-class: it is policy-restricted from security work.
+    """
+    name = (model or '').strip().lower()
+    if not name or name.startswith(('openrouter/', 'anthropic/')) or 'fable' in name:
+        return False
+    return name == 'opus' or name.startswith('opus@') or (name.startswith('claude-') and 'opus' in name)
+
+
+def security_floor_problem(row):
+    """Why an adjudication row does NOT satisfy the security Opus floor, or None when it does.
+
+    Reusable by any gate that must check a security task's adjudicator (issue #58 wants the
+    same check at merge time). Rules:
+      - ``override`` is the operator's logged decision (it needs --reason); it stands whatever
+        model recorded it.
+      - a row with no ``model`` key predates issue #57 (legacy): accepted, with a warning from
+        the caller — the Claude partner's standing model was already Opus (MODELS.md).
+      - otherwise the recorded ``model`` must be Opus-class.
+    """
+    if row.get('outcome') == 'override':
+        return None
+    if 'model' not in row:
+        return None
+    if is_opus_class(row.get('model')):
+        return None
+    return (f'the adjudication was recorded by {row.get("model") or "an unnamed model"}, not an '
+            'Opus-class model')
+
+
+def is_legacy_adjudication(row):
+    return row.get('event') == 'adjudication' and 'model' not in row
+
+
+# --- [issue #57] the adjudication is about a specific spec ---------------------------------
+
+def default_spec_path(pm_dir, task_id):
+    return Path(pm_dir) / 'prompts' / f'task-{task_id}.md'
+
+
+def relative_to_pm(path, pm_dir):
+    path, pm = Path(path).resolve(), Path(pm_dir).resolve()
+    try:
+        return str(path.relative_to(pm))
+    except ValueError:
+        return str(path)
+
+
+def file_sha256(path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def spec_drift_problem(row, pm_dir):
+    """Why the spec an adjudication was about has changed since, or None when it has not.
+
+    Rows with no ``spec_sha256`` (legacy, or no spec file existed at adjudication) are not
+    checked. ``spec_path`` is stored relative to the PM dir when it lies inside it.
+    """
+    recorded = row.get('spec_sha256')
+    if not recorded:
+        return None
+    current = file_sha256(Path(pm_dir) / (row.get('spec_path') or ''))
+    if current == recorded:
+        return None
+    what = 'is missing' if current is None else 'has changed'
+    return f'the spec it adjudicated ({row.get("spec_path")}) {what} since'
+
+
+# --- [issue #57] one in-flight critic/reviewer round per task ------------------------------
+
+def take_round_lock(fd, role, task_id):
+    """Lock the task+role on an inherited descriptor, non-blocking.
+
+    dispatch.sh opens the lock file on a descriptor it keeps for the whole run, so the lock is
+    held from this cap check through the verdict record and released by the kernel if the
+    dispatch dies — there is no stale lock to clean up.
+    """
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            raise GateError(
+                f'another {role} run for {task_id} is in flight; its verdict must be recorded '
+                'before the next round can be counted against the cap. Wait for it to finish.'
+            ) from exc
+        raise
+
+
 # --- lease (managed projects) -------------------------------------------------------------
 
 def require_owner(pm_dir):
@@ -263,6 +372,8 @@ def cmd_record(args):
 
 
 def cmd_check_cap(args):
+    if args.lock_fd is not None:
+        take_round_lock(args.lock_fd, args.role, args.task)
     limit, base, extra = effective_cap(args.pm_dir, args.log_dir, args.role, args.task)
     used = rounds_used(args.log_dir, args.role, args.task)
     # critic: rounds so far must be below the cap for one more round to start.
@@ -284,11 +395,35 @@ def cmd_check_cap(args):
 def cmd_build_gate(args):
     task = plan_task(Path(args.pm_dir) / 'PLAN.md', args.task)
     if task is None:
+        # Issue #57: an unregistered task id is not gated. Say so where the operator sees it.
+        print(f'[review-gate] warning: {args.task} is not in PLAN.md, so no review gate applies '
+              'to this build (critique, security floor, fixup cap). Register the task first.',
+              file=sys.stderr)
         print(json.dumps({'allowed': True, 'task_id': args.task, 'reason': 'task not in PLAN.md'}))
         return 0
     required, why = critique_required(task)
+    security = (task.get('security') or '').lower() == 'true'
     if required:
         verdict, cleared = critique_state(args.log_dir, args.task)
+        if cleared is not None:
+            drift = spec_drift_problem(cleared, args.pm_dir)
+            if drift:
+                raise GateError(
+                    f'{args.task} was adjudicated ({cleared.get("outcome")}, {cleared.get("ts")}) but '
+                    f'{drift}. Re-run the critic on the changed spec, or re-record the decision '
+                    f'on it: review_gate.py adjudicate --task {args.task} --outcome proceed|override.')
+            if security:
+                floor = security_floor_problem(cleared)
+                if floor:
+                    raise GateError(
+                        f'{args.task} is security: true and {floor}. Security adjudication is '
+                        'mandatory Opus (VERIFY.md § Security-sensitive tasks): re-record it from an '
+                        f'Opus session with review_gate.py adjudicate --task {args.task} --outcome '
+                        'proceed --model <opus model>, or record the operator\'s decision with '
+                        '--outcome override --reason ...')
+                if is_legacy_adjudication(cleared):
+                    print(f'[review-gate] warning: {args.task} is security: true and its adjudication '
+                          'predates issue #57 (no model recorded); accepted as legacy.', file=sys.stderr)
         if cleared is None:
             if verdict is None:
                 detail = 'no pre-build critique has been recorded'
@@ -315,9 +450,17 @@ def cmd_build_gate(args):
 def cmd_adjudicate(args):
     require_owner(args.pm_dir)
     verdict, _ = critique_state(args.log_dir, args.task)
+    task = plan_task(Path(args.pm_dir) / 'PLAN.md', args.task) or {}
+    security = (task.get('security') or '').lower() == 'true'
     if args.outcome == 'proceed':
         if verdict is None:
             raise GateError(f'{args.task} has no recorded critic verdict to proceed on')
+        if security and not is_opus_class(args.model):
+            raise GateError(
+                f'{args.task} is security: true; its proceed adjudication must be recorded by an '
+                f'Opus-class model (--model, got {args.model or "none"}). If Opus is unavailable '
+                "the task stays blocked, or the operator's decision is recorded with --outcome "
+                'override --reason ... (VERIFY.md § Security-sensitive tasks).')
         blocking = (verdict.get('counts') or {}).get('blocking_plan', 0)
         if verdict.get('verdict') not in ('PROCEED', 'PROCEED-WITH-CHANGES') or blocking:
             raise GateError(
@@ -326,10 +469,19 @@ def cmd_adjudicate(args):
                 "operator's decision with --outcome override --reason ...")
     elif not (args.reason or '').strip():
         raise GateError('--outcome override requires --reason (the operator decision being recorded)')
+    spec = Path(args.spec) if args.spec else default_spec_path(args.pm_dir, args.task)
+    if args.spec and not spec.is_file():
+        raise GateError(f'--spec {args.spec} is not a readable file')
+    spec_sha = file_sha256(spec)
+    # Issue #57: who decided (the security floor) and which spec the decision is about (a
+    # changed spec voids it). 'model' is always written, so a row without the key is legacy.
     row = {'event': 'adjudication', 'ts': now(), 'task_id': args.task, 'role': 'critic',
            'outcome': args.outcome, 'reason': args.reason or None,
            'critic_run_id': verdict.get('run_id') if verdict else None,
-           'critic_round': verdict.get('round') if verdict else None}
+           'critic_round': verdict.get('round') if verdict else None,
+           'model': args.model or None,
+           'spec_path': relative_to_pm(spec, args.pm_dir) if spec_sha else None,
+           'spec_sha256': spec_sha}
     append_row(args.log_dir, row)
     print(json.dumps(row, sort_keys=True))
     return 0
@@ -353,7 +505,11 @@ def cmd_status(args):
     required, why = critique_required(task) if task else (False, 'task not in PLAN.md')
     verdict, cleared = critique_state(args.log_dir, args.task)
     report = {'task_id': args.task, 'critique_required': required, 'reason': why,
-              'latest_critic_verdict': verdict, 'cleared_by': cleared}
+              'latest_critic_verdict': verdict, 'cleared_by': cleared,
+              'spec_drift': spec_drift_problem(cleared, args.pm_dir) if cleared else None,
+              'security_floor': (security_floor_problem(cleared)
+                                 if cleared and task and (task.get('security') or '').lower() == 'true'
+                                 else None)}
     for role in ROLES:
         limit, _, _ = effective_cap(args.pm_dir, args.log_dir, role, args.task)
         report[role] = {'rounds_used': rounds_used(args.log_dir, role, args.task), 'cap': limit}
@@ -378,12 +534,22 @@ def main(argv=None):
     for name in ('record', 'check-cap', 'override-cap'):
         command = sub.choices.get(name) or sub.add_parser(name)
         command.add_argument('--role', choices=ROLES, required=True)
+    sub.choices['check-cap'].add_argument(
+        '--lock-fd', type=int, default=None,
+        help='an open descriptor on the task+role lock file, held by the caller until the '
+             'verdict is recorded (issue #57); a lock already held elsewhere is exit 31')
     override = sub.choices['override-cap']
     override.add_argument('--extra', type=int, default=1)
     override.add_argument('--reason', default='')
     adjudicate = sub.add_parser('adjudicate')
     adjudicate.add_argument('--outcome', choices=('proceed', 'override'), required=True)
     adjudicate.add_argument('--reason', default='')
+    adjudicate.add_argument('--model', default='',
+                            help='the model making this decision (the partner session); a '
+                                 'security: true proceed needs an Opus-class model (issue #57)')
+    adjudicate.add_argument('--spec', default=None,
+                            help='the spec the critique read (default prompts/task-<id>.md); its '
+                                 'SHA-256 is recorded and a later change voids the adjudication')
     sub.add_parser('build-gate')
     sub.add_parser('status')
     for command in sub.choices.values():

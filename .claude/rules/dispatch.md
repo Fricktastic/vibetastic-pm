@@ -3,7 +3,10 @@
 Managed projects: pass `--role reviewer|critic --author-model <actual-model>` for gate
 reviews, and `--security` when applicable. Every `--role critic|reviewer` run needs its task
 (`--task T0XX`, or a `critic-T0XX.md` / `review-T0XX.md` prompt name) — round caps and the
-critique gate are counted per task (§ Round caps). Exit 31 stops for ownership/policy/reconciliation
+critique gate are counted per task (§ Round caps) — and `--read-only` (exit 2 without it,
+managed or not; issue #57). A build with no task id is not gated at all; in a managed project
+dispatch.sh prints a `WARNING ... NO review gate applies` line — pass `--task T0XX` if the
+run belongs to a PLAN task. Exit 31 stops for ownership/policy/reconciliation
 without changing failure_count. The lease's session routing profile overrides normal
 backend preferences for this session only. All durable changes use the state commands.
 
@@ -216,9 +219,16 @@ escalate.
      **proceed with this one.** It is not this task's blocker.
    - **`[ADVISORY]`** findings → log; fold in at discretion.
    - `RECOMMENDED_VERIFY_TIER` higher than the stated tier → raise `verify_tier` on the task.
-   - Clear the gate: `python3 framework/scripts/review_gate.py --pm-dir . adjudicate --task T0XX --outcome proceed`
+   - Clear the gate: `python3 framework/scripts/review_gate.py --pm-dir . adjudicate --task T0XX --outcome proceed --model <your model>`
      (lease-owner only in a managed project), append `critic_returned` to TASK_LOG, and only
-     then proceed to the build dispatch below. `review_gate.py --pm-dir . status --task T0XX`
+     then proceed to the build dispatch below.
+   - **`security: true`** → `--outcome proceed` needs an Opus-class `--model` (issue #57);
+     the build gate refuses the task otherwise. A Codex partner records the exceptional Opus
+     adjudication's model. Without Opus, the task stays blocked or the operator overrides.
+   - **Settle the spec first.** The adjudication pins the SHA-256 of `prompts/task-T0XX.md`
+     (or `--spec <path>` for a spec kept elsewhere); editing it afterwards makes the build
+     gate refuse until you re-critique or re-adjudicate. Fold advisory findings in before
+     adjudicating. `review_gate.py --pm-dir . status --task T0XX`
      shows rounds, caps and gate state.
 
 ## Round caps
@@ -227,7 +237,10 @@ escalate.
 stopping rule does not converge: observed four-round REWORK loops on T024, T070 and T071, with
 later rounds surfacing pre-existing defects rather than plan defects, and T211 ran five rounds
 under the prose version of this rule. `dispatch.sh --role critic` now **refuses** round
-cap+1 (exit 31). Count: every recorded critic verdict except `ERROR`.
+cap+1 (exit 31). Count: every recorded critic verdict except `ERROR`. Only one critic (and
+one reviewer) run per task is in flight at a time: dispatch.sh holds a round lock from the cap
+check to the verdict record, and refuses a concurrent run on the same task (exit 31, "in
+flight") — wait for the first, do not re-dispatch it.
 
 **Reviewer fixup rounds — the project's cap (default 3), then the operator.** T211 ran ten.
 A fixup round is a recorded review that did not approve (`REJECT`, any blocker, or
@@ -432,7 +445,7 @@ echoes the last 40 lines so a failure is never silent.
 | `0` | Ran and (if a verifier was set) it passed — the verify-cmd's scope only, not the task's acceptance | Proceed to the staged-change check, then PR Opening; merge only through § Merge gate |
 | `20` | Code runs but the verifier never passed within the attempt budget | **Tier escalation** (below) — not a `failure_count` event |
 | `30` | Backend unavailable (CLI missing, bad slug, burn gate closed, or the backend refused the run for quota/rate-limit/auth) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
-| `31` | Ownership/routing stop, or a review gate refused the run (critique not adjudicated, round cap reached) | Resolve per § Pre-Build Critique / § Round caps; not a `failure_count` event |
+| `31` | Ownership/routing stop, or a review gate refused the run (critique not adjudicated, spec changed since adjudication, security proceed not by Opus, round cap reached, another run on the task in flight) | Resolve per § Pre-Build Critique / § Round caps; not a `failure_count` event |
 | other non-0 | builder infra/model failure (even via fallback) | Task failure — see `state.md` (`failure_count +1`) |
 
 **Availability is live state, never handoff state (issue #51).** Always start at the first

@@ -33,7 +33,10 @@ critique build gate, the round caps and the merge gate are computed from it. Nev
 truncate it; write to it only through `review_gate.py` (`adjudicate`, `override-cap`,
 `record`) and `merge_gate.py` (`verify`, `fail-on-base`, `observe`, `override`, `check`,
 `merge`). Decisions (`adjudicate`, `override-cap`, `observe`, `override`) need the lease in a
-managed project.
+managed project. An `adjudication` row records `model` (the adjudicating model; a
+row without the key predates issue #57), `spec_path` and `spec_sha256` (the spec it decided
+on). `logs/locks/` holds the per-task critic/reviewer round locks; they are empty files,
+released by the kernel with their dispatch — never delete one to "unstick" a run.
 
 The manual `cost_event` adds what the hooks cannot know: the **role** (Designer vs Tech Lead
 vs Reviewer) and task attribution. Append one after every subagent spawn and before each

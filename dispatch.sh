@@ -19,6 +19,11 @@
 #                           reviewer fixups exceed the cap.
 #   Recorded verdicts carry the commit the role read (head_sha, tree_clean — issue #35); the
 #   merge gate (scripts/merge_gate.py) accepts a review only for the exact commit it merges.
+#   [issue #57] --role critic|reviewer requires --read-only (exit 2 without it, managed or not).
+#   One critic/reviewer run per task+role at a time: the round lock (logs/locks/) is held from
+#   the cap check through the verdict record; a second concurrent run is refused (exit 31).
+#   The build gate also refuses a task whose spec changed since its adjudication, and a
+#   security: true task whose proceed was not recorded by an Opus-class model.
 #
 # --backend: which builder CLI runs the task. Default is inferred from the model slug:
 #   gpt-* → codex; claude-*/sonnet/opus/haiku → claude; anything else (openrouter/*) → opencode.
@@ -168,6 +173,20 @@ fi
 # when hooks are disabled. Legacy projects keep the old dispatch contract.
 DISPATCH_PM_DIR="${PM_DIR:-$(dirname "$LOG_DIR")}"
 
+# --- [issue #57] A critic or reviewer never runs as a mutating builder turn -----------------
+# Only the managed path enforced this (exit 31). Unmanaged, a critic without --read-only ran
+# as a build: it could edit the tree, and its verdict was never recorded (record_verdict runs
+# on the read-only path only). A missing flag is an invocation error: exit 2, like a missing
+# --worktree or verify-cmd.
+case "$PM_ROLE" in
+  critic|reviewer)
+    if ! $READ_ONLY; then
+      echo "[dispatch] --role $PM_ROLE requires --read-only: a $PM_ROLE reads and reports, it never" >&2
+      echo "           edits the tree, and only a read-only run records its verdict (issue #57)." >&2
+      exit 2
+    fi ;;
+esac
+
 # --- [issues #18, #50] Review gates: round caps and the critique build gate ----------------
 # The critique gate and the "2 rounds, then the operator" limit were prose. T211 ran 5
 # critique rounds and 10 reviewer fixups under them. Round counts and adjudications now live
@@ -187,7 +206,23 @@ review_gate_call() {
   return 2
 }
 
+# [issue #57] The round lock. check-cap and the verdict record used to be two separate calls
+# with the whole model run between them, so two concurrent runs on one task could both pass
+# the cap. Descriptor 9 stays open on logs/locks/<task>.<role>.lock for the rest of this
+# process; check-cap takes a non-blocking flock on it (refusing if another run holds it), and
+# release_round_lock drops it after the verdict is recorded. If the dispatch dies, the kernel
+# releases the lock with the descriptor — there is no stale lock to clean up.
+ROUND_LOCK_HELD=false
+release_round_lock() {
+  $ROUND_LOCK_HELD || return 0
+  ROUND_LOCK_HELD=false
+  # Unlock explicitly: children that inherited fd 9 (a lingering builder) must not keep it.
+  python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_UN)' 2>/dev/null || true
+  exec 9>&-
+}
+
 review_gates() {  # $1 = ledger dir
+  local lock_args=()
   case "$PM_ROLE" in
     critic|reviewer)
       if [ -z "$GATE_TASK_ID" ]; then
@@ -195,12 +230,26 @@ review_gates() {  # $1 = ledger dir
         echo "           (round caps are counted per task — framework/.claude/rules/dispatch.md § Round caps)." >&2
         return 31
       fi
-      review_gate_call "$1" check-cap --role "$PM_ROLE" --task "$GATE_TASK_ID" || return $? ;;
+      # Only a well-formed id names a lock file; review_gate.py rejects any other (exit 2).
+      if printf '%s\n' "$GATE_TASK_ID" | grep -Eq '^T[0-9]+[A-Za-z0-9]*$' && mkdir -p "$1/locks" 2>/dev/null \
+         && exec 9>>"$1/locks/$GATE_TASK_ID.$PM_ROLE.lock"; then
+        ROUND_LOCK_HELD=true
+        lock_args=(--lock-fd 9)
+      fi
+      review_gate_call "$1" check-cap --role "$PM_ROLE" --task "$GATE_TASK_ID" ${lock_args[@]+"${lock_args[@]}"} || return $? ;;
   esac
   # No PLAN.md, no task to gate (a framework checkout, an ad-hoc run). A missing
   # review_gate.py beyond this point fails closed.
   if ! $READ_ONLY && [ -n "$GATE_TASK_ID" ] && [ -f "$DISPATCH_PM_DIR/PLAN.md" ]; then
     review_gate_call "$1" build-gate --task "$GATE_TASK_ID" || return $?
+  fi
+  # [issue #57] A build the gates cannot attribute to a task is not gated at all: no critique
+  # check, no fixup cap. Allowed (Docs/upgrading.md: an ad-hoc prompt is not gated or counted),
+  # but never silently in a managed project.
+  if ! $READ_ONLY && [ -z "$GATE_TASK_ID" ] && $PM_MANAGED; then
+    echo "[dispatch] WARNING: this build has no task id (no --task T0XX, prompt $RUN_PROMPT is not" >&2
+    echo "           task-/fixup-T0XX*.md), so NO review gate applies: no critique check, no" >&2
+    echo "           reviewer fixup cap. If it belongs to a PLAN task, re-run with --task T0XX." >&2
   fi
   return 0
 }
@@ -262,6 +311,7 @@ emit_run_finish() {
   if [ -n "$RUN_BASE_SHA" ] && [ -n "$head_sha" ]; then commits="$(git -C "$RUN_REPO_PATH" rev-list --count "${RUN_BASE_SHA}..${head_sha}" 2>/dev/null || true)"; fi
   row="$(run_json 'event,run_id,ts_end,duration_s,exit,verify_passed,head_sha,commits,verdict' run_finish "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((end_epoch - RUN_START_EPOCH))" "$code" "$RUN_VERIFY_PASSED" "${head_sha:-__NULL__}" "${commits:-__NULL__}" "${RUN_VERDICT:-__NULL__}")"
   [ -n "$row" ] && printf '%s\n' "$row" >> "$RUNS_FILE" 2>/dev/null || true
+  release_round_lock
   if $PM_RESERVED; then
     python3 "$DISPATCH_HERE/scripts/orchestrator-state.py" --pm-dir "$DISPATCH_PM_DIR" finish \
       --run-id "$RUN_ID" --pid "$$" >/dev/null || echo "[dispatch] reservation needs reconciliation: $RUN_ID" >&2
@@ -1315,6 +1365,7 @@ if $READ_ONLY; then
     finish 21
   fi
   record_verdict
+  release_round_lock
   finish 0
 fi
 

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,6 +158,22 @@ class ParseTests(unittest.TestCase):
             self.assertIsNone(parsed["problem"], f"{prompt}: {parsed['problem']}")
             self.assertEqual(parsed["verdict"], allowed[0])
 
+    def test_recommended_tier_keeps_the_leading_token(self):
+        """Issue #57: 'R1 (bumped)' is R1; garbage is still None."""
+        for raw, expected in (("R1 (bumped)", "R1"), ("r2, device check", "R2"), ("R2", "R2"),
+                              ("bumped to R1", None), ("R9 (x)", None), ("", None), ("(R1)", None)):
+            parsed = review_gate.parse_result("critic", critic_reply("PROCEED", tier=raw))
+            self.assertIsNone(parsed["problem"], raw)
+            self.assertEqual(parsed["recommended_verify_tier"], expected, raw)
+
+    def test_opus_class(self):
+        for model in ("opus", "Opus", "opus@max", "claude-opus-4.8", "claude-opus-5-5"):
+            self.assertTrue(review_gate.is_opus_class(model), model)
+        for model in (None, "", "sonnet", "claude-sonnet-4.6", "fable", "claude-fable-5",
+                      "openrouter/anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8",
+                      "gpt-5.6-sol@high", "haiku", "opus-imitation-7b"):
+            self.assertFalse(review_gate.is_opus_class(model), model)
+
     def test_missing_count_is_malformed(self):
         text = "<!-- REVIEWER_RESULT_START -->\nverdict: APPROVE\nblockers: 0\n<!-- REVIEWER_RESULT_END -->"
         self.assertEqual(review_gate.parse_result("reviewer", text)["verdict"], "MALFORMED")
@@ -277,6 +294,119 @@ class GateTests(unittest.TestCase):
         self.assertFalse((self.pm / "logs/verdicts.jsonl").exists())
 
 
+class Issue57GateTests(unittest.TestCase):
+    """Round lock, security Opus floor, spec-bound adjudication, unregistered-task warning."""
+
+    setUp, tearDown = GateTests.setUp, GateTests.tearDown
+    gate, record, ledger = GateTests.gate, GateTests.record, GateTests.ledger
+
+    def append_raw(self, row):
+        with (self.pm / "logs/verdicts.jsonl").open("a") as fh:
+            fh.write(json.dumps(row) + "\n")
+
+    def check_cap_on(self, fd):
+        return subprocess.run([sys.executable, GATE, "--pm-dir", self.pm, "check-cap", "--role", "critic",
+                               "--task", "T010", "--lock-fd", str(fd)],
+                              capture_output=True, text=True, pass_fds=(fd,))
+
+    def test_round_lock_refuses_a_concurrent_run_and_dies_with_its_holder(self):
+        (self.pm / "logs/locks").mkdir(parents=True)
+        lock = self.pm / "logs/locks/T010.critic.lock"
+        holder = os.open(lock, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        other = os.open(lock, os.O_WRONLY | os.O_APPEND)
+        try:
+            first = self.check_cap_on(holder)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            # The checking process has exited; the lock lives on with the holder's descriptor.
+            second = self.check_cap_on(other)
+            self.assertEqual(second.returncode, 31, second.stderr)
+            self.assertIn("in flight", second.stderr)
+            # Other tasks are independent.
+            self.assertEqual(self.gate("check-cap", "--role", "critic", "--task", "T012").returncode, 0)
+        finally:
+            os.close(holder)          # the holder dies: the kernel drops the lock, nothing stale
+        third = self.check_cap_on(other)
+        os.close(other)
+        self.assertEqual(third.returncode, 0, third.stderr)
+
+    def test_security_proceed_needs_an_opus_adjudicator(self):
+        self.record("critic", "T014", critic_reply("PROCEED"))
+        for model in (None, "sonnet", "claude-fable-5", "gpt-5.6-sol@high"):
+            args = ["adjudicate", "--task", "T014", "--outcome", "proceed"] + (["--model", model] if model else [])
+            refused = self.gate(*args)
+            self.assertEqual(refused.returncode, 31, model)
+            self.assertIn("Opus-class", refused.stderr)
+        self.assertEqual(self.gate("build-gate", "--task", "T014").returncode, 31)
+        ok = self.gate("adjudicate", "--task", "T014", "--outcome", "proceed", "--model", "claude-opus-4.8")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual(self.ledger()[-1]["model"], "claude-opus-4.8")
+        self.assertEqual(self.gate("build-gate", "--task", "T014").returncode, 0)
+        # A non-security task needs no particular adjudicator.
+        self.record("critic", "T010", critic_reply("PROCEED"))
+        self.assertEqual(self.gate("adjudicate", "--task", "T010", "--outcome", "proceed",
+                                   "--model", "gpt-5.6-terra").returncode, 0)
+        self.assertEqual(self.gate("build-gate", "--task", "T010").returncode, 0)
+
+    def test_security_build_gate_rejects_a_non_opus_clearing_row(self):
+        """The build gate checks the clearing row itself, not only adjudicate's own refusal."""
+        self.record("critic", "T014", critic_reply("PROCEED"))
+        self.append_raw({"event": "adjudication", "task_id": "T014", "role": "critic",
+                         "outcome": "proceed", "model": "sonnet"})
+        refused = self.gate("build-gate", "--task", "T014")
+        self.assertEqual(refused.returncode, 31)
+        self.assertIn("mandatory Opus", refused.stderr)
+        # Legacy row (pre-#57, no model key): accepted with a warning.
+        self.append_raw({"event": "adjudication", "task_id": "T014", "role": "critic", "outcome": "proceed"})
+        legacy = self.gate("build-gate", "--task", "T014")
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertIn("accepted as legacy", legacy.stderr)
+        # The operator's override stands whatever model recorded it.
+        self.append_raw({"event": "adjudication", "task_id": "T014", "role": "critic",
+                         "outcome": "override", "reason": "operator", "model": "gpt-5.6-terra"})
+        self.assertEqual(self.gate("build-gate", "--task", "T014").returncode, 0)
+
+    def test_adjudication_is_voided_by_a_spec_change(self):
+        spec = self.pm / "prompts/task-T010.md"
+        spec.parent.mkdir()
+        spec.write_text("the plan v1\n")
+        self.record("critic", "T010", critic_reply("PROCEED"))
+        self.assertEqual(self.gate("adjudicate", "--task", "T010", "--outcome", "proceed").returncode, 0)
+        row = self.ledger()[-1]
+        self.assertEqual(row["spec_path"], "prompts/task-T010.md")
+        self.assertEqual(len(row["spec_sha256"]), 64)
+        self.assertEqual(self.gate("build-gate", "--task", "T010").returncode, 0)
+        spec.write_text("the plan v2, edited after the critique was adjudicated\n")
+        refused = self.gate("build-gate", "--task", "T010")
+        self.assertEqual(refused.returncode, 31)
+        self.assertIn("has changed", refused.stderr)
+        self.assertEqual(self.gate("adjudicate", "--task", "T010", "--outcome", "proceed").returncode, 0)
+        self.assertEqual(self.gate("build-gate", "--task", "T010").returncode, 0, "re-adjudication clears it")
+        spec.unlink()
+        missing = self.gate("build-gate", "--task", "T010")
+        self.assertEqual(missing.returncode, 31)
+        self.assertIn("is missing", missing.stderr)
+
+    def test_explicit_spec_path_and_no_spec(self):
+        self.record("critic", "T012", critic_reply("PROCEED"))
+        self.assertEqual(self.gate("adjudicate", "--task", "T012", "--outcome", "proceed",
+                                   "--spec", self.pm / "nope.md").returncode, 31)
+        # No spec file at all: nothing to pin, nothing checked (documented).
+        self.assertEqual(self.gate("adjudicate", "--task", "T012", "--outcome", "proceed").returncode, 0)
+        self.assertIsNone(self.ledger()[-1]["spec_sha256"])
+        self.assertEqual(self.gate("build-gate", "--task", "T012").returncode, 0)
+        section = self.pm / "build-spec-T012.md"
+        section.write_text("extracted section\n")
+        self.assertEqual(self.gate("adjudicate", "--task", "T012", "--outcome", "proceed",
+                                   "--spec", section).returncode, 0)
+        section.write_text("changed\n")
+        self.assertEqual(self.gate("build-gate", "--task", "T012").returncode, 31)
+
+    def test_unregistered_task_build_warns(self):
+        result = self.gate("build-gate", "--task", "T099")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("not in PLAN.md", result.stderr)
+
+
 class DispatchGateTests(unittest.TestCase):
     """dispatch.sh end to end against a fake codex CLI (no network, no credentials)."""
 
@@ -299,6 +429,7 @@ class DispatchGateTests(unittest.TestCase):
         fake.write_text(textwrap.dedent("""\
             #!/bin/bash
             printf 'call\\n' >> "$FAKE_CALLS"
+            [ -z "${FAKE_SLEEP:-}" ] || sleep "$FAKE_SLEEP"
             for last; do :; done
             printf '%s' "$last" > "$FAKE_PROMPT_SEEN"
             python3 -c 'import json,sys; print(json.dumps({"type":"thread.started","thread_id":"t"})); print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":open(sys.argv[1]).read()}})); print(json.dumps({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}))' "$FAKE_REPLY"
@@ -308,23 +439,30 @@ class DispatchGateTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def dispatch(self, *args):
+    def env(self, **extra):
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", PM_DIR=str(self.pm),
                    FAKE_CALLS=str(self.calls), FAKE_REPLY=str(self.reply),
                    FAKE_PROMPT_SEEN=str(self.prompt_seen), CODEX_FIRST_EVENT_TIMEOUT="0")
         env.pop("OPENCODE_DISPATCH_LOG_DIR", None)
         env.pop("PM_ORCHESTRATOR_TOKEN", None)
+        env.update(extra)
+        return env
+
+    def dispatch(self, *args, **extra):
         return subprocess.run(["bash", ROOT / "dispatch.sh", *map(str, args)],
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=self.env(**extra))
 
     def calls_made(self):
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
 
-    def critic(self, task="T010"):
+    def critic_args(self, task="T010"):
         prompt = self.pm / f"prompts/critic-{task}.md"
         prompt.write_text("Critique the plan.\n\n{{PROJECT_POLICY}}\n")
-        return self.dispatch("--read-only", "--role", "critic", "--author-model", "sonnet",
-                             "--backend", "codex", "gpt-5.6-terra", self.code, prompt)
+        return ["--read-only", "--role", "critic", "--author-model", "sonnet",
+                "--backend", "codex", "gpt-5.6-terra", self.code, prompt]
+
+    def critic(self, task="T010"):
+        return self.dispatch(*self.critic_args(task))
 
     def build(self, task="T010"):
         prompt = self.pm / f"prompts/task-{task}.md"
@@ -352,6 +490,63 @@ class DispatchGateTests(unittest.TestCase):
         third = self.critic()
         self.assertEqual(third.returncode, 31, third.stderr)
         self.assertEqual(self.calls_made(), before, "a refused round must not invoke the backend")
+
+    def test_concurrent_critic_runs_cannot_both_pass_the_cap(self):
+        """Issue #57: check-cap and record used to be unlocked, so two runs could share a round."""
+        self.reply.write_text(critic_reply("REWORK", 1))
+        self.assertEqual(self.critic().returncode, 0)            # round 1 of 2
+        slow = subprocess.Popen(["bash", ROOT / "dispatch.sh", *map(str, self.critic_args())],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                env=self.env(FAKE_SLEEP="4"))
+        deadline = time.time() + 20
+        while self.calls_made() < 2 and time.time() < deadline:   # slow run is inside its model turn
+            time.sleep(0.05)
+        self.assertEqual(self.calls_made(), 2, "the slow critic never reached its backend")
+        racing = self.critic()
+        _, slow_err = slow.communicate(timeout=60)
+        self.assertEqual(slow.returncode, 0, slow_err)
+        self.assertEqual(racing.returncode, 31, racing.stderr)
+        self.assertIn("in flight", racing.stderr)
+        self.assertEqual(self.calls_made(), 2, "the refused run must not invoke the backend")
+        rows = [json.loads(l) for l in (self.pm / "logs/verdicts.jsonl").read_text().splitlines()]
+        self.assertEqual([r["round"] for r in rows], [1, 2], "the cap (2) must hold under concurrency")
+        # The lock was released with the verdict: the next check sees the cap, not a busy lock.
+        after = self.critic()
+        self.assertEqual(after.returncode, 31)
+        self.assertIn("redesign", after.stderr)
+
+    def test_role_without_read_only_is_an_invocation_error(self):
+        """Issue #57: unmanaged too — a critic must never run as a mutating build turn."""
+        for role in ("critic", "reviewer"):
+            prompt = self.pm / f"prompts/{role}-T010.md"
+            prompt.write_text("x\n")
+            result = self.dispatch("--role", role, "--author-model", "sonnet", "--worktree", "task/T010",
+                                   "--backend", "codex", "gpt-5.6-terra", self.code, prompt, "", "true",
+                                   "1", "standard")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("requires --read-only", result.stderr)
+        self.assertEqual(self.calls_made(), 0)
+        self.assertFalse((self.pm / "logs/verdicts.jsonl").exists())
+
+    def test_managed_build_without_a_task_id_warns(self):
+        (self.pm / ".orchestrator").mkdir()
+        (self.pm / ".orchestrator/config.json").write_text("{}")
+        own = subprocess.run([sys.executable, SCRIPTS / "orchestrator-state.py", "--pm-dir", self.pm,
+                              "acquire", "--provider", "codex", "--session", "test", "--pid",
+                              str(os.getpid()), "--profile", "normal"], capture_output=True, text=True)
+        if own.returncode == 31 and "Operation not permitted" in own.stderr:
+            self.skipTest("sandbox does not permit the state layer's process identity check")
+        self.assertEqual(own.returncode, 0, own.stderr)
+        token = json.loads(own.stdout)["token"]
+        self.reply.write_text("done\n")
+        for name, branch, warned in (("adhoc-fix.md", "adhoc", True), ("task-T011.md", "task/T011", False)):
+            prompt = self.pm / "prompts" / name
+            prompt.write_text("Build it.\n")
+            result = self.dispatch("--worktree", branch, "--backend", "codex", "gpt-5.6-terra",
+                                   self.code, prompt, "", "true", "1", "standard",
+                                   PM_ORCHESTRATOR_TOKEN=token)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual("NO review gate applies" in result.stderr, warned, name)
 
     def test_role_run_without_a_task_is_refused(self):
         prompt = self.pm / "prompts/critique.md"
