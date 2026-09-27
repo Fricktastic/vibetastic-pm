@@ -355,6 +355,7 @@ echoes the last 40 lines so a failure is never silent.
 | `0` | Ran and (if a verifier was set) it passed | Proceed to the staged-change check, then PR Opening |
 | `20` | Code runs but the verifier never passed within the attempt budget | **Tier escalation** (below) — not a `failure_count` event |
 | `30` | Backend unavailable (CLI missing, bad slug, burn gate closed, or the backend refused the run for quota/rate-limit/auth) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
+| other non-0 | builder infra/model failure (even via fallback) | Task failure — see `state.md` (`failure_count +1`) |
 
 **Availability is live state, never handoff state (issue #51).** Always start at the first
 entry of `builder_backends` (or the task's current backend) and let exit 30 move you on. Do
@@ -363,7 +364,6 @@ exhausted — quotas reset, and the refused dispatch costs nothing. `dispatch.sh
 refusal from the backend's own diagnostics (codex `error`/`turn.failed` events, claude
 `is_error` results, error-level stderr), never from the builder's report, and does not burn
 the same-backend fallback or a stall retry on it.
-| other non-0 | builder infra/model failure (even via fallback) | Task failure — see `state.md` (`failure_count +1`) |
 
 **Exit 0 — staged-change check before opening PR** (run in the worktree path dispatch.sh
 printed, not the live checkout):
