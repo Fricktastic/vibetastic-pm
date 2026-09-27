@@ -682,6 +682,13 @@ print(f'{i}|{o}|{c}')" "$CLAUDE_RESULTS" 2>/dev/null)"
     "$(basename "$LOG_FILE")" | python3 "$DISPATCH_HERE/scripts/append-cost.py" "$LOG_DIR" || echo "[dispatch] cost telemetry append failed" >&2
 }
 
+# [issue #49] Every builder invocation ends its options with `--` before the prompt/message.
+# Rendered prompts (prompts/*.md) begin with `---` frontmatter, and all three CLIs parsed that
+# bare positional as an option: codex "unexpected argument '---...'", claude "unknown option",
+# opencode printed usage — every backend failed before the model ran. `--` is honoured by all
+# three (codex exec / exec resume, claude -p, opencode run; verified against codex-cli 0.157,
+# Claude Code 2.1.283, opencode 1.17.18). Stdin is NOT used for the prompt: codex keeps
+# `< /dev/null` (issue #10), and codex appends piped stdin to the prompt anyway.
 run_opencode_fresh() {
   local model="$1"
   # Fresh session seeded with the task prompt file.
@@ -690,7 +697,7 @@ run_opencode_fresh() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
-    "$PROMPT_TEXT" \
+    -- "$PROMPT_TEXT" \
     < /dev/null 2>> "$LOG_FILE"
 }
 
@@ -705,7 +712,7 @@ run_opencode_continue() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
-    "$message" \
+    -- "$message" \
     < /dev/null 2>> "$LOG_FILE"
 }
 
@@ -845,7 +852,7 @@ run_codex_fresh() {
     --json -C "$DIR" -s workspace-write --skip-git-repo-check \
     -c sandbox_workspace_write.network_access=true \
     -m "$(model_of "$spec")" "${args[@]}" \
-    "$PROMPT_TEXT"
+    -- "$PROMPT_TEXT"
   local ec=$?
   codex_postrun
   return $ec
@@ -863,7 +870,7 @@ run_codex_continue() {
       --json --skip-git-repo-check \
       -c sandbox_workspace_write.network_access=true \
       -m "$(model_of "$spec")" "${args[@]}" \
-      "$message"
+      -- "$message"
   local ec=$?
   codex_postrun
   return $ec
@@ -897,7 +904,7 @@ run_claude_fresh() {
       -p --output-format json \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
-      "$PROMPT_TEXT" ) \
+      -- "$PROMPT_TEXT" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun
@@ -911,7 +918,7 @@ run_claude_continue() {
       -p --output-format json --resume "$CLAUDE_SESSION_ID" \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
-      "$message" ) \
+      -- "$message" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun

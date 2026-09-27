@@ -223,6 +223,42 @@ else
 fi
 rm -rf "$DISPATCH_TMP"
 
+echo "[selftest] frontmatter prompts are never parsed as CLI options (issue #49)"
+# Rendered role prompts start with `---`. Each fake CLI mimics the real parsers' failure: a
+# positional beginning with `-` that is not behind an end-of-options `--` is rejected, exactly
+# as codex ("unexpected argument"), claude ("unknown option") and opencode (usage) did.
+FM_TMP="$(mktemp -d)"; FM_BIN="$FM_TMP/bin"; FM_PROJ="$FM_TMP/project"
+mkdir -p "$FM_BIN" "$FM_PROJ"; git -C "$FM_PROJ" init -q
+printf -- '---\nrole: tech-lead\n---\n# Task\n' > "$FM_TMP/role-frontmatter.md"
+fm_fake() {  # cli, success output
+  cat > "$FM_BIN/$1" <<SH
+#!/bin/bash
+ended=0
+for a in "\$@"; do
+  if [ "\$ended" = 0 ] && [ "\$a" = -- ]; then ended=1; continue; fi
+  case "\$a" in ---*) [ "\$ended" = 1 ] || { echo "error: unexpected argument '\$a' found" >&2; exit 2; } ;; esac
+done
+printf '%s\n' '$2'
+SH
+  chmod +x "$FM_BIN/$1"
+}
+fm_fake codex    '{"type":"item.completed","item":{"type":"agent_message","text":"fm ok"}}'
+fm_fake claude   '{"session_id":"fm","result":"fm ok"}'
+fm_fake opencode 'fm ok'
+for fm_case in "codex gpt-5.6-terra" "claude sonnet" "opencode openrouter/minimax/minimax-m3"; do
+  fm_be="${fm_case%% *}"; fm_model="${fm_case#* }"
+  PATH="$FM_BIN:$PATH" CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$FM_TMP/logs-$fm_be" \
+    bash dispatch.sh --read-only --backend "$fm_be" "$fm_model" "$FM_PROJ" "$FM_TMP/role-frontmatter.md" \
+    > "$FM_TMP/out" 2>/dev/null
+  got=$?
+  if [ "$got" = 0 ] && grep -q 'fm ok' "$FM_TMP/out"; then
+    pass "$fm_be receives a '---' prompt as a positional, not an option"
+  else
+    fail "$fm_be parsed a frontmatter prompt as a CLI option (dispatch exit $got)"
+  fi
+done
+rm -rf "$FM_TMP"
+
 echo "[selftest] partner-burn hook records orchestrator usage"
 # The whole cost of issue #30 was that this hook's failure and success looked identical from
 # outside: it read usage off the Stop payload (which carries none), silently wrote nothing for
