@@ -98,6 +98,29 @@ else
 fi
 rm -rf "$LIFECYCLE_TMP"
 
+echo "[selftest] dispatch logs anchor to the PM dir, not the prompt's dir (issue #17)"
+# A prompt in /tmp wrote /tmp/logs/; specs under logs/specs/ produced logs/logs/. Drive an
+# early exit (no verify-cmd) from copies of dispatch.sh in each supported layout and check
+# where runs.jsonl lands. The prompt deliberately lives outside every PM dir.
+LD_TMP="$(cd "$(mktemp -d)" && pwd -P)"
+mkdir -p "$LD_TMP/pm/framework" "$LD_TMP/src" "$LD_TMP/explicit" "$LD_TMP/elsewhere/specs"
+cp dispatch.sh "$LD_TMP/pm/framework/"; cp dispatch.sh "$LD_TMP/src/"
+printf 'selftest prompt\n' > "$LD_TMP/elsewhere/specs/task-T996.md"
+ld_case() {  # dispatch.sh copy, PM_DIR ('' = unset), expected log dir, label
+  env -u OPENCODE_DISPATCH_LOG_DIR -u PM_DIR ${2:+PM_DIR="$2"} \
+    bash "$1" test-model "$LD_TMP" "$LD_TMP/elsewhere/specs/task-T996.md" >/dev/null 2>&1
+  if [ -s "$3/runs.jsonl" ] && [ ! -e "$LD_TMP/elsewhere/logs" ] && [ ! -e "$LD_TMP/elsewhere/specs/logs" ]; then
+    pass "$4"
+  else
+    fail "$4 (expected $3/runs.jsonl; logs followed the prompt instead)"
+  fi
+  rm -rf "$3" "$LD_TMP/elsewhere/logs" "$LD_TMP/elsewhere/specs/logs"
+}
+ld_case "$LD_TMP/pm/framework/dispatch.sh" "" "$LD_TMP/pm/logs" "installed subtree logs to <pm>/logs"
+ld_case "$LD_TMP/src/dispatch.sh" "" "$LD_TMP/src/logs" "a framework source checkout logs beside dispatch.sh"
+ld_case "$LD_TMP/pm/framework/dispatch.sh" "$LD_TMP/explicit" "$LD_TMP/explicit/logs" "PM_DIR, when set, decides the log dir"
+rm -rf "$LD_TMP"
+
 echo "[selftest] dispatch captures human reports across fake backend turns"
 # These fake CLIs make the capture/session assertions hermetic: no credentials, network, or
 # real model invocation. They deliberately emit the same JSON payload shapes dispatch parses.
@@ -144,7 +167,7 @@ CODEX_LOGS="$DISPATCH_TMP/codex-logs"
 CODEX_CALLS="$DISPATCH_TMP/codex-calls"
 CODEX_FLAG="$DISPATCH_TMP/codex-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CODEX_CALLS" FAKE_VERIFY_FLAG="$CODEX_FLAG" \
-  CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" \
+  CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" DISPATCH_ALLOW_NO_WORKTREE=1 \
   bash dispatch.sh --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
   '' "test -f $CODEX_FLAG" 2 standard > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
 got=$?
@@ -185,7 +208,7 @@ CLAUDE_LOGS="$DISPATCH_TMP/claude-logs"
 CLAUDE_CALLS="$DISPATCH_TMP/claude-calls"
 CLAUDE_FLAG="$DISPATCH_TMP/claude-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CLAUDE_CALLS" FAKE_VERIFY_FLAG="$CLAUDE_FLAG" \
-  OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" \
+  OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" DISPATCH_ALLOW_NO_WORKTREE=1 \
   bash dispatch.sh --backend claude claude-sonnet-4.6 "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
   '' "test -f $CLAUDE_FLAG" 2 standard > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
 got=$?
@@ -222,6 +245,116 @@ else
   fail "empty-fresh stall guard (dispatch exit $got)"
 fi
 rm -rf "$DISPATCH_TMP"
+
+echo "[selftest] frontmatter prompts are never parsed as CLI options (issue #49)"
+# Rendered role prompts start with `---`. Each fake CLI mimics the real parsers' failure: a
+# positional beginning with `-` that is not behind an end-of-options `--` is rejected, exactly
+# as codex ("unexpected argument"), claude ("unknown option") and opencode (usage) did.
+FM_TMP="$(mktemp -d)"; FM_BIN="$FM_TMP/bin"; FM_PROJ="$FM_TMP/project"
+mkdir -p "$FM_BIN" "$FM_PROJ"; git -C "$FM_PROJ" init -q
+printf -- '---\nrole: tech-lead\n---\n# Task\n' > "$FM_TMP/role-frontmatter.md"
+fm_fake() {  # cli, success output
+  cat > "$FM_BIN/$1" <<SH
+#!/bin/bash
+ended=0
+for a in "\$@"; do
+  if [ "\$ended" = 0 ] && [ "\$a" = -- ]; then ended=1; continue; fi
+  case "\$a" in ---*) [ "\$ended" = 1 ] || { echo "error: unexpected argument '\$a' found" >&2; exit 2; } ;; esac
+done
+printf '%s\n' '$2'
+SH
+  chmod +x "$FM_BIN/$1"
+}
+fm_fake codex    '{"type":"item.completed","item":{"type":"agent_message","text":"fm ok"}}'
+fm_fake claude   '{"session_id":"fm","result":"fm ok"}'
+fm_fake opencode 'fm ok'
+for fm_case in "codex gpt-5.6-terra" "claude sonnet" "opencode openrouter/minimax/minimax-m3"; do
+  fm_be="${fm_case%% *}"; fm_model="${fm_case#* }"
+  PATH="$FM_BIN:$PATH" CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$FM_TMP/logs-$fm_be" \
+    bash dispatch.sh --read-only --backend "$fm_be" "$fm_model" "$FM_PROJ" "$FM_TMP/role-frontmatter.md" \
+    > "$FM_TMP/out" 2>/dev/null
+  got=$?
+  if [ "$got" = 0 ] && grep -q 'fm ok' "$FM_TMP/out"; then
+    pass "$fm_be receives a '---' prompt as a positional, not an option"
+  else
+    fail "$fm_be parsed a frontmatter prompt as a CLI option (dispatch exit $got)"
+  fi
+done
+rm -rf "$FM_TMP"
+
+echo "[selftest] --worktree paths are keyed on the branch, not the prompt (issue #45)"
+# Field case: three parallel dispatches of ONE prompt on three branches shared one worktree
+# and one branch; two branches were never created. Sequential runs reproduce it — the second
+# dispatch silently reused the first one's path.
+WT_TMP="$(mktemp -d)"; WT_BIN="$WT_TMP/bin"; WT_PROJ="$WT_TMP/project"
+mkdir -p "$WT_BIN" "$WT_PROJ"; git -C "$WT_PROJ" init -q
+git -C "$WT_PROJ" -c user.name=selftest -c user.email=selftest@example.invalid commit -q --allow-empty -m init
+printf 'task\n' > "$WT_TMP/task-T990.md"; printf 'fixup\n' > "$WT_TMP/fixup-T990.md"
+cat > "$WT_BIN/claude" <<'SH'
+#!/bin/bash
+printf '%s %s\n' "$(pwd -P)" "$(git symbolic-ref --short HEAD)" >> "$WT_SEEN"
+printf '%s\n' '{"session_id":"wt","result":"wt report"}'
+SH
+chmod +x "$WT_BIN/claude"
+wt_dispatch() {  # branch, prompt -> dispatch exit code
+  PATH="$WT_BIN:$PATH" WT_SEEN="$WT_TMP/seen" OPENCODE_DISPATCH_LOG_DIR="$WT_TMP/logs" \
+    bash dispatch.sh --worktree "$1" --backend claude sonnet "$WT_PROJ" "$WT_TMP/$2" '' true 1 standard \
+    > /dev/null 2> "$WT_TMP/stderr"
+}
+WT_ROOT_REAL="$(cd "$WT_TMP" && pwd -P)/project-worktrees"
+wt_dispatch modeltest/a task-T990.md; got_a=$?
+wt_dispatch modeltest/b task-T990.md; got_b=$?
+if [ "$got_a" = 0 ] && [ "$got_b" = 0 ] \
+  && grep -qx "$WT_ROOT_REAL/modeltest-a modeltest/a" "$WT_TMP/seen" \
+  && grep -qx "$WT_ROOT_REAL/modeltest-b modeltest/b" "$WT_TMP/seen"; then
+  pass "one prompt on two branches builds in two worktrees, each on its own branch"
+else
+  fail "same-prompt dispatches on different branches collided (exits $got_a/$got_b): $(tr '\n' ';' < "$WT_TMP/seen")"
+fi
+: > "$WT_TMP/seen"
+wt_dispatch modeltest/a fixup-T990.md; got=$?
+if [ "$got" = 0 ] && grep -qx "$WT_ROOT_REAL/modeltest-a modeltest/a" "$WT_TMP/seen"; then
+  pass "a fixup prompt on an existing branch reuses that branch's worktree (issue #2)"
+else
+  fail "re-dispatch on an existing branch did not reuse its worktree (exit $got)"
+fi
+: > "$WT_TMP/seen"
+wt_dispatch modeltest-a task-T990.md; got=$?
+if [ "$got" = 2 ] && [ ! -s "$WT_TMP/seen" ] && grep -q 'Refusing to reuse' "$WT_TMP/stderr"; then
+  pass "a path holding a different branch is refused, never reused"
+else
+  fail "a worktree path holding another branch was reused (exit $got)"
+fi
+rm -rf "$WT_TMP"
+
+echo "[selftest] a build dispatch without --worktree is refused everywhere (issue #15)"
+# Only the leased path used to enforce this; a legacy project could build in the live checkout.
+NW_TMP="$(mktemp -d)"; NW_BIN="$NW_TMP/bin"; NW_PROJ="$NW_TMP/project"
+mkdir -p "$NW_BIN" "$NW_PROJ"; git -C "$NW_PROJ" init -q
+printf 'task\n' > "$NW_TMP/task-T991.md"
+printf '#!/bin/bash\nprintf call >> "$NW_CALLS"\nprintf "%%s\\n" %s\n' \
+  "'{\"session_id\":\"nw\",\"result\":\"nw report\"}'" > "$NW_BIN/claude"
+chmod +x "$NW_BIN/claude"
+nw_dispatch() {  # extra env assignment (or ''), extra flag (or '') -> exit code
+  env -u DISPATCH_ALLOW_NO_WORKTREE PATH="$NW_BIN:$PATH" NW_CALLS="$NW_TMP/calls" \
+    OPENCODE_DISPATCH_LOG_DIR="$NW_TMP/logs" ${1:+"$1"} \
+    bash dispatch.sh ${2:+"$2"} --backend claude sonnet "$NW_PROJ" "$NW_TMP/task-T991.md" '' true 1 standard \
+    > /dev/null 2> "$NW_TMP/stderr"
+}
+nw_dispatch '' ''; got=$?
+if [ "$got" = 2 ] && [ ! -e "$NW_TMP/calls" ] && grep -q 'no --worktree' "$NW_TMP/stderr"; then
+  pass "an unmanaged build dispatch without --worktree is refused before the builder runs"
+else
+  fail "a build dispatch without --worktree was not refused (exit $got)"
+fi
+nw_dispatch DISPATCH_ALLOW_NO_WORKTREE=1 ''; got=$?
+[ "$got" = 0 ] && pass "DISPATCH_ALLOW_NO_WORKTREE=1 permits a deliberate exception" \
+  || fail "DISPATCH_ALLOW_NO_WORKTREE=1 did not permit the dispatch (exit $got)"
+rm -f "$NW_TMP/calls"
+nw_dispatch '' --read-only; got=$?
+[ "$got" = 0 ] && pass "a --read-only dispatch needs no worktree" \
+  || fail "a --read-only dispatch was refused for lacking --worktree (exit $got)"
+rm -rf "$NW_TMP"
 
 echo "[selftest] partner-burn hook records orchestrator usage"
 # The whole cost of issue #30 was that this hook's failure and success looked identical from
@@ -288,7 +421,7 @@ printf 'not json' | OPENCODE_DISPATCH_LOG_DIR="$BURN_TMP/logs" python3 scripts/l
 if [ $? = 0 ]; then pass "malformed hook input never fails the session"; else fail "partner-burn blocked on malformed input"; fi
 rm -rf "$BURN_TMP"
 
-echo "[selftest] plan-lint handles a real live PLAN without crashing"
+echo "[selftest] live PLANs pass the plan-lint exit contract (0/3 ok; 1/2/crash fail — issue #24)"
 # Absolute paths on purpose: relative ones do not resolve inside a git worktree, where the
 # [ -r ] guard silently turned a skipped check into a pass and gave false confidence.
 #
@@ -323,11 +456,44 @@ else
   done
   [ $# -gt 0 ] || echo "  skip (no sibling *-pm/PLAN.md found; see .selftest-live-plans.example)"
 fi
+# [issue #24] The lint exit contract (.claude/rules/state.md): 0 clean and 3 vocabulary drift
+# pass; 1 is STRUCTURAL corruption, 2 unreadable, anything else a crash — all fail. This used
+# to pass every exit <= 3, so a structurally corrupt live PLAN printed "ok (exit 1)".
+live_lint() {  # path -> pass/fail line per the exit contract
+  bash scripts/plan-lint.sh "$1" >/dev/null 2>&1; local got=$?
+  case "$got" in
+    0|3) pass "$1 (exit $got)" ;;
+    1)   fail "$1 (STRUCTURALLY CORRUPT, plan-lint exit 1)" ;;
+    2)   fail "$1 (unreadable, plan-lint exit 2)" ;;
+    *)   fail "$1 (crashed, exit $got)" ;;
+  esac
+}
+# The classifier itself, against fixtures, in a subshell so its verdicts do not touch FAIL.
+for lc in plan-good.md:ok plan-vocab.md:ok plan-bad-escape.md:FAIL plan-missing-field.md:FAIL; do
+  lc_verdict="$( (live_lint "tests/fixtures/${lc%%:*}") | awk '{print $1}')"
+  if [ "$lc_verdict" = "${lc##*:}" ]; then pass "live-PLAN check: ${lc%%:*} -> ${lc##*:}"
+  else fail "live-PLAN check misclassified ${lc%%:*} (got '$lc_verdict', want '${lc##*:}')"; fi
+done
 for live in "$@"; do
   if [ ! -r "$live" ]; then printf '  skip %s (not present)\n' "$live"; continue; fi
-  bash scripts/plan-lint.sh "$live" >/dev/null 2>&1; got=$?
-  if [ "$got" -le 3 ]; then pass "$live (exit $got)"; else fail "$live (crashed, exit $got)"; fi
+  live_lint "$live"
 done
+
+echo "[selftest] state_correction is a documented event type carrying evidence (issue #29)"
+# TASK_LOG events have no mechanical validator; the vocabulary lives in the shipped TASK_LOG
+# template and state.md. Assert both define it, and that the state.md entry template requires
+# `evidence:` — a correction must carry its own proof.
+if python3 - TASK_LOG.md .claude/rules/state.md <<'PY'
+import re, sys
+log, state = (open(p).read() for p in sys.argv[1:3])
+vocab = log.split('Valid event_type values:', 1)[1].split('-->', 1)[0]
+assert re.search(r'^\s+state_correction\s+-', vocab, re.M), 'missing from TASK_LOG template'
+block = re.search(r'### <ISO8601> · state_correction\n```yaml\n(.*?)\n```', state, re.S)
+assert block, 'no state_correction entry template in state.md'
+assert re.search(r'^evidence:.*REQUIRED', block.group(1), re.M), 'evidence: not required'
+PY
+then pass "TASK_LOG template and state.md define state_correction with required evidence"
+else fail "state_correction is undocumented or does not require evidence"; fi
 
 echo "[selftest] Xcode verification-boundary preamble (issue #37)"
 # Sourcing dispatch.sh is not possible (it runs), so exercise prompt_preamble in isolation by

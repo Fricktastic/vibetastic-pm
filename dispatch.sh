@@ -20,9 +20,13 @@
 #   The verify loop is skipped in this mode.
 #
 # --worktree <branch>: run the builder in an isolated git worktree instead of the live
-#   checkout. The worktree is created at <project-dir>/../<project>-worktrees/<prompt-basename>
-#   on <branch> (created from the current HEAD if it doesn't exist; reused if the path
-#   already exists from a prior dispatch of the same task, e.g. a tier-escalation re-run).
+#   checkout. REQUIRED for build (non --read-only) dispatches: without it dispatch exits 2
+#   unless DISPATCH_ALLOW_NO_WORKTREE=1 (issue #15). The worktree is created at <project-dir>/../<project>-worktrees/<branch-dirname>
+#   (the branch with every character outside [A-Za-z0-9._-] replaced by '-', so task/T012 ->
+#   task-T012) on <branch> (created from the current HEAD if it doesn't exist; reused on a
+#   re-dispatch of the same branch, e.g. a tier-escalation re-run). The path is keyed on the
+#   branch, never the prompt filename (issue #45); an existing path holding a different branch
+#   is refused (exit 2), never silently reused.
 #   If <branch> is already checked out in ANY existing worktree (e.g. a fixup dispatch with a
 #   different prompt name onto the same PR branch), that worktree is reused instead of
 #   attempting a colliding `worktree add`.
@@ -111,10 +115,14 @@ else RUN_BACKEND="$BACKEND"; fi
 RUN_DIR="$(cd "$DIR" 2>/dev/null && pwd || printf '%s' "$DIR")"
 RUN_BRANCH="$WORKTREE_BRANCH"
 [ -n "$RUN_BRANCH" ] || RUN_BRANCH="$(git -C "$RUN_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+# [issue #45] The worktree directory is keyed on the BRANCH, never the prompt filename: two
+# dispatches of the same prompt on different branches used to share one worktree (and one
+# branch), silently. `task/T012` -> `task-T012`; anything outside [A-Za-z0-9._-] becomes '-'.
+worktree_dirname() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'; }
 RUN_WORKTREE=""
 if [ -n "$WORKTREE_BRANCH" ]; then
   RUN_WORKTREE="$(git -C "$RUN_DIR" worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/${WORKTREE_BRANCH}" '/^worktree /{p=substr($0,10)} $0==b{print p; exit}')"
-  [ -n "$RUN_WORKTREE" ] || RUN_WORKTREE="$(dirname "$RUN_DIR")/$(basename "$RUN_DIR")-worktrees/$(basename "${PROMPT_FILE%.md}")"
+  [ -n "$RUN_WORKTREE" ] || RUN_WORKTREE="$(dirname "$RUN_DIR")/$(basename "$RUN_DIR")-worktrees/$(worktree_dirname "$WORKTREE_BRANCH")"
 fi
 RUN_REPO_PATH="$RUN_DIR"
 RUN_BASE_SHA="$(git -C "$RUN_DIR" rev-parse HEAD 2>/dev/null || true)"
@@ -122,14 +130,15 @@ RUN_BASE_SHA="$(git -C "$RUN_DIR" rev-parse HEAD 2>/dev/null || true)"
 # Derive the log location lexically, before prompt readability validation can exit.
 if [ -n "${OPENCODE_DISPATCH_LOG_DIR:-}" ]; then LOG_DIR="$OPENCODE_DISPATCH_LOG_DIR"
 else
-  # Resolve via cd so "." and other unnormalised dirnames collapse before taking the parent.
-  # A purely lexical $(pwd)/$(dirname ...) yields ".../prompts/." whose parent is ".../prompts",
-  # putting logs one level too deep whenever the caller's cwd IS the prompts dir.
-  RUN_PROMPT_DIR="$(cd "$(dirname "$PROMPT_FILE")" 2>/dev/null && pwd)"
-  if [ -z "$RUN_PROMPT_DIR" ]; then
-    case "$PROMPT_FILE" in /*) RUN_PROMPT_DIR="$(dirname "$PROMPT_FILE")" ;; *) RUN_PROMPT_DIR="$(pwd)/$(dirname "$PROMPT_FILE")" ;; esac
-  fi
-  LOG_DIR="$(dirname "$RUN_PROMPT_DIR")/logs"
+  # [issue #17] Anchor logs to the PM directory, never to wherever the prompt file lives: a
+  # prompt in /tmp wrote /tmp/logs/, and specs kept in logs/specs/ produced logs/logs/. The PM
+  # dir is $PM_DIR when set (as the managed path already requires), else the directory that
+  # holds the framework subtree (<pm>/framework/dispatch.sh), else — in a framework source
+  # checkout — this script's own directory.
+  if [ -n "${PM_DIR:-}" ]; then LOG_PM_DIR="$PM_DIR"
+  elif [ "$(basename "$DISPATCH_HERE")" = framework ]; then LOG_PM_DIR="$(dirname "$DISPATCH_HERE")"
+  else LOG_PM_DIR="$DISPATCH_HERE"; fi
+  LOG_DIR="$LOG_PM_DIR/logs"
 fi
 # Resolve explicit PM context first; installed projects require a current lease even
 # when hooks are disabled. Legacy projects keep the old dispatch contract.
@@ -222,6 +231,17 @@ if [ -z "$VERIFY_CMD" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_VERIFY:-0}" !=
   echo "[dispatch] refusing a build dispatch with no verify-cmd (arg 5)." >&2
   echo "           Pass the project's verify command from PROJECT.md § Verify command," >&2
   echo "           or set DISPATCH_ALLOW_NO_VERIFY=1 to override deliberately." >&2
+  exit 2
+fi
+# --- [issue #15] A build dispatch without --worktree runs in the live checkout -----------
+# dispatch.md said "always pass it for build tasks" — prose, and only the managed (leased)
+# path enforced it. Same precedent as [0a]: the verifier rule was ignored on 86% of runs
+# until it became exit 2. Refuse every build (non --read-only) dispatch without a worktree;
+# DISPATCH_ALLOW_NO_WORKTREE=1 is the deliberate, TASK_LOG-justified exception.
+if [ -z "$WORKTREE_BRANCH" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_WORKTREE:-0}" != "1" ]; then
+  echo "[dispatch] refusing a build dispatch with no --worktree <branch>." >&2
+  echo "           Builders never run in the live checkout (dispatch.md). Pass the task's branch," >&2
+  echo "           or set DISPATCH_ALLOW_NO_WORKTREE=1 to override deliberately." >&2
   exit 2
 fi
 # --- [issue #36/#37] A verify-cmd that cannot compile the tests -------------------------
@@ -514,10 +534,10 @@ fi
 # silently truncated at the first block and three gates went untested — a check that cannot
 # fail (#34). Do not remove; the selftest fails loudly if either marker goes missing.
 
-# Logs anchor to the PM directory, not the caller's cwd: the task prompt always lives in
-# <pm-dir>/prompts/, so default LOG_DIR to the prompts dir's sibling logs/. This keeps
-# cost.jsonl and run logs in one place no matter where the orchestrator invokes dispatch
-# from (e.g. a git worktree or any other cwd). OPENCODE_DISPATCH_LOG_DIR overrides.
+# Logs anchor to the PM directory, not the caller's cwd or the prompt file's location (see
+# the LOG_DIR resolution near the top, issue #17). This keeps cost.jsonl and run logs in one
+# place no matter where the orchestrator invokes dispatch from or where a prompt was written.
+# OPENCODE_DISPATCH_LOG_DIR overrides.
 mkdir -p "$LOG_DIR"
 # Per-run uniqueness (issue #5): the second-granularity timestamp alone collides when the same
 # prompt is dispatched twice within one second (tier escalation, retries) and the fixed
@@ -568,7 +588,7 @@ DIR_ABS="$(cd "$DIR" 2>/dev/null && pwd || echo "$DIR")"
 BUILDER_ENV=(env -u PM_ORCHESTRATOR_TOKEN -u PM_ORCHESTRATOR_SESSION -u PM_ORCHESTRATOR_PROVIDER -u PM_DIR)
 if [ -n "$WORKTREE_BRANCH" ]; then
   WT_ROOT="$(dirname "$DIR_ABS")/$(basename "$DIR_ABS")-worktrees"
-  WT_PATH="${WT_ROOT}/$(basename "${PROMPT_FILE%.md}")"
+  WT_PATH="${WT_ROOT}/$(worktree_dirname "$WORKTREE_BRANCH")"
   # If the branch is already checked out in some worktree (re-dispatch, review fixup on the
   # same PR branch under a different prompt name), reuse that path — `worktree add` would
   # hard-fail on an already-checked-out branch (issue #2).
@@ -576,7 +596,18 @@ if [ -n "$WORKTREE_BRANCH" ]; then
     | awk -v b="branch refs/heads/${WORKTREE_BRANCH}" '/^worktree /{p=substr($0,10)} $0==b{print p; exit}')"
   if [ -n "$EXISTING_WT" ]; then
     WT_PATH="$EXISTING_WT"
-  elif [ ! -d "$WT_PATH" ]; then
+  elif [ -d "$WT_PATH" ]; then
+    # [issue #45] The path exists but the branch is checked out nowhere, so whatever is there
+    # is NOT this branch (a sanitised-name collision such as a/b vs a-b, a detached or foreign
+    # checkout, a stale directory). Reusing it would silently build on the wrong branch —
+    # refuse instead; this is the check that can fail.
+    WT_HAS="$(git -C "$WT_PATH" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "<no branch>")"
+    if [ "$WT_HAS" != "$WORKTREE_BRANCH" ]; then
+      echo "[dispatch] worktree path $WT_PATH exists but holds '$WT_HAS', not '$WORKTREE_BRANCH'." >&2
+      echo "           Refusing to reuse it (issue #45). Remove it, or pick a distinct branch name." >&2
+      exit 2
+    fi
+  else
     mkdir -p "$WT_ROOT"
     if git -C "$DIR_ABS" show-ref --verify --quiet "refs/heads/${WORKTREE_BRANCH}"; then
       git -C "$DIR_ABS" worktree add "$WT_PATH" "$WORKTREE_BRANCH" >&2 \
@@ -682,6 +713,13 @@ print(f'{i}|{o}|{c}')" "$CLAUDE_RESULTS" 2>/dev/null)"
     "$(basename "$LOG_FILE")" | python3 "$DISPATCH_HERE/scripts/append-cost.py" "$LOG_DIR" || echo "[dispatch] cost telemetry append failed" >&2
 }
 
+# [issue #49] Every builder invocation ends its options with `--` before the prompt/message.
+# Rendered prompts (prompts/*.md) begin with `---` frontmatter, and all three CLIs parsed that
+# bare positional as an option: codex "unexpected argument '---...'", claude "unknown option",
+# opencode printed usage — every backend failed before the model ran. `--` is honoured by all
+# three (codex exec / exec resume, claude -p, opencode run; verified against codex-cli 0.157,
+# Claude Code 2.1.283, opencode 1.17.18). Stdin is NOT used for the prompt: codex keeps
+# `< /dev/null` (issue #10), and codex appends piped stdin to the prompt anyway.
 run_opencode_fresh() {
   local model="$1"
   # Fresh session seeded with the task prompt file.
@@ -690,7 +728,7 @@ run_opencode_fresh() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
-    "$PROMPT_TEXT" \
+    -- "$PROMPT_TEXT" \
     < /dev/null 2>> "$LOG_FILE"
 }
 
@@ -705,7 +743,7 @@ run_opencode_continue() {
     --print-logs --log-level INFO \
     --dir "$DIR" \
     --dangerously-skip-permissions \
-    "$message" \
+    -- "$message" \
     < /dev/null 2>> "$LOG_FILE"
 }
 
@@ -845,7 +883,7 @@ run_codex_fresh() {
     --json -C "$DIR" -s workspace-write --skip-git-repo-check \
     -c sandbox_workspace_write.network_access=true \
     -m "$(model_of "$spec")" "${args[@]}" \
-    "$PROMPT_TEXT"
+    -- "$PROMPT_TEXT"
   local ec=$?
   codex_postrun
   return $ec
@@ -863,7 +901,7 @@ run_codex_continue() {
       --json --skip-git-repo-check \
       -c sandbox_workspace_write.network_access=true \
       -m "$(model_of "$spec")" "${args[@]}" \
-      "$message"
+      -- "$message"
   local ec=$?
   codex_postrun
   return $ec
@@ -897,7 +935,7 @@ run_claude_fresh() {
       -p --output-format json \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
-      "$PROMPT_TEXT" ) \
+      -- "$PROMPT_TEXT" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun
@@ -911,7 +949,7 @@ run_claude_continue() {
       -p --output-format json --resume "$CLAUDE_SESSION_ID" \
       --model "$(model_of "$spec")" \
       --dangerously-skip-permissions \
-      "$message" ) \
+      -- "$message" ) \
     < /dev/null > "$CLAUDE_RESULTS.turn" 2>> "$LOG_FILE"
   local ec=$?
   claude_postrun

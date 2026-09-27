@@ -116,6 +116,9 @@ Inspect ownership, run records, process identity and worktrees. Live builders re
 completed runs need their actual outputs and verifier/review results checked; uncertain
 runs require reconciliation. No missing finish record, timeout or stale heartbeat alone
 proves that a build failed. Check the code repository and shipped commits before retrying.
+A task TASK_LOG shows shipped but PLAN still holds `in_progress` is recorded `done` with a
+`state_correction` event carrying `evidence:` (`.claude/rules/state.md` § Recovery Protocol),
+never a failure.
 
 For a dead owner, `takeover` requires the current evidence hash and a written reason.
 For a live owner, use `handoff` or release from that owner. New ownership invalidates the

@@ -173,3 +173,27 @@ If invoked mid-project (context was reset, prior session ended):
 4. Reconcile dead/ambiguous reservations before retry; do not increment failure_count merely
    because a session ended. A missing finish record is not proof of failure.
 5. If evidence cannot establish what happened, keep the task blocked pending reconciliation.
+6. **Shipped, but the PLAN write was lost** (issue #29): an `in_progress` task whose TASK_LOG
+   shows terminal evidence (`pr_opened` + merge, `task_completed`, a `stage_complete` naming
+   it, branch/worktree removal) is `done`. Record it `done` with the `completed_at` the log
+   gives, log a `state_correction` — never `task_failed`/`task_interrupted` — and leave
+   `failure_count` unchanged.
+
+### `state_correction`
+
+Corrects durable state that disagrees with the evidence. It must carry its own proof: a
+correction without `evidence:` is an auditable violation, like an `@high` dispatch with no
+`burn_proxy`.
+
+```markdown
+### <ISO8601> · state_correction
+```yaml
+task_id: <id>
+agent: pm
+field: <status | completed_at | ...>     # what PLAN.md had wrong
+from: <value PLAN.md had>
+to: <corrected value>
+evidence: <REQUIRED — TASK_LOG event timestamps/types, PR URL, merge commit SHA>
+note: <one line, optional>
+```
+```
