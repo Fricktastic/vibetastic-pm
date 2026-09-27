@@ -421,7 +421,7 @@ printf 'not json' | OPENCODE_DISPATCH_LOG_DIR="$BURN_TMP/logs" python3 scripts/l
 if [ $? = 0 ]; then pass "malformed hook input never fails the session"; else fail "partner-burn blocked on malformed input"; fi
 rm -rf "$BURN_TMP"
 
-echo "[selftest] plan-lint handles a real live PLAN without crashing"
+echo "[selftest] live PLANs pass the plan-lint exit contract (0/3 ok; 1/2/crash fail — issue #24)"
 # Absolute paths on purpose: relative ones do not resolve inside a git worktree, where the
 # [ -r ] guard silently turned a skipped check into a pass and gave false confidence.
 #
@@ -456,10 +456,27 @@ else
   done
   [ $# -gt 0 ] || echo "  skip (no sibling *-pm/PLAN.md found; see .selftest-live-plans.example)"
 fi
+# [issue #24] The lint exit contract (.claude/rules/state.md): 0 clean and 3 vocabulary drift
+# pass; 1 is STRUCTURAL corruption, 2 unreadable, anything else a crash — all fail. This used
+# to pass every exit <= 3, so a structurally corrupt live PLAN printed "ok (exit 1)".
+live_lint() {  # path -> pass/fail line per the exit contract
+  bash scripts/plan-lint.sh "$1" >/dev/null 2>&1; local got=$?
+  case "$got" in
+    0|3) pass "$1 (exit $got)" ;;
+    1)   fail "$1 (STRUCTURALLY CORRUPT, plan-lint exit 1)" ;;
+    2)   fail "$1 (unreadable, plan-lint exit 2)" ;;
+    *)   fail "$1 (crashed, exit $got)" ;;
+  esac
+}
+# The classifier itself, against fixtures, in a subshell so its verdicts do not touch FAIL.
+for lc in plan-good.md:ok plan-vocab.md:ok plan-bad-escape.md:FAIL plan-missing-field.md:FAIL; do
+  lc_verdict="$( (live_lint "tests/fixtures/${lc%%:*}") | awk '{print $1}')"
+  if [ "$lc_verdict" = "${lc##*:}" ]; then pass "live-PLAN check: ${lc%%:*} -> ${lc##*:}"
+  else fail "live-PLAN check misclassified ${lc%%:*} (got '$lc_verdict', want '${lc##*:}')"; fi
+done
 for live in "$@"; do
   if [ ! -r "$live" ]; then printf '  skip %s (not present)\n' "$live"; continue; fi
-  bash scripts/plan-lint.sh "$live" >/dev/null 2>&1; got=$?
-  if [ "$got" -le 3 ]; then pass "$live (exit $got)"; else fail "$live (crashed, exit $got)"; fi
+  live_lint "$live"
 done
 
 echo "[selftest] Xcode verification-boundary preamble (issue #37)"
