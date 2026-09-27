@@ -143,4 +143,8 @@ When all tasks in Stage N reach `status: done`:
 3. Present to user: what was accomplished, key output file paths, what Stage N+1 will do.
 4. Say: *"Stage [N name] complete — auto-advancing to Stage [N+1 name]. Reply now to adjust or pause."*
 5. **Do not wait.** Set `stages[N+1].status: in_progress`, append `stage_transition`, enter the dispatch loop.
-6. If the user sends adjustments (before or during Stage N+1), apply them to PLAN.md/SPEC.md and re-dispatch as needed.
+6. **Consolidate lessons** (`framework/RULES.md` § Lesson consolidation) once the new stage's
+   first dispatches are running in the background — merge duplicates, retire lessons a
+   mechanism now enforces, keep the active set under its cap, log `lessons_consolidated`. It
+   never delays a dispatch.
+7. If the user sends adjustments (before or during Stage N+1), apply them to PLAN.md/SPEC.md and re-dispatch as needed.

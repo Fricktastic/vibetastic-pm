@@ -168,9 +168,42 @@ A stage moves to `done` when all tasks with that `stage:` id have `status: done`
 2. Summarize the completed stage in chat: what was built/produced, key outputs, and what Stage N+1 will do.
 3. Say: *"Stage N ([name]) is complete — auto-advancing to Stage N+1 ([name]). Reply now if you want to adjust or pause."*
 4. **Do not wait.** Immediately mark the next stage `status: in_progress`, append `stage_transition` to TASK_LOG, and dispatch the first ready tasks.
-5. If the user sends adjustments before or during Stage N+1, accept them and update PLAN.md/SPEC.md (re-dispatch as needed).
+5. Run the **lesson consolidation** pass below while those dispatches run.
+6. If the user sends adjustments before or during Stage N+1, accept them and update PLAN.md/SPEC.md (re-dispatch as needed).
 
 **Rationale:** the self-correction loop and tier escalation keep per-task quality bounded without a human, so the stage boundary no longer needs a hard stop. Gate 1 still guarantees the spec was right before any of this runs.
+
+---
+
+### Lesson consolidation (every stage transition, issue #50)
+
+Projects accumulate lessons — hard-won rules in the project's own instructions (its CLAUDE.md /
+AGENTS.md outside the managed harness block, a `LESSONS.md`, or wherever the project keeps
+them). They only ever grow: one field project reached ~150, most restating each other or
+guarding against failures a mechanism now blocks, and a long rule list is the kind of prose
+that erodes. The lessons are **project-owned**; the framework supplies only this trigger and
+procedure.
+
+**Trigger:** every Gate 3 stage transition, after the next stage's first dispatches are
+running. Never block a dispatch on it. It can also be run on the operator's request.
+
+**Procedure:**
+
+1. **Inventory** the active lessons (a read-only cheap-tier dispatch can do the first pass
+   and propose the edits; the orchestrator decides and applies).
+2. **Merge duplicates** — lessons naming the same failure and the same remedy become one,
+   keeping every evidence pointer (task ids, issue numbers).
+3. **Retire what a mechanism now enforces** — if a hook, a `dispatch.sh` refusal, plan-lint,
+   the review gates or a doctor check now blocks the failure a lesson warns about, move the
+   lesson to an archive section with one line naming the mechanism. Archive, never delete: the
+   evidence is why the mechanism exists.
+4. **Cap the active set** — keep it at or below the project's cap (30 unless the project's
+   PROJECT.md Notes state another number). Over the cap, archive the lessons with the least
+   recent evidence first, and propose the most expensive recurring ones as framework issues
+   (§ Self-Improvement Capture): a rule that must hold everywhere, or only works when
+   enforced, belongs upstream as a mechanism.
+5. **Log** `lessons_consolidated` in TASK_LOG with `before`, `merged`, `retired`, `after`,
+   and the mechanisms cited for each retirement.
 
 ---
 

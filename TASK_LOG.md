@@ -37,4 +37,6 @@ Valid event_type values:
   critic_escalated    - Critique round cap reached; fields: rounds, unresolved findings
   review_escalated    - Reviewer fixup round cap reached; fields: rounds, unresolved findings
   round_cap_override  - Operator granted extra rounds; fields: role, extra, reason
+  lessons_consolidated - Stage-transition lesson pass; fields: before, merged, retired,
+                        after, mechanisms
 -->

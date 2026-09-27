@@ -496,6 +496,25 @@ PY
 then pass "TASK_LOG template and state.md define state_correction with required evidence"
 else fail "state_correction is undocumented or does not require evidence"; fi
 
+echo "[selftest] stage transitions trigger lesson consolidation (issue #50)"
+# Procedure text, not enforcement — but a trigger that silently drops out of the Gate 3
+# steps is a rule nobody runs. Assert both providers' Gate 3 text names it, RULES.md carries
+# the procedure, and the TASK_LOG vocabulary has its event.
+if python3 - .claude/rules/lifecycle.md RULES.md ORCHESTRATOR.md TASK_LOG.md <<'PY'
+import re, sys
+life, rules, orch, log = (open(p).read() for p in sys.argv[1:5])
+gate3 = life.split('### Gate 3 Detail', 1)[1]
+assert 'Lesson consolidation' in gate3, 'lifecycle.md Gate 3 lost the trigger'
+proc = rules.split('### Lesson consolidation', 1)[1].split('\n## ', 1)[0]
+for step in ('Merge duplicates', 'Retire what a mechanism now enforces', 'Cap the active set', 'lessons_consolidated'):
+    assert step in proc, 'RULES.md procedure lost: ' + step
+assert 'lesson-consolidation' in orch, 'ORCHESTRATOR.md (Codex path) lost the trigger'
+vocab = log.split('Valid event_type values:', 1)[1].split('-->', 1)[0]
+assert re.search(r'^\s+lessons_consolidated\s+-', vocab, re.M), 'TASK_LOG vocabulary lost the event'
+PY
+then pass "Gate 3 trigger, RULES.md procedure and lessons_consolidated event are present"
+else fail "lesson consolidation trigger/procedure/event is missing"; fi
+
 echo "[selftest] builder preamble: working agreement (issue #50) + Xcode boundary (issue #37)"
 # Sourcing dispatch.sh is not possible (it runs), so exercise prompt_preamble in isolation by
 # extracting the function and driving it with the cases that matter. Bound the extraction

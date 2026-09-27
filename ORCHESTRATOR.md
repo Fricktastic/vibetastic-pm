@@ -171,7 +171,9 @@ Only true failures after the configured ladder is exhausted trigger the failure 
 
 - Gate 1: a draft SPEC needs the user's explicit approval before planning/building.
 - Gate 2: failure_count reaches 2; wait for the user's retry/skip/abort decision.
-- Stage transitions auto-advance with a summary; never invent a new approval gate.
+- Stage transitions auto-advance with a summary; never invent a new approval gate. Each
+  transition also runs the lesson-consolidation pass (RULES.md § Lesson consolidation) without
+  holding up the next stage's dispatches.
 - `risk: true` or `security: true` work requires family-diverse pre-build critique; resolve
   BLOCKING findings. Legacy tasks without a `risk:` field keep the R1/R2 rule. dispatch.sh
   refuses the build until `scripts/review_gate.py adjudicate` records `proceed` or a logged
