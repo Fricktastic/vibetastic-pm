@@ -1,7 +1,9 @@
 <!-- Shared mechanics for both providers; ORCHESTRATOR.md defines harness adaptation. -->
 
 Managed projects: pass `--role reviewer|critic --author-model <actual-model>` for gate
-reviews, and `--security` when applicable. Exit 31 stops for ownership/policy/reconciliation
+reviews, and `--security` when applicable. Every `--role critic|reviewer` run needs its task
+(`--task T0XX`, or a `critic-T0XX.md` / `review-T0XX.md` prompt name) — round caps and the
+critique gate are counted per task (§ Round caps). Exit 31 stops for ownership/policy/reconciliation
 without changing failure_count. The lease's session routing profile overrides normal
 backend preferences for this session only. All durable changes use the state commands.
 
@@ -18,7 +20,8 @@ loop:
     else → blocked state (investigate and report to user)
     break
   for each task in ready (parallel only if same stage and no inter-dependencies):
-    if task.verify_tier in {R1,R2} or task.security → run Pre-Build Critique first (below)
+    if task.risk or task.security → run Pre-Build Critique first (below)
+       (legacy task with no risk: field → the old rule: verify_tier in {R1,R2} or security)
     dispatch task
     on return → apply result (see state.md)
   re-evaluate ready tasks
@@ -51,6 +54,10 @@ Read `framework/prompts/architect.md`. Substitute:
 - `{{SPEC_CONTENT}}` → full body of `SPEC.md`
 - `{{DESIGN_SPEC_CONTENT}}` → full contents of `prompts/design-spec.md`
 - `{{TARGET_PROJECT_PATH}}` → absolute path to the target project
+- `{{PROJECT_POLICY}}` → output of `python3 framework/scripts/project_policy.py --pm-dir . render`
+
+Register each Stage-3 task's `verify_tier` and `risk` from the `Verify tier:` / `Risk:` line
+at the top of its build-spec section (issue #50).
 
 On Claude, spawn the native Architect and stage its return. On Codex, use
 `scripts/dispatch-role.py --role architect --output prompts/build-spec.md`. Parse the
@@ -77,6 +84,9 @@ Read `framework/prompts/tech-lead.md`. Substitute:
 - `{{PLAN_SUMMARY}}` → one line per task: id, title, status, notes
 - `{{TARGET_PROJECT_PATH}}` → absolute path to `../<project-name>/`
 - `{{ERROR_OUTPUT}}` → full stderr/stdout from a failed task, or "none"
+- `{{PROJECT_POLICY}}` → output of `python3 framework/scripts/project_policy.py --pm-dir . render`
+  (the project's verify-tier meanings, risk triggers and round caps; `dispatch.sh` fills a
+  placeholder left unrendered, a native Claude subagent does not)
 - `{{SPEC_OUTPUT_PATH}}` → **absolute** path the agent must write the spec to:
   `<pm-dir>/prompts/task-T0XX.md` (use the next free id; rename after PLAN.md registration
   if it changed)
@@ -126,6 +136,9 @@ After return, parse the YAML between `TECH_LEAD_RESULT_START` and
    - `depends_on` → `depends_on`
    - `suggested_tier` → look up `model` and `fallback` columns in `framework/MODELS.md` for that tier; write to `model` and `fallback_model`
    - `security` → write to `security` on the task (default `false` if absent). A `security: true` task forces the review rung up at merge time (Sonnet-minimum first pass, mandatory Opus adjudication — see `framework/VERIFY.md`).
+   - `verify_tier` → `verify_tier` (what evidence proves the task), `risk` → `risk` (whether
+     its plan is critiqued; issue #50). Always write `risk` explicitly: a task without it is
+     treated as a legacy task and critiqued at R1/R2 whatever its real risk.
    - Assign next available task id
    - Set `status: pending`, `agent: opencode`, `failure_count: 0`
 
@@ -139,19 +152,29 @@ Missing delimiter or malformed YAML → treat as parse failure.
 ## Pre-Build Critique
 
 The shift-left review rung — it reads the **plan** for gotchas before a builder writes code.
-Run it **before dispatching any build task at `verify_tier` R1/R2 or `security: true`** (R0 /
-isolated tasks skip it). Because every target-code change goes through this dispatch flow, the
-rung also covers changes the Partner talked itself into conversationally — there is no other
-path to the target code. Full rules: `framework/VERIFY.md` § Pre-build critique.
+Run it **before dispatching any build task with `risk: true` or `security: true`**. The spec
+author sets `risk` from the project's risk triggers (`PROJECT.md § Risk triggers`, rendered
+into its prompt); `verify_tier` no longer decides it — a task that needs a run-and-look to
+verify but carries no design risk skips critique (issue #50). A **legacy** task (no `risk:`
+field) keeps the old rule: critique at R1/R2 or `security: true`. Because every target-code
+change goes through this dispatch flow, the rung also covers changes the Partner talked itself
+into conversationally — there is no other path to the target code. Full rules:
+`framework/VERIFY.md` § Pre-build critique.
 
-1. **Render** `framework/prompts/critic.md`:
+**It is enforced.** `dispatch.sh` refuses (exit 31) a build of a PLAN.md task that needs
+critique until `logs/verdicts.jsonl` holds a `proceed`/`override` adjudication newer than the
+task's latest critic verdict (issue #18). A refusal is not a failure: run the critique, or
+escalate.
+
+1. **Render** `framework/prompts/critic.md` to `prompts/critic-T0XX.md`:
    - `{{PLAN}}` → **absolute** path to the task's prompt file
      (`<pm-dir>/prompts/task-T0XX.md`, or the extracted build-spec section). **Never
      relative.** This dispatch runs from the target project directory, so a PM-relative path
      does not resolve — and the critic then reviews what it can see and returns a confident
      `REWORK`. Measured: 5 critic runs could not read their plan; all 5 returned REWORK, four
      of them the same task inside twelve minutes (issue #11).
-   - `{{VERIFY_TIER}}`, `{{SECURITY}}` → the task's flags from PLAN.md
+   - `{{VERIFY_TIER}}`, `{{RISK}}`, `{{SECURITY}}` → the task's flags from PLAN.md
+   - `{{PROJECT_POLICY}}` → `python3 framework/scripts/project_policy.py --pm-dir . render`
    - `{{TARGET_PROJECT_PATH}}` → absolute path to `../<project-name>/`
    - `{{PRIOR_FINDINGS}}` → on round 1, `none`. On round 2, the previous round's FINDINGS
      block verbatim plus one clause each on how the re-spec answered it.
@@ -162,29 +185,69 @@ path to the target code. Full rules: `framework/VERIFY.md` § Pre-build critique
    configured order. Same wrapper the Reviewer uses:
 
    ```bash
-   bash framework/dispatch.sh --read-only <critic-model> ../<project-name>/ prompts/critic-T0XX.md 2>&1
+   bash framework/dispatch.sh --read-only --role critic --author-model <plan-author-model> \
+     <critic-model> ../<project-name>/ prompts/critic-T0XX.md 2>&1
    ```
+
+   On exit 0 dispatch.sh parses the critic's `CRITIC_RESULT` block, appends the verdict to
+   `logs/verdicts.jsonl` with its round number, and prints
+   `[dispatch] critic verdict for T0XX: <VERDICT>` on stderr. A missing/invalid block is
+   recorded as `MALFORMED` (still a round) — read the prose and re-run only if the round cap
+   allows.
 
 3. **Adjudicate (Partner):** read the verdict.
    - **`ERROR`** → the critic could not read the plan. This is a **configuration failure, not
      a finding**: fix the `{{PLAN}}` path and re-run. It does not count as a round and must
      never be treated as REWORK.
    - **`REWORK` / any `[BLOCKING-PLAN]` finding** → resolve before dispatch: re-spec via the
-     Tech Lead, or record an explicit user override (`critic_override` in TASK_LOG with
-     finding + reason). Do **not** dispatch the build with an unresolved `[BLOCKING-PLAN]`
-     finding — it is a gate violation.
+     Tech Lead and re-run the critic, or record an explicit user override:
+     `python3 framework/scripts/review_gate.py --pm-dir . adjudicate --task T0XX --outcome override --reason "<finding + operator decision>"`
+     plus `critic_override` in TASK_LOG. `--outcome proceed` is refused while the latest
+     verdict has `blocking_plan > 0` — an unresolved `[BLOCKING-PLAN]` cannot be dispatched.
    - **`[BLOCKING-PREEXISTENT]`** → a real defect that this plan neither causes nor worsens.
      **Register it as its own PLAN.md task** (pending, same read-write-cycle discipline) and
      **proceed with this one.** It is not this task's blocker.
    - **`[ADVISORY]`** findings → log; fold in at discretion.
    - `RECOMMENDED_VERIFY_TIER` higher than the stated tier → raise `verify_tier` on the task.
-   - Append `critic_returned` to TASK_LOG. Only then proceed to the build dispatch below.
+   - Clear the gate: `python3 framework/scripts/review_gate.py --pm-dir . adjudicate --task T0XX --outcome proceed`
+     (lease-owner only in a managed project), append `critic_returned` to TASK_LOG, and only
+     then proceed to the build dispatch below. `review_gate.py --pm-dir . status --task T0XX`
+     shows rounds, caps and gate state.
 
-**[0e] Round limit — two, then the operator.** A critic with no stopping rule does not
-converge: observed four-round REWORK loops on T024, T070 and T071, with later rounds
-surfacing pre-existing defects rather than plan defects. After **2 critic rounds on one
-task**, stop and escalate to the operator with both rounds' findings and your recommendation.
-Do not open round 3.
+## Round caps
+
+**[0e] Critique rounds — the project's cap (default 2), then the operator.** A critic with no
+stopping rule does not converge: observed four-round REWORK loops on T024, T070 and T071, with
+later rounds surfacing pre-existing defects rather than plan defects, and T211 ran five rounds
+under the prose version of this rule. `dispatch.sh --role critic` now **refuses** round
+cap+1 (exit 31). Count: every recorded critic verdict except `ERROR`.
+
+**Reviewer fixup rounds — the project's cap (default 3), then the operator.** T211 ran ten.
+A fixup round is a recorded review that did not approve (`REJECT`, any blocker, or
+`MALFORMED`). With cap 3: review 1 → fixup 1 → … → fixup 3 → review 4 is allowed; if review 4
+also rejects, both the fourth fixup build and a fifth review are refused (exit 31). Dispatch
+the reviewer as `dispatch.sh --read-only --role reviewer --author-model <builder-model>
+<reviewer-model> <diff-dir> prompts/review-T0XX.md`; name fixup prompts `fixup-T0XX*.md` (or
+pass `--task T0XX`) so the build gate knows the task.
+
+Caps live in `PROJECT.md` frontmatter (`critic_round_cap`, `reviewer_fixup_round_cap`) —
+project policy, validated by `orchestrator-doctor.py`, defaults in
+`scripts/project_policy.py`.
+
+**On a cap refusal — escalate, Gate-2 style.** Stop, and present to the operator: the task,
+every round's findings (from `logs/verdicts.jsonl` and the run logs), and your
+recommendation. Offer exactly three choices and wait for one:
+
+- **redesign** — re-spec the change via the Tech Lead. A materially different plan is
+  registered as a **new task** (the old one `superseded`), which starts with fresh rounds.
+- **override** — the operator accepts the current state. Record it:
+  `review_gate.py --pm-dir . override-cap --task T0XX --role critic|reviewer --extra <n> --reason "<decision>"`
+  for more rounds, or `review_gate.py --pm-dir . adjudicate --task T0XX --outcome override --reason "<decision>"`
+  to build over unresolved critique findings. Also log `round_cap_override` in TASK_LOG.
+- **abort** — leave the task blocked for manual inspection.
+
+Log `critic_escalated` / `review_escalated` with `rounds:` and the unresolved findings. Never
+self-approve an override; `failure_count` is untouched throughout.
 
 **[0h] Collapsing rounds — evidence type, not confidence.** A well-diagnosed bug should not pay
 the full toll, but "I already know the root cause" is self-certifying and must never be the
@@ -210,11 +273,11 @@ trim-relative `seek(to:)`, and that an existing test would go red. The root caus
 doubt in either round. A one-line diff is not a small change when the line sits in shared state.
 
 **Corollary — diff size is not a process input.** It is unknowable when the spec is written and
-uncorrelated with blast radius. Route on `verify_tier` and `security`, as the gates already do.
+uncorrelated with blast radius. Route on `risk` and `security`, as the gates already do.
 
-This bound is what makes the critique gate safe to treat as a hard precondition for dispatch
-(including under parallel fan-out, where an unbounded critic stalls a task indefinitely
-instead of blocking it). Log `critic_escalated` with `rounds: 2` and the unresolved findings.
+The round cap (§ Round caps) is what makes the critique gate safe to treat as a hard
+precondition for dispatch (including under parallel fan-out, where an unbounded critic stalls a
+task indefinitely instead of blocking it).
 
 ---
 
@@ -362,6 +425,7 @@ echoes the last 40 lines so a failure is never silent.
 | `0` | Ran and (if a verifier was set) it passed | Proceed to the staged-change check, then PR Opening |
 | `20` | Code runs but the verifier never passed within the attempt budget | **Tier escalation** (below) — not a `failure_count` event |
 | `30` | Backend unavailable (CLI missing, bad slug, burn gate closed, or the backend refused the run for quota/rate-limit/auth) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
+| `31` | Ownership/routing stop, or a review gate refused the run (critique not adjudicated, round cap reached) | Resolve per § Pre-Build Critique / § Round caps; not a `failure_count` event |
 | other non-0 | builder infra/model failure (even via fallback) | Task failure — see `state.md` (`failure_count +1`) |
 
 **Availability is live state, never handoff state (issue #51).** Always start at the first

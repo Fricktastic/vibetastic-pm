@@ -25,7 +25,7 @@ Measured on gamedaytastic:
 
 | lane | status in the flow | dispatches |
 |---|---|---|
-| critic | hard precondition for any R1+/`security` build | **104** |
+| critic | hard precondition for any R1+/`security` build (since #50: `risk`/`security`) | **104** |
 | reviewer | merge gate | **24** |
 | **diagnosis** | *advice, in this table* | **10** |
 

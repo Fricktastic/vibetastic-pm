@@ -31,4 +31,10 @@ Valid event_type values:
   state_correction    - PM corrected PLAN.md to match evidence (e.g. a shipped task left
                         in_progress); fields: field, from, to, evidence (required), note.
                         Never touches failure_count.
+  critic_returned     - Pre-build critique adjudicated; fields: round, verdict, blocking_plan,
+                        decision (the logs/verdicts.jsonl record is the gate state)
+  critic_override     - Operator overrode unresolved critique findings; fields: finding, reason
+  critic_escalated    - Critique round cap reached; fields: rounds, unresolved findings
+  review_escalated    - Reviewer fixup round cap reached; fields: rounds, unresolved findings
+  round_cap_override  - Operator granted extra rounds; fields: role, extra, reason
 -->

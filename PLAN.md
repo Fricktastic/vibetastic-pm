@@ -54,7 +54,9 @@ tasks:
       - prompts/build-spec.md
     outputs: []
     model: null
-    verify_tier: null   # R0|R1|R2 — assigned at spec time, highest tier touched; see framework/VERIFY.md
+    verify_tier: null   # R0|R1|R2 — the evidence that proves the task (project policy); see framework/VERIFY.md
+    risk: null          # true|false — a project risk trigger applies: pre-build critique required
+    security: false     # true forces critique and the Sonnet/Opus review floor
     started_at: null
     completed_at: null
     failure_count: 0

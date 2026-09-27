@@ -28,7 +28,10 @@ def metadata(reply, role, staged, promoted):
     path = re.search(r'^spec_path:\s*[\"\']?([^\n\"\']+)', result, re.M)
     if not path or path.group(1).strip() != staged:
         raise ValueError('Tech Lead metadata does not identify its staged spec')
-    for field in ('task_title', 'suggested_tier', 'security'):
+    # risk + verify_tier (issue #50): two separate decisions — what evidence proves the task,
+    # and whether its plan is critiqued. A task registered without them falls back to the
+    # legacy verify_tier rule, so a Tech Lead result that omits them is incomplete.
+    for field in ('task_title', 'suggested_tier', 'security', 'verify_tier', 'risk'):
         if not re.search(r'^' + field + r':\s*\S', result, re.M):
             raise ValueError('missing Tech Lead metadata: ' + field)
     result = re.sub(r'^spec_path:.*$', 'spec_path: ' + json.dumps(promoted), result, flags=re.M)
