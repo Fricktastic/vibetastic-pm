@@ -407,6 +407,14 @@ first-pass review runs on **Sonnet minimum** (not the cheap opencode tier) and a
 wrong: a missed security bug ships silently rather than failing a verify loop. See `VERIFY.md`
 § Security-sensitive tasks.
 
+**Inline authoring gate (#23).** A builder writes target code by default. The orchestrator may
+author a change itself only when all five hold: one file, no new mechanism, off the critical
+runtime path (so never `risk`/`security`), verifiable without a new test, and declared in
+TASK_LOG as `inline_authored`. It still works in a worktree, and still merges only through
+`merge_gate.py` with a family-diverse review of its commit — a trivial layout nudge skips the
+spec, critique and dispatch, not the merge evidence. See `.claude/rules/pm-scope.md`
+§ Inline authoring gate.
+
 **Codex burn-gated `sol@high` rung.** To preserve the scarcer Claude subscription window, the
 codex heavy ladder now extends one rung: after `gpt-5.6-sol@medium` fails, dispatch attempts
 `gpt-5.6-sol@high` **once** before falling through to the claude backend — but only if the

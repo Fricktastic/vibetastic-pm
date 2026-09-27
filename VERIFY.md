@@ -149,9 +149,11 @@ does the wrong thing or breaks something adjacent.
 conversationally). The spec author sets `risk: true` when any of the **project's risk
 triggers** applies (`PROJECT.md § Risk triggers`; generic defaults: shared state or
 invariants, a persisted format / contract / API, concurrency or timing, an open design
-decision). `risk: false` tasks skip it **whatever their verify tier**. Because every
-target-code change flows through `dispatch.sh` (the Partner never writes target code), wiring
-the rung to the dispatch boundary catches the conversational path for free — see
+decision). `risk: false` tasks skip it **whatever their verify tier**. Every target-code
+change flows through `dispatch.sh` except one the Partner authors inline, and that is allowed
+only for a change that would be `risk: false` and not `security`
+(`.claude/rules/pm-scope.md` § Inline authoring gate), so wiring the rung to the dispatch
+boundary still catches the conversational path for free — see
 `.claude/rules/dispatch.md` § Pre-Build Critique.
 
 **Why not the tier any more.** Critique used to run on every R1/R2 task. With R2 defined as

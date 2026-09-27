@@ -173,6 +173,7 @@ $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <org/repo
 | `observation_recorded` | a runtime observation was recorded (`merge_gate.py observe`) | `sha`, `kind`, `evidence`, `summary` |
 | `merge_gate` | `merge_gate.py check`/`merge` ran | `sha`, `base_sha`, `allowed`, `checks`, `pr` |
 | `merge_gate_override` | the operator waived one check for one commit | `sha`, `check`, `reason` |
+| `inline_authored` | the orchestrator authored a change itself (`.claude/rules/pm-scope.md` § Inline authoring gate, #23) | `model`, `file`, `branch`, `observation`, `conditions` |
 
 The full vocabulary is in the `TASK_LOG.md` template header (also `critic_returned`,
 `critic_override`, `lessons_consolidated`).

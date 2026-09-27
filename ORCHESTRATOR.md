@@ -130,7 +130,11 @@ Use `orchestrator-state.py <command> --help` for the exact takeover/handoff argu
 
 ## Dispatch and role routing
 
-The partner owns intent, decisions and lean summaries. Builders own target-code edits.
+The partner owns intent, decisions and lean summaries. Builders own target-code edits,
+except a change that meets all five conditions of `.claude/rules/pm-scope.md` § Inline
+authoring gate: the partner may author that itself in a worktree, declared as
+`inline_authored`, and it still merges only through `scripts/merge_gate.py` with a
+family-diverse review of the partner's commit.
 Dispatch build work with `--worktree`; keep long runs under the native tool's session/job
 handle. Claude uses Bash background jobs; Codex uses exec session IDs and polls their results.
 Never launch detached `nohup`/`disown` processes. Record run IDs and worktree ownership.

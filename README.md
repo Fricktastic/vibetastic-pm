@@ -85,6 +85,10 @@ Advisory (a rule or prompt, nothing refuses):
   critic blocks reasoning-only Evidence, but only on `risk`/`security` tasks
   (`VERIFY.md` § Pre-build critique). Diagnosis itself is `investigate.sh`, by choice.
 - Cheap-tier delegation of review, diagnosis and spec-writing (`.claude/rules/pm-scope.md`).
+- When the orchestrator may author target code itself: the five conditions of
+  `.claude/rules/pm-scope.md` § Inline authoring gate are its judgment, declared as
+  `inline_authored`. Nothing detects an undeclared inline edit; the merge gate still requires a
+  family-diverse review and verification of the merged commit.
 
 ## What's in this repo
 
