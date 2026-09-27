@@ -77,7 +77,7 @@ Invoke when new work is identified not already specced in `prompts/build-spec.md
 - New screen, new UI component, or any feature with visual design decisions → **Designer first, then Tech Lead**
 - Bug fix or non-UI change → **Tech Lead directly**
 
-Do not create a PLAN.md task without first running Tech Lead (unless trivially covered by existing spec). Do not run Tech Lead on UI work without a Designer pass first.
+Do not create a PLAN.md task without first running Tech Lead (unless trivially covered by existing spec, or an inline change under `pm-scope.md` § Inline authoring gate). Do not run Tech Lead on UI work without a Designer pass first.
 
 Read `framework/prompts/tech-lead.md`. Substitute:
 - `{{ISSUE_DESCRIPTION}}` → bug/requirement as described by the user (or PM's failure analysis)
@@ -161,9 +161,11 @@ Run it **before dispatching any build task with `risk: true` or `security: true`
 author sets `risk` from the project's risk triggers (`PROJECT.md § Risk triggers`, rendered
 into its prompt); `verify_tier` no longer decides it — a task that needs a run-and-look to
 verify but carries no design risk skips critique (issue #50). A **legacy** task (no `risk:`
-field) keeps the old rule: critique at R1/R2 or `security: true`. Because every target-code
-change goes through this dispatch flow, the rung also covers changes the Partner talked itself
-into conversationally — there is no other path to the target code. Full rules:
+field) keeps the old rule: critique at R1/R2 or `security: true`. Because target-code
+changes go through this dispatch flow, the rung also covers changes the Partner talked itself
+into conversationally. The one other path — the Partner authoring inline
+(`pm-scope.md` § Inline authoring gate) — is closed to any change that would be `risk: true`
+or `security: true`. Full rules:
 `framework/VERIFY.md` § Pre-build critique.
 
 **It is enforced.** `dispatch.sh` refuses (exit 31) a build of a PLAN.md task that needs
@@ -564,6 +566,8 @@ $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <issue_re
   commit it read (`head_sha`, `tree_clean`), and the gate accepts only an approving review of
   the exact commit being merged from a clean tree. A Sonnet-subagent review is recorded with
   `review_gate.py record --role reviewer --task T0XX --output <reply> --head-sha <sha> --tree-clean true`.
+  An inline task (`agent: pm`, `pm-scope.md` § Inline authoring gate) is reviewed with
+  `--author-model <orchestrator model>`: the orchestrator is its author.
 - `merge` runs `check`, then `gh pr merge --match-head-commit <sha>`, so GitHub itself refuses
   if the PR head moved after the check. Use `check` alone when something else merges.
 - **A refusal is exit 31** — a policy stop, never a `failure_count` event. Re-run the evidence

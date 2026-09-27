@@ -300,8 +300,8 @@ observation_rationale: "<one sentence — what fails on the base tree and passes
 transit the orchestrator's context twice — once as your result, once as the orchestrator's
 `Write` call — measured at ~50k tokens in a single session for four specs. It also rendered
 in the operator's terminal as what looked like a large uncommitted Swift diff, undermining
-the one check the lane rule depends on (that product code comes only from dispatched
-builders). And hand-transcribing your output introduced silent corruption: results came back
+the one check the lane rule depends on (that product code comes from dispatched builders,
+or from a declared `inline_authored` change). And hand-transcribing your output introduced silent corruption: results came back
 HTML-escaped, so `&lt;` had to be unescaped by hand across Swift generics and closure types.
 Writing the file directly removes all three, because the text never round-trips through a
 model's output.

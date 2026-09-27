@@ -93,6 +93,35 @@ unreadability. Unknown linter exits are blocking. PostToolUse lint is feedback o
 transactional command is the authoritative mutation path. Uninstalled legacy projects
 must still lint immediately after each write until their adapters are installed.
 
+## Inline authoring
+
+A change the orchestrator authors itself (`pm-scope.md` § Inline authoring gate, issue #23)
+is declared in the PLAN transaction that registers its task, before the change is committed.
+It is what makes an orchestrator-authored change distinguishable from a dispatched one; an
+inline change with no `inline_authored` entry is an auditable violation, like a
+`state_correction` without `evidence:`.
+
+```markdown
+### <ISO8601> · inline_authored
+```yaml
+task_id: <id>
+agent: pm
+model: <orchestrator model — the --author-model its reviewer is diverse from>
+file: <the one target-project path changed>
+branch: task/<id>
+observation: <runtime | none>
+conditions:                 # one line each: why it holds
+  bounded: <what the change is>
+  no_new_mechanism: <...>
+  off_critical_path: <...>
+  verifiable: <the existing test, or the runtime observation to record>
+note: <one line, optional>
+```
+```
+
+From there the task follows `dispatch.md` § PR Opening and § Merge gate like a dispatched
+one; its closing event cites the merged SHA.
+
 ---
 
 ## Volatile handoff claims (issue #51)

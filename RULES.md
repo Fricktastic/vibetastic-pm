@@ -367,7 +367,7 @@ These override convenience. Each cost real cycles when ignored.
 
 5. **A well-diagnosed bug still pays for the placement check.** Where lesson 4's measurement already exists, the spec cites the artifact and skips re-deriving the root cause — but the pre-build critique's placement/blast-radius pass is never collapsed, and diff size is never a process input. The gate is the *type* of evidence (observed runtime artifact vs. reasoning from source), never the author's confidence in it. Full rule: `.claude/rules/dispatch.md` § Pre-Build Critique `[0h]`. (Cost of ignoring, in the other direction: a one-line fix on a shared audio path where both critic rounds found real defects — the second caught that the guard as specified would land in the shared writer and break a working Apple Music code path.)
 
-6. **Tight visual/layout tuning does not belong in the dispatch loop.** Build + test + screenshot per nudge is far too slow for "move it up 40pt." Do trivial visual nudges directly, or hand the on-device visual pass to the human. Automated screenshots confirm an artifact's presence/absence; they are weak for landing a precise interaction frame (e.g. a mid-scroll state).
+6. **Tight visual/layout tuning does not belong in the dispatch loop.** Build + test + screenshot per nudge is far too slow for "move it up 40pt." Author trivial visual nudges inline — within the five conditions of `.claude/rules/pm-scope.md` § Inline authoring gate, declared in TASK_LOG and still through the merge gate — or hand the on-device visual pass to the human. Automated screenshots confirm an artifact's presence/absence; they are weak for landing a precise interaction frame (e.g. a mid-scroll state).
 
 ## Checks must be able to fail (issue #34)
 

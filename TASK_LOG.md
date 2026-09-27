@@ -45,4 +45,7 @@ Valid event_type values:
                         base_sha, allowed, checks (status per check), pr
   merge_gate_override - Operator waived one merge-gate check for one commit; fields: sha,
                         check, reason
+  inline_authored     - Orchestrator authored a change itself under the inline authoring
+                        gate; fields: model, file, branch, observation, conditions (one line
+                        per condition met)
 -->
