@@ -43,7 +43,10 @@ This is deliberately **not** a block. `pm-scope.md`'s "the user asked you direct
 exemption is real and the orchestrator is also the human's thinking partner — a hook cannot
 tell answering Tim from diagnosing by reading. If the ratio does not move, the next lever is
 giving diagnosis a *place in the flow* (a defect task that cannot enter the build loop
-without an instrumentation artifact or a diagnosis report attached), not a wall.
+without an instrumentation artifact or a diagnosis report attached), not a wall. Issue #46
+took the first step: a defect-fix spec carries Symptom / Mechanism / Evidence, and the critic
+blocks a critiqued (`risk`/`security`) defect fix whose Evidence is missing or reasoning-only
+(`VERIFY.md` § Pre-build critique).
 
 ## Hard rules (unchanged from the gates)
 

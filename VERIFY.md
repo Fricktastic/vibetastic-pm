@@ -171,6 +171,15 @@ adjudication newer than the task's latest critic verdict. Critic runs record the
 there themselves (a structured `CRITIC_RESULT` block, never parsed from prose); the Partner
 records its decision with `scripts/review_gate.py adjudicate`.
 
+**Defect fixes carry their evidence (issue #46).** A Tech Lead defect-fix spec names
+**Symptom**, **Mechanism** and **Evidence**, and the Evidence is an observed artifact cited by
+path, never reasoning from source (`RULES.md` § Operating lessons, lesson 4). With only
+reasoning, the Tech Lead specs an instrumentation task instead of the fix. The critic returns
+`[BLOCKING-PLAN]` for a defect fix whose Evidence is missing, reasoning-only, or shows only the
+symptom, so the existing gate holds it. The check rides on the critique, so it covers
+`risk`/`security` tasks only; a `risk: false` defect fix carries the fields but nothing
+checks them.
+
 Cost structure — identical cheap-first / Opus-adjudicates split as diff review:
 
 1. **The critique runs on a cheap read-only tier.** Dispatch `dispatch.sh --read-only --role

@@ -304,7 +304,11 @@ The Architect's build-spec covers the work known at project start. It will not c
 **What the Tech Lead does:**
 1. Reads relevant source files in the target project to understand current state
 2. Fetches Apple/framework docs via Sosumi MCP if the issue involves Apple APIs
-3. Writes a precise, self-contained task spec (root cause, files to change, implementation steps, commit plan)
+3. Writes a precise, self-contained task spec (root cause, files to change, implementation steps, commit plan).
+   A bug fix also names the **Symptom**, the **Mechanism** and the **Evidence**: an observed
+   artifact (a device log, an instrumentation run, a failing test) cited by path. With only
+   reasoning from the source, it specs an instrumentation task first and the fix after the log
+   exists.
 4. Returns structured metadata: task title, branch, issue refs, suggested tier, and the
    `verify_tier`, `risk`, `security` and `observation` flags
 
@@ -446,7 +450,8 @@ adjudicate` (`proceed`, or an operator `override` with a reason); until it does,
 `dispatch.sh` refuses the build with exit 31. Critique rounds (default 2) and reviewer fixup
 rounds (default 3) are capped per task in `PROJECT.md`; at the cap the next round is refused
 and the operator chooses redesign, override or abort. Exit 31 never counts as a failure.
-See `.claude/rules/dispatch.md` § Round caps.
+See `.claude/rules/dispatch.md` § Round caps. For a bug fix the critic also checks the
+spec's Evidence and blocks one that is missing or only reasoning from source (issue #46).
 
 **Merge gate.** Nothing merges through a plain `gh pr merge`. `scripts/merge_gate.py` records
 the test-suite run, the approving review and the task's observation — a test that fails on

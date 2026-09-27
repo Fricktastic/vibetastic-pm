@@ -48,6 +48,44 @@ Review gates are enforced by the scripts, not left to the orchestrator's discipl
 
 See `VERIFY.md` for the rules and `.claude/rules/dispatch.md` for the procedure.
 
+## What this framework already covers
+
+Check this list before proposing a new rule or adopting an imported plan. A plan that assumes
+another harness (e.g. `superpowers:executing-plans`) should be translated onto these
+mechanisms, not run beside them. "Enforced" means a script refuses or records the thing
+itself; "advisory" means a prompt or rule asks for it and nothing checks.
+
+Enforced:
+
+| Failure mode | What stops it | Where |
+|---|---|---|
+| Builder edits the live checkout, or parallel builds collide | Build dispatch without `--worktree` refused (exit 2); worktree per branch | `dispatch.sh` |
+| Builder pushes or opens PRs | `gh` unauthenticated, worktree `pushurl` poisoned | `dispatch.sh` |
+| "Done" with no build check; self-correction never runs | Build dispatch without a verify command refused (exit 2); failing verify fed back to the builder, exit 20 when attempts run out | `dispatch.sh` |
+| Tier that doesn't match the model; unladdered or over-budget `sol@high` | Model/tier mismatch and first-attempt `@high` refused (exit 2); weekly burn gate (exit 30) | `dispatch.sh` |
+| A read-only review or diagnosis run that edits files | Tree snapshot compared after the run (exit 21) | `dispatch.sh` |
+| Risky plan built without critique; critique ignored | Build refused (exit 31) until a `proceed`/`override` adjudication is recorded; `proceed` refused over a `[BLOCKING-PLAN]` | `dispatch.sh`, `scripts/review_gate.py` |
+| Critic or reviewer loops that never converge | Round caps per task (exit 31) | `dispatch.sh`, `scripts/review_gate.py` |
+| Same-family review or critique | Author and reviewer/critic families compared (managed projects, exit 31) | `scripts/orchestrator-routing.py` |
+| Merge of a tree nobody verified or reviewed; green-but-inert change | Verification, review and observation pinned to the merged SHA; a diff with no production change refused; `gh pr merge --match-head-commit` | `scripts/merge_gate.py` |
+| A "regression test" that passes without the fix | `fail-on-base` must see the named test fail on the base tree | `scripts/merge_gate.py` |
+| Orchestrator reads whole task/critic specs into context | Read/`cat` of `prompts/task-T*.md` / `critic-T*.md` blocked | `scripts/spec-body-guard.py` via `scripts/orchestrator-hook.py` |
+| Hand-edited or corrupted PLAN | Direct `PLAN.md` writes blocked; hash-checked, linted transactions | `scripts/orchestrator-hook.py`, `scripts/plan-update.py` |
+| Two orchestrators writing state at once | Single-writer lease | `orchestrate.py`, `scripts/orchestrator-state.py` |
+| Orchestrator token burn invisible | Stop hook writes `role: partner` rows to `logs/cost.jsonl` | `scripts/log-partner-burn.py` |
+| Stale handoff claims read as facts | `## Volatile — re-verify before use` printed under a "claims, not facts" banner at session start (surfaced, not blocked) | `scripts/handoff-volatile-hook.py` |
+
+Advisory (a rule or prompt, nothing refuses):
+
+- Tier and backend escalation on exit 20/30 is the orchestrator's procedure
+  (`.claude/rules/dispatch.md` § Backend & Tier Escalation).
+- A plain `gh pr merge` is not intercepted; the merge gate holds only when merges go through
+  `merge_gate.py`.
+- Root cause before fix: defect-fix specs carry Symptom / Mechanism / Evidence, and the
+  critic blocks reasoning-only Evidence, but only on `risk`/`security` tasks
+  (`VERIFY.md` § Pre-build critique). Diagnosis itself is `investigate.sh`, by choice.
+- Cheap-tier delegation of review, diagnosis and spec-writing (`.claude/rules/pm-scope.md`).
+
 ## What's in this repo
 
 - `ORCHESTRATOR.md` - shared contract; `CLAUDE.md` and `AGENTS.md` are provider entry points
