@@ -495,9 +495,9 @@ PY
 then pass "TASK_LOG template and state.md define state_correction with required evidence"
 else fail "state_correction is undocumented or does not require evidence"; fi
 
-echo "[selftest] Xcode verification-boundary preamble (issue #37)"
+echo "[selftest] builder preamble: working agreement (issue #50) + Xcode boundary (issue #37)"
 # Sourcing dispatch.sh is not possible (it runs), so exercise prompt_preamble in isolation by
-# extracting the function and driving it with the four cases that matter. Bound the extraction
+# extracting the function and driving it with the cases that matter. Bound the extraction
 # so a rename fails loudly instead of silently testing nothing (issue #34).
 PRE_SNIP="$(awk '/^prompt_preamble\(\) \{$/,/^\}$/' dispatch.sh)"
 if [ -z "$PRE_SNIP" ]; then
@@ -505,25 +505,28 @@ if [ -z "$PRE_SNIP" ]; then
 else
   PRE_TMP="$(mktemp -d)"
   printf '## T099\nDo the thing.\n' > "$PRE_TMP/task.md"
-  pre_case() {  # backend, read_only, verify_cmd, expect(none|generic|codex), label
+  pre_case() {  # backend, read_only, verify_cmd, expect(none|autonomy|generic|codex), label
     local out
     out="$(BACKEND="$1" READ_ONLY="$2" VERIFY_CMD="$3" PROMPT_FILE="$PRE_TMP/task.md" \
       bash -c "READ_ONLY() { [ \"\$READ_ONLY\" = true ]; }
 $(printf '%s' "$PRE_SNIP" | sed 's/^  \$READ_ONLY && return 0$/  [ "$READ_ONLY" = true ] \&\& return 0/')
 prompt_preamble" 2>/dev/null)"
+    has() { printf '%s' "$out" | grep -q "$1"; }
     case "$4" in
-      none)    [ -z "$out" ] && pass "$5" || fail "$5 (expected no preamble, got ${#out} chars)" ;;
-      generic) if [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'workspace-write'; then
-                 pass "$5"; else fail "$5 (expected generic-only preamble)"; fi ;;
-      codex)   if printf '%s' "$out" | grep -q 'workspace-write' \
-                 && printf '%s' "$out" | grep -q 'never report a test result'; then
-                 pass "$5"; else fail "$5 (expected codex sandbox paragraph + evidence rule)"; fi ;;
+      none)     [ -z "$out" ] && pass "$5" || fail "$5 (expected no preamble, got ${#out} chars)" ;;
+      autonomy) if has 'Do not stop' && ! has 'Verification boundary'; then
+                  pass "$5"; else fail "$5 (expected the working agreement only)"; fi ;;
+      generic)  if has 'Do not stop' && has 'never report a test result' && ! has 'workspace-write'; then
+                  pass "$5"; else fail "$5 (expected working agreement + generic evidence rule)"; fi ;;
+      codex)    if has 'Do not stop' && has 'workspace-write' && has 'never report a test result'; then
+                  pass "$5"; else fail "$5 (expected working agreement + codex sandbox paragraph + evidence rule)"; fi ;;
     esac
   }
-  pre_case codex    false "xcodebuild build-for-testing" codex   "codex + Xcode gets the sandbox paragraph"
-  pre_case opencode false "xcodebuild build-for-testing" generic "non-codex Xcode gets the evidence rule only"
-  pre_case codex    true  "xcodebuild build-for-testing" none    "read-only dispatch gets no preamble"
-  pre_case codex    false "swift build"                  none    "non-Xcode task gets no preamble"
+  pre_case codex    false "xcodebuild build-for-testing" codex    "codex + Xcode gets the sandbox paragraph"
+  pre_case opencode false "xcodebuild build-for-testing" generic  "non-codex Xcode gets the evidence rule only"
+  pre_case codex    true  "xcodebuild build-for-testing" none     "read-only dispatch gets no preamble"
+  pre_case codex    false "swift build"                  autonomy "non-Xcode build gets the do-not-ask working agreement"
+  pre_case claude   false "npm test"                     autonomy "every backend's build gets the working agreement"
   rm -rf "$PRE_TMP"
 fi
 

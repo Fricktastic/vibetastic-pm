@@ -299,8 +299,23 @@ prompt_preamble() {
   case "$VERIFY_CMD $PROMPT_TASK_HINT" in
     *xcodebuild*|*xcodegen*|*.xcodeproj*|*.xcworkspace*|*simctl*|*xcrun*) shape="xcode" ;;
   esac
-  [ -n "$shape" ] || return 0
   $READ_ONLY && return 0
+
+  # [issue #50] Every build turn is non-interactive: nobody answers a question until the run
+  # has ended and been paid for. Field case (gamedaytastic T144): one whole fixup round was a
+  # no-op because the builder stopped to ask for design approval.
+  echo "## Working agreement (injected by dispatch.sh — read before you plan)"
+  echo
+  cat <<'PREAMBLE_AUTONOMY'
+This run is non-interactive: nobody reads your messages until it has finished. **Do not stop
+to ask for confirmation, clarification or design approval, and do not end your turn with a
+question.** Where the spec leaves a choice open, take the most reasonable reading that stays
+inside the spec's scope, implement it, and state the assumption in your final report. Only
+stop early for something you truly cannot do (a missing file, a contradiction in the spec),
+and then report exactly what blocked you and what you completed.
+
+PREAMBLE_AUTONOMY
+  [ -n "$shape" ] || { echo "---"; echo; return 0; }
 
   echo "## Verification boundary (injected by dispatch.sh — read before you plan)"
   echo
@@ -345,9 +360,10 @@ if [ -n "$PROMPT_PREAMBLE" ]; then
 else
   PROMPT_TEXT="$(cat "$PROMPT_FILE")"
 fi
-if [ -n "$PROMPT_PREAMBLE" ]; then
-  echo "[dispatch] injected Xcode verification-boundary preamble (backend=$BACKEND)" >&2
-fi
+case "$PROMPT_PREAMBLE" in
+  *"Verification boundary"*) echo "[dispatch] injected working-agreement + Xcode verification-boundary preamble (backend=$BACKEND)" >&2 ;;
+  ?*) echo "[dispatch] injected working-agreement preamble (backend=$BACKEND)" >&2 ;;
+esac
 
 # codex model slugs may carry an effort suffix (gpt-5.6-sol@low) — parsed per call so the
 # fallback model can carry its own effort.
