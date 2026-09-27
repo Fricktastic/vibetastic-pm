@@ -1,6 +1,6 @@
 ---
-# Example project policy for an iOS / iPadOS app (issue #50).
-# Copy the two keys below into your PROJECT.md frontmatter and the two sections below into
+# Example project policy for an iOS / iPadOS app (issues #50, #35).
+# Copy the two keys below into your PROJECT.md frontmatter and the sections below into
 # its body, then edit them to fit the project. Every part is optional: whatever you leave out
 # falls back to the generic framework default (framework/scripts/project_policy.py).
 # Check the result with:
@@ -46,3 +46,31 @@ reviewer_fixup_round_cap: 3
      it looks is R2 (it needs a run-and-look) but risk: false (it needs no pre-build
      critique). That split is the point of issue #50: verify_tier says what evidence proves
      the change; risk says whether the plan needs a second pair of eyes before it is built. -->
+
+## Observations
+
+- Run it on the exact commit being merged (the SHA `merge_gate.py` pins): a simulator build
+  of that commit in a configuration where the real data path runs, or a device build for
+  device-only behaviour.
+- Cite the artifact: a screenshot from `framework/scripts/app_screenshot.sh`, a
+  `log stream` / Console excerpt showing the branch taken and its values, or a recording —
+  saved under the PM dir and passed as `--evidence`.
+- Before and after: the same interaction on the base build (or the defect report's
+  reproduction) and on the branch. Races: 5-10 cold launches on the branch, defect absent
+  every time.
+- GPU effects, haptics and performance feel are the operator's device pass; the operator
+  records it (`merge_gate.py observe --kind device`).
+
+## Test paths
+
+- *Tests/
+- *UITests/
+- Fixtures/
+- *Tests.swift
+- *Test.swift
+
+## Non-production paths
+
+- *.md
+- Docs/
+- fastlane/metadata/

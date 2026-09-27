@@ -302,6 +302,72 @@ lives in the project's policy; `Docs/examples/policy-ios.md` carries the iOS ver
 
 ---
 
+## Merge gate — pin the tree, observe the change (issue #35)
+
+The ladder and the review verify *a* tree. Until #35 nothing said *which*: gamedaytastic T078
+ran its full ladder green, with genuine mutation evidence and an APPROVE, on one commit — and
+merged the next, which had reverted the production fix while "guarding" the tests. Net
+production diff: empty. Every gate did its job against the wrong input.
+
+`scripts/merge_gate.py` binds every piece of merge evidence to a commit SHA, and refuses
+(exit 31) unless, **at the commit being merged**:
+
+| Check | Passes when | Evidence comes from |
+|---|---|---|
+| `verification` | every rung ever verified for the task (`--label`) passed on this commit | `merge_gate.py verify` — runs `PROJECT.md § Test command` (or `--cmd`) in a **clean** checkout |
+| `review` | the latest reviewer verdict for this commit approves, with no blockers, and read a clean tree | `dispatch.sh --role reviewer` (records `head_sha`/`tree_clean`), or `review_gate.py record --head-sha` for a subagent review |
+| `production_diff` | the net diff merge-base..commit is non-empty and touches a production path — unless the task is `observation: none` | git; path classes are project policy |
+| `observation` | `test`: a passing fail-on-base run on this commit · `runtime`: an observation recorded on this commit · `none`: nothing more | `merge_gate.py fail-on-base` / `observe` |
+
+Nothing carries forward: a commit after the evidence voids all of it, and the refusal lists the
+commits since. `merge_gate.py merge` runs the check and then `gh pr merge --match-head-commit
+<sha>`, so GitHub refuses the merge if the PR head moves after the check. The evidence lives in
+`logs/verdicts.jsonl` beside the reviewer verdicts it has to be joined with. The orchestrator's
+procedure is `.claude/rules/dispatch.md` § Merge gate.
+
+**Net-empty production diff.** A path is *test* if it matches `PROJECT.md § Test paths`,
+*non-production* if it matches `§ Non-production paths`, and *production* otherwise (generic
+defaults: common test directories and `*Test.*`/`*_test.*`/`*.spec.*` names; Markdown, docs
+directories, licences and changelogs). The diff is taken **net**, so a fix that a later commit
+reverts does not count. A task that really changes no behaviour declares `observation: none`.
+
+### Fails on base, passes on the branch (issues #35, #46, #21)
+
+A green suite is not evidence that a change took effect — it was green before the change
+too. Every task's spec names **one observation that fails on the base tree and passes on the
+branch**, recorded on the task as `observation: test | runtime | none`:
+
+- **`test`** — a new or changed test and `observation_cmd`, the single command that runs it.
+  `merge_gate.py fail-on-base` checks out the merge base in a temporary worktree, overlays the
+  branch's test-path files (and removes the ones it deleted), runs the command there and
+  requires it to **fail**, then runs it on the branch and requires it to **pass**. A test that
+  passes on the base tree observes nothing and is refused; so is a diff that changes no test.
+  A failure that is a compile or harness error is weaker evidence than an assertion failure —
+  `--expect-fail-pattern` pins the expected one. This is the red-first proof #21's T073 asked
+  the builder for, run by the orchestrator, where a builder's claim cannot stand in for it.
+- **`runtime`** — only visible by running the product. The orchestrator (or operator)
+  observes it on the commit being merged and records it with `merge_gate.py observe
+  --evidence <artifact> --summary "..."`. What counts is **project policy**
+  (`PROJECT.md § Observations`; generic default: pinned to the merged SHA, the captured
+  artifact cited, before and after shown, never a builder's or reviewer's report).
+- **`none`** — no behaviour change (refactor, docs, test-only). The only kind whose net diff
+  may carry no production change.
+
+The Tech Lead and Architect name the observation in the spec; the critic blocks a plan without
+one; the reviewer checks the net diff still carries the change it depends on.
+
+**Escape hatch.** `merge_gate.py override --check <name> --reason "..."` records the operator's
+decision to waive one check for one commit (lease owner; a new commit voids it). Log it as
+`merge_gate_override`.
+
+**Legacy default.** A task with no `observation:` field — every task written before #35 —
+skips the observation check with a warning. The pin, review-at-SHA and production-diff checks
+apply to every task: they are about the tree, not the spec. A reviewer verdict recorded before
+this change has no `head_sha`; re-review the commit or override `review` with the reason. A
+task that carries the field but leaves it `null` was never decided and is refused.
+
+---
+
 ## Project policy — the framework enforces, the project decides (issue #50)
 
 The framework owns the mechanisms: the critique gate, the round caps, the verdict ledger and
@@ -310,7 +376,12 @@ the evidence ladder. What they apply to is **project policy**, declared in the p
 
 - frontmatter `critic_round_cap`, `reviewer_fixup_round_cap` — positive integers;
 - `## Verify tiers` — one bullet per tier, `- R0: <what evidence proves this>`, all of R0–R2;
-- `## Risk triggers` — one bullet per trigger that sets `risk: true`.
+- `## Risk triggers` — one bullet per trigger that sets `risk: true`;
+- `## Observations` — one bullet per rule for what counts as a runtime observation (#35);
+- `## Test paths`, `## Non-production paths` — one glob per bullet; they classify the net diff
+  for the merge gate (#35). A glob with no `/` except a trailing one matches at any depth,
+  `**` spans directories, a trailing `/` means everything under it. Declaring a class
+  replaces its default.
 
 Everything is optional; absent parts use the generic defaults in
 `scripts/project_policy.py`. `orchestrator-doctor.py` fails on a malformed declaration, and
@@ -329,6 +400,8 @@ graduates into the framework.
   `dispatch.sh`); a `security: true` task also forces the review rung up (Sonnet-minimum
   first pass, mandatory Opus adjudication — see Security-sensitive tasks above).
 - The orchestrator does not merge until the tier's full ladder has passed and the diff
-  review verdict is recorded (TASK_LOG event or PR comment).
+  review verdict is recorded — and `scripts/merge_gate.py check` (or `merge`) passes on the
+  exact commit being merged (§ Merge gate). Tasks also carry `observation: test|runtime|none`
+  (+ `observation_cmd` for `test`).
 - Genuinely device-only checks (GPU effects, haptics, perf feel) are flagged as an
   explicit human pass — never silently skipped, never auto-passed.

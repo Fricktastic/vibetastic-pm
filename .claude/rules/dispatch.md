@@ -57,7 +57,8 @@ Read `framework/prompts/architect.md`. Substitute:
 - `{{PROJECT_POLICY}}` → output of `python3 framework/scripts/project_policy.py --pm-dir . render`
 
 Register each Stage-3 task's `verify_tier` and `risk` from the `Verify tier:` / `Risk:` line
-at the top of its build-spec section (issue #50).
+at the top of its build-spec section (issue #50), and its `observation` (+ `observation_cmd`
+for `test`) from the `Observation:` line (issue #35, § Merge gate).
 
 On Claude, spawn the native Architect and stage its return. On Codex, use
 `scripts/dispatch-role.py --role architect --output prompts/build-spec.md`. Parse the
@@ -139,6 +140,10 @@ After return, parse the YAML between `TECH_LEAD_RESULT_START` and
    - `verify_tier` → `verify_tier` (what evidence proves the task), `risk` → `risk` (whether
      its plan is critiqued; issue #50). Always write `risk` explicitly: a task without it is
      treated as a legacy task and critiqued at R1/R2 whatever its real risk.
+   - `observation` → `observation` (`test | runtime | none`), `observation_cmd` →
+     `observation_cmd` (quoted; `test` only). The merge gate keys on them (§ Merge gate). A
+     task with no `observation:` field is treated as a pre-#35 legacy task; `dispatch-role.py`
+     refuses Tech Lead metadata without it.
    - Assign next available task id
    - Set `status: pending`, `agent: opencode`, `failure_count: 0`
 
@@ -422,7 +427,7 @@ echoes the last 40 lines so a failure is never silent.
 
 | Exit | Meaning | PM action |
 |------|---------|-----------|
-| `0` | Ran and (if a verifier was set) it passed | Proceed to the staged-change check, then PR Opening |
+| `0` | Ran and (if a verifier was set) it passed — the verify-cmd's scope only, not the task's acceptance | Proceed to the staged-change check, then PR Opening; merge only through § Merge gate |
 | `20` | Code runs but the verifier never passed within the attempt budget | **Tier escalation** (below) — not a `failure_count` event |
 | `30` | Backend unavailable (CLI missing, bad slug, burn gate closed, or the backend refused the run for quota/rate-limit/auth) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
 | `31` | Ownership/routing stop, or a review gate refused the run (critique not adjudicated, round cap reached) | Resolve per § Pre-Build Critique / § Round caps; not a `failure_count` event |
@@ -536,3 +541,38 @@ remove the task's worktree (`git -C ../<project-name>/ worktree remove <worktree
 add `--force` only if you've confirmed nothing in it is still needed).
 
 If `gh pr create` fails: log the error, mark task `done` anyway — do not let a PR failure block task completion.
+
+---
+
+## Merge gate
+
+Nothing merges until `scripts/merge_gate.py` passes **on the commit being merged**
+(`VERIFY.md` § Merge gate, issue #35). Every piece of evidence is pinned to a SHA; a commit
+pushed after it (a fixup, a "test hygiene" commit, a rebase) voids all of it. Run from the PM
+dir against the task's worktree, with its branch checked out and committed:
+
+```bash
+G="python3 framework/scripts/merge_gate.py --pm-dir ."
+WT=<task worktree>; BASE=<base branch, e.g. develop>
+$G verify       --task T0XX --dir "$WT"                     # PROJECT.md § Test command; --label/--cmd per extra rung
+$G fail-on-base --task T0XX --dir "$WT" --base "$BASE"      # observation: test
+$G observe      --task T0XX --dir "$WT" --evidence <artifact> --summary "<run, state, before vs after>"   # observation: runtime
+$G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <issue_repo> -- --squash
+```
+
+- **Review the worktree**, not the live checkout: `dispatch.sh --role reviewer` records the
+  commit it read (`head_sha`, `tree_clean`), and the gate accepts only an approving review of
+  the exact commit being merged from a clean tree. A Sonnet-subagent review is recorded with
+  `review_gate.py record --role reviewer --task T0XX --output <reply> --head-sha <sha> --tree-clean true`.
+- `merge` runs `check`, then `gh pr merge --match-head-commit <sha>`, so GitHub itself refuses
+  if the PR head moved after the check. Use `check` alone when something else merges.
+- **A refusal is exit 31** — a policy stop, never a `failure_count` event. Re-run the evidence
+  on the new commit, re-dispatch a fixup, or take it to the operator. The operator's decision
+  to merge anyway is `merge_gate.py override --task T0XX --dir "$WT" --check <name> --reason "..."`
+  (lease owner; one check, this commit only) plus `merge_gate_override` in TASK_LOG.
+- Append `merge_gate` to TASK_LOG with the merged `sha`, each check's status and, for a runtime
+  task, the observation (`observation_recorded` when you record it). The task's closing event
+  cites that SHA.
+- **Legacy tasks** (no `observation:` field) skip the observation check with a warning; the
+  pin, review-at-SHA and production-diff checks still apply. A review recorded before this
+  change carries no `head_sha` — re-review, or override `review` with the reason.

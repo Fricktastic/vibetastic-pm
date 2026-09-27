@@ -158,6 +158,25 @@ Where an Apple API is involved, specify the exact method signatures and paramete
 > builder's claim about tests is not evidence (`framework/VERIFY.md` § Who runs what).
 > Phrase them as observable artifacts the orchestrator can check.
 
+- **Observation — fails on base, passes on the branch (required).** Name the one observation
+  that shows this change took effect: something that is wrong on the current tree and right
+  once the task is done. A green suite is not it — the suite was green before the change too.
+  Pick exactly one kind (`framework/VERIFY.md` § Merge gate; this project's rules are in the
+  policy above):
+  - `test` — a new or changed test in the project's test paths. Name it, and give the exact
+    command that runs **only** it (`observation_cmd`, single line, run from the project root).
+    At merge the orchestrator runs that command on the base tree with the branch's test files
+    overlaid — it must **fail** there — and on the branch, where it must pass. Say what the
+    base-tree failure looks like (the assertion that fails), so a build error is not mistaken
+    for it. Tell the builder to prove it: revert the fix locally, watch the test fail, restore
+    the fix — and **never commit the reverted state** (gamedaytastic T078 shipped with zero
+    production change that way).
+  - `runtime` — only visible by running the product. State what to run, the state to drive
+    it to, and what is seen on the base tree versus the branch. The orchestrator records it
+    against the merged commit.
+  - `none` — no behaviour change (refactor, docs, test-only). Say why. This is the only kind
+    whose diff may carry no production change.
+
 ---
 
 ### Section 5 — Commit Plan
@@ -235,6 +254,9 @@ security_rationale: "<one sentence — which trigger applies, or why none does>"
 verify_tier: <R0 | R1 | R2>
 risk: <true | false>
 risk_rationale: "<one sentence — which project risk trigger applies, or why none does>"
+observation: <test | runtime | none>
+observation_cmd: "<observation: test only — the single command that runs the named test; else null>"
+observation_rationale: "<one sentence — what fails on the base tree and passes on the branch>"
 ```
 <!-- TECH_LEAD_RESULT_END -->
 

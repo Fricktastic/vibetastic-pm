@@ -147,6 +147,10 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy["errors"], [])
         self.assertEqual(policy["sources"]["verify_tiers"], "project")
         self.assertEqual(policy["sources"]["risk_triggers"], "project")
+        for key in ("observations", "test_paths", "non_production_paths"):
+            self.assertEqual(policy["sources"][key], "project", key)
+        self.assertEqual(project_policy.classify("AppUITests/LaunchTests.swift", policy), "test")
+        self.assertEqual(project_policy.classify("App/Audio/ChainRunner.swift", policy), "production")
 
     def test_doctor_reports_invalid_policy(self):
         self.write_project("reviewer_fixup_round_cap: lots\n")

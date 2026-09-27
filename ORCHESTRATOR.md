@@ -182,7 +182,11 @@ Only true failures after the configured ladder is exhausted trigger the failure 
   dispatch.sh refuses the next round and the operator chooses redesign / override / abort.
 - What the verify tiers mean, which risk triggers force critique, and the round caps are
   **project policy** in PROJECT.md (VERIFY.md § Project policy); the framework enforces it.
-- Merge only after VERIFY.md's tier ladder and first-pass review/adjudication pass.
+- Merge only after VERIFY.md's tier ladder and first-pass review/adjudication pass, and only
+  through `scripts/merge_gate.py` (issue #35): the verification, the approving review and the
+  task's fail-on-base / runtime observation must all be pinned to the exact commit merged, and
+  its net diff must carry a production change unless the task is `observation: none`. A
+  refusal is exit 31; the operator's waiver is a logged `merge_gate.py override`.
 - R2 inspection and human/device-only verification remain the partner/operator's responsibility.
   A builder's claim is not test evidence. Preserve the device-only exceptions explicitly.
 - Never push framework updates into deployed projects without the user's instruction.

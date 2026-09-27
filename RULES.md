@@ -380,20 +380,20 @@ These override convenience. Each cost real cycles when ignored.
 
 ### Architect
 - **Receives:** SPEC.md, `prompts/design-spec.md`, target project path, RULES.md (model selection section)
-- **Returns:** Structured build spec (markdown) to be written to `prompts/build-spec.md`, plus a selected tier (`fast`/`standard`/`heavy`), a `security: true|false` flag and a `risk: true|false` flag in the result YAML, and a `Verify tier:` / `Risk:` line per task section (judged against the project's review policy — `VERIFY.md` § Project policy)
+- **Returns:** Structured build spec (markdown) to be written to `prompts/build-spec.md`, plus a selected tier (`fast`/`standard`/`heavy`), a `security: true|false` flag and a `risk: true|false` flag in the result YAML, and a `Verify tier:` / `Risk:` / `Observation:` line per task section (judged against the project's review policy — `VERIFY.md` § Project policy, § Merge gate)
 - **Does:** Classify task complexity against the tier definitions in `framework/MODELS.md` (the curated inventory — it does **not** query OpenRouter); set `security: true` on any Stage-2 task whose diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data (see `VERIFY.md` § Security-sensitive tasks)
 - **Does not:** Execute OpenCode or pick raw model slugs — the PM resolves tier → model/fallback from MODELS.md
 
 ### Tech Lead
 - **Receives:** Issue description, full build-spec, PLAN.md summary, target project path, optional error output
 - **Does:** Reads actual source files in the target project to understand current state; fetches Apple/framework docs via Sosumi MCP if relevant; writes a precise task spec
-- **Returns:** Task spec section (appended to build-spec.md) + structured YAML metadata (task title, branch, issue refs, depends_on, suggested tier, `verify_tier`, a `risk: true|false` flag set from the project's risk triggers — it alone decides pre-build critique — and a `security: true|false` flag). Sets `security: true` when the diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data — this forces the review rung up (see `VERIFY.md` § Security-sensitive tasks). Bias toward `true` when unsure.
+- **Returns:** Task spec section (appended to build-spec.md) + structured YAML metadata (task title, branch, issue refs, depends_on, suggested tier, `verify_tier`, a `risk: true|false` flag set from the project's risk triggers — it alone decides pre-build critique — a `security: true|false` flag, and `observation: test|runtime|none` + `observation_cmd`: the one observation that fails on the base tree and passes on the branch, which the merge gate checks — `VERIFY.md` § Merge gate). Sets `security: true` when the diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data — this forces the review rung up (see `VERIFY.md` § Security-sensitive tasks). Bias toward `true` when unsure.
 - **Does not:** Write code, execute commands in the target project, or make implementation decisions beyond speccing
 - **Model:** Sonnet by default; PM may use Opus for complex architectural tasks
 
 ### Reviewer (first-pass diff review — cheap tier, read-only)
 - **Invoked with:** `bash framework/dispatch.sh --read-only <standard-tier-model> <target-project-path> <rendered-reviewer-prompt>` (template: `framework/prompts/reviewer.md`), or as a Sonnet `Agent` subagent with the same rendered prompt
-- **Receives:** task spec, `verify_tier`, diff range
+- **Receives:** task spec, `verify_tier`, diff range — run in the task worktree, so the verdict is pinned to the commit it read (`VERIFY.md` § Merge gate)
 - **Returns:** VERDICT (APPROVE / APPROVE-WITH-FOLLOWUPS / REJECT) + findings + a machine-readable `REVIEWER_RESULT` block that `dispatch.sh --role reviewer` records in `logs/verdicts.jsonl`; the orchestrator adjudicates against the spec and decides merge / reject / re-dispatch. Non-approving reviews count against the task's reviewer fixup cap (`.claude/rules/dispatch.md` § Round caps)
 - **Does not:** modify any file (enforced — dispatch exits 21 on a dirty tree), merge, or decide
 - **Why:** the intent-review rung of the gate (`VERIFY.md`) must run on every diff; running it on Opus was the measured top cost sink, so Opus only adjudicates
@@ -403,5 +403,5 @@ These override convenience. Each cost real cycles when ignored.
 ### OpenCode (via PM shell invocation)
 - **Invoked with:** `bash framework/dispatch.sh --worktree <branch> <model> <target-project-path> <per-task-prompt-file> [fallback] [verify-cmd] [max-attempts] [tier]` — PM extracts a task-scoped prompt file via awk before calling dispatch (see `.claude/rules/dispatch.md`). `--worktree` isolates the builder in a per-task git worktree so the live checkout is never touched.
 - **PM captures:** stdout/stderr, exit code
-- **On success:** PM marks task done, logs output summary
+- **On success:** PM opens the PR, logs output summary; it merges only through `scripts/merge_gate.py` on the exact commit verified and reviewed (`.claude/rules/dispatch.md` § Merge gate)
 - **On failure:** PM writes exit code + stderr to `error` field, evaluates retry

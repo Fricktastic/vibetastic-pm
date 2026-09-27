@@ -70,6 +70,19 @@ Assume the current code has hard-won value the plan might trample. Identify:
 
 State each as "preserve X because Y."
 
+## Observation check (issue #35)
+
+The plan must name **one observation that fails on the base tree and passes once it is
+built** — `observation: test` (a named new/changed test plus the single command that runs it),
+`runtime` (what to run, the state, what is seen before vs after, by this project's observation
+rules above), or `none` (no behaviour change, with the reason). Return `[BLOCKING-PLAN]` when:
+
+- the plan claims a behaviour change but names no observation, or only "the suite passes"
+  (the suite is green before the change too);
+- the named test could pass on the current code — it asserts something already true, or
+  mocks away the path the change is in;
+- `observation: none` is claimed for work that changes behaviour.
+
 ## Verify-tier check
 
 Does the planned tier name the evidence this change actually needs, by **this project's**
