@@ -21,7 +21,12 @@ PROJECT.md, which setup writes once and the installer never touches:
         ## Test paths              tests and fixtures: overlaid onto the base tree for the
                                    fail-on-base run
         ## Non-production paths    docs and other files whose change is not a product change
-    Any changed path matching neither class is a production change.
+        ## Test support paths      production-classified files that carry test wiring (an
+                                   Xcode ``*.pbxproj`` registering a new test file, a build
+                                   manifest listing test sources): still production for the
+                                   production-diff check, but ALSO overlaid onto the base tree
+                                   for the fail-on-base run (issue #58). Default: none.
+    Any changed path matching neither of the first two classes is a production change.
   * ``## Test command`` (a fenced code block written by setup) is the orchestrator's suite
     command; the merge gate's ``verify`` runs it by default.
 
@@ -89,13 +94,18 @@ DEFAULT_TEST_PATHS = [
 DEFAULT_NON_PRODUCTION_PATHS = [
     '*.md', '*.rst', 'docs/', 'Docs/', 'doc/', 'LICENSE*', 'CHANGELOG*', 'AUTHORS*',
 ]
+# Issue #58. No generic default: which production files carry test wiring is platform-specific
+# (Docs/examples/policy-ios.md declares the Xcode project file).
+DEFAULT_TEST_SUPPORT_PATHS = []
 
 FRONTMATTER = re.compile(r'\A---\n(.*?)\n---', re.S)
 SECTION_TITLES = {'verify tiers': 'verify_tiers', 'risk triggers': 'risk_triggers',
                   'observations': 'observations', 'test paths': 'test_paths',
-                  'non-production paths': 'non_production_paths'}
-LIST_SECTIONS = ('risk_triggers', 'observations', 'test_paths', 'non_production_paths')
-GLOB_SECTIONS = ('test_paths', 'non_production_paths')
+                  'non-production paths': 'non_production_paths',
+                  'test support paths': 'test_support_paths'}
+LIST_SECTIONS = ('risk_triggers', 'observations', 'test_paths', 'non_production_paths',
+                 'test_support_paths')
+GLOB_SECTIONS = ('test_paths', 'non_production_paths', 'test_support_paths')
 
 
 def glob_regex(pattern):
@@ -136,6 +146,12 @@ def classify(path, policy):
         if any(glob_regex(glob).match(path) for glob in policy[key]):
             return label
     return 'production'
+
+
+def is_test_support(path, policy):
+    """Whether a repo-relative path matches ``## Test support paths`` (overlaid by fail-on-base)."""
+    path = path.replace('\\', '/').lstrip('/')
+    return any(glob_regex(glob).match(path) for glob in policy.get('test_support_paths') or [])
 
 
 def test_command(pm_dir):
@@ -189,6 +205,7 @@ def load(pm_dir):
         'observations': list(DEFAULT_OBSERVATIONS),
         'test_paths': list(DEFAULT_TEST_PATHS),
         'non_production_paths': list(DEFAULT_NON_PRODUCTION_PATHS),
+        'test_support_paths': list(DEFAULT_TEST_SUPPORT_PATHS),
         'sources': {key: 'default' for key in
                     ('critic_round_cap', 'reviewer_fixup_round_cap', 'verify_tiers',
                      *LIST_SECTIONS)},
@@ -299,6 +316,10 @@ def render(policy):
               f'**Non-production paths{source("non_production_paths")}:** '
               + ', '.join(f'`{glob}`' for glob in policy['non_production_paths'])
               + '. Any other changed path is a production change.']
+    if policy['test_support_paths']:
+        lines.append('**Test support paths** (production files carrying test wiring; overlaid '
+                     'onto the base tree with the tests for fail-on-base): '
+                     + ', '.join(f'`{glob}`' for glob in policy['test_support_paths']))
     return '\n'.join(lines) + '\n'
 
 

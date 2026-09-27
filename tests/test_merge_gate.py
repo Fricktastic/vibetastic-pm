@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import merge_gate  # noqa: E402
 import review_gate  # noqa: E402
 
 GATE = SCRIPTS / "merge_gate.py"
@@ -88,6 +89,25 @@ PLAN = textwrap.dedent("""\
         verify_tier: R0
         risk: false
         observation: null   # test|runtime|none
+      - id: T026
+        stage: 1
+        title: "Security-sensitive change"
+        agent: codex
+        status: in_progress
+        depends_on: []
+        failure_count: 0
+        verify_tier: R0
+        risk: true
+        security: true
+        observation: none
+      - id: T027
+        stage: 1
+        title: "Design pass"
+        agent: designer
+        status: in_progress
+        depends_on: []
+        failure_count: 0
+        observation: none
     ---
     """)
 
@@ -194,7 +214,9 @@ class MergeGateTests(unittest.TestCase):
         self.assertEqual(row["cmd"], "bash tests/check.sh   # the named regression test")
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(set(self.checks(result).values()), {"pass"})
+        self.assertEqual(self.checks(result), {"verification": "pass", "review": "pass",
+                                               "production_diff": "pass", "observation": "pass",
+                                               "security": "skipped"})
         self.assertEqual(self.ledger()[-1]["event"], "merge_check")
         self.assertTrue(self.ledger()[-1]["allowed"])
         # The temporary base worktree is gone.
@@ -215,7 +237,8 @@ class MergeGateTests(unittest.TestCase):
         result = self.check()
         self.assertEqual(result.returncode, 31, result.stdout + result.stderr)
         self.assertEqual(self.checks(result), {"verification": "fail", "review": "fail",
-                                               "production_diff": "fail", "observation": "fail"})
+                                               "production_diff": "fail", "observation": "fail",
+                                               "security": "skipped"})
         self.assertIn("HEAD moved after verification", result.stderr)
         self.assertIn("guard ordering-test slices", result.stderr)   # names the commits since
         self.assertIn("zero production change", result.stderr)
@@ -486,6 +509,284 @@ class MergeGateTests(unittest.TestCase):
         self.assertEqual(task["observation_cmd"], "bash tests/check.sh   # the named regression test")
         self.assertEqual(review_gate.plan_task(self.pm / "PLAN.md", "T023").get("observation"), None)
 
+
+    # --- issue #58 item 3: the security floor at merge ---------------------------------------
+
+    def security_change(self):
+        self.write("src/app.txt", "hardened\n")
+        return self.commit("tighten input validation")
+
+    def test_security_task_needs_an_opus_adjudication_pinned_to_the_commit(self):
+        self.security_change()
+        self.full_evidence("T026")
+        result = self.check("T026")
+        self.assertEqual(result.returncode, 31, result.stderr)
+        self.assertEqual(self.checks(result)["security"], "fail")
+        self.assertIn("no merge-time adjudication", result.stderr)
+        refused = self.gate("adjudicate", "--task", "T026", "--dir", self.code, "--model", "sonnet")
+        self.assertEqual(refused.returncode, 31)
+        self.assertIn("Opus-class", refused.stderr)
+        for model in ("fable", "openrouter/anthropic/claude-opus-4.7"):
+            self.assertEqual(self.gate("adjudicate", "--task", "T026", "--dir", self.code,
+                                       "--model", model).returncode, 31, model)
+        ok = self.gate("adjudicate", "--task", "T026", "--dir", self.code, "--model", "claude-opus-4-7")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual(json.loads(ok.stdout)["event"], "merge_adjudication")
+        passed = self.check("T026")
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertEqual(self.checks(passed)["security"], "pass")
+        # A new commit voids it, like every other piece of merge evidence.
+        self.write("src/app.txt", "hardened more\n")
+        self.commit("follow-up")
+        self.full_evidence("T026")
+        self.assertEqual(self.checks(self.check("T026"))["security"], "fail")
+
+    def test_security_check_rejects_a_non_opus_row_the_cli_would_have_refused(self):
+        # The gate must not trust the recording path: a hand-appended row from another model
+        # (or one recorded before the task was flagged security) still fails the check.
+        sha = self.security_change()
+        self.full_evidence("T026")
+        review_gate.append_row(self.pm / "logs", {"event": "merge_adjudication", "task_id": "T026",
+                                                   "sha": sha, "outcome": "approve", "model": "sonnet"})
+        result = self.check("T026")
+        self.assertEqual(self.checks(result)["security"], "fail")
+        self.assertIn("recorded by sonnet, not an Opus-class model", result.stderr)
+        self.gate("override", "--task", "T026", "--dir", self.code, "--check", "security",
+                  "--reason", "operator: Opus unavailable, accepted the risk")
+        self.assertEqual(self.checks(self.check("T026"))["security"], "overridden")
+
+    def test_adjudication_needs_an_approving_review_of_the_commit(self):
+        self.security_change()
+        self.gate("verify", "--task", "T026", "--dir", self.code)
+        no_review = self.gate("adjudicate", "--task", "T026", "--dir", self.code, "--model", "opus")
+        self.assertEqual(no_review.returncode, 31)
+        self.assertIn("no approving review", no_review.stderr)
+        self.review("T026", verdict="REJECT", blockers=1)
+        self.assertEqual(self.gate("adjudicate", "--task", "T026", "--dir", self.code,
+                                   "--model", "opus").returncode, 31)
+
+    def test_a_non_security_task_skips_the_floor_and_any_model_may_adjudicate(self):
+        self.fix_with_test()
+        self.full_evidence()
+        recorded = self.gate("adjudicate", "--task", "T020", "--dir", self.code, "--model", "sonnet")
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.assertEqual(self.checks(self.check())["security"], "skipped")
+
+    # --- issue #58 item 4: test support paths are overlaid onto the base ---------------------
+
+    def pbxproj_scenario(self):
+        """A runner that only runs the tests the project file registers (the Xcode shape)."""
+        self.git("checkout", "-q", "main")
+        self.write("tests/run.sh", 'for t in $(cat app.pbxproj); do bash "tests/$t" || exit 1; done\n')
+        self.write("app.pbxproj", "")
+        self.commit("test runner driven by the project file")
+        self.git("checkout", "-q", "task/T020")
+        self.git("rebase", "-q", "main")
+        self.write("src/app.txt", "fixed\n")
+        self.write("tests/new_check.sh", REAL_CHECK)
+        self.write("app.pbxproj", "new_check.sh\n")
+        return self.commit("fix + a new test registered in the project file")
+
+    def test_test_support_paths_are_overlaid_onto_the_base_tree(self):
+        self.pbxproj_scenario()
+        args = ("fail-on-base", "--task", "T020", "--dir", self.code, "--base", "main",
+                "--cmd", "bash tests/run.sh")
+        # Without the policy the project file stays at base: the new test never runs there, the
+        # base run passes, and the gate reports an inert observation.
+        before = self.gate(*args)
+        self.assertEqual(before.returncode, 1, before.stderr)
+        self.assertIn("PASSES on the base tree", before.stderr)
+        with open(self.pm / "PROJECT.md", "a") as handle:
+            handle.write("\n## Test support paths\n\n- *.pbxproj\n")
+        after = self.gate(*args)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        row = json.loads(after.stdout)
+        self.assertEqual(row["support_overlaid"], ["app.pbxproj"])
+        self.assertIn("app.pbxproj", row["overlaid"])
+        # Still a production path: the production-diff check is unchanged by the declaration.
+        self.full_evidence(cmd="true")
+        self.assertIn("app.pbxproj", json.loads(self.check().stdout)["checks"]["production_diff"]["detail"])
+
+    def test_a_test_support_change_alone_is_not_a_changed_test(self):
+        with open(self.pm / "PROJECT.md", "a") as handle:
+            handle.write("\n## Test support paths\n\n- *.pbxproj\n")
+        self.write("src/app.txt", "fixed\n")
+        self.write("app.pbxproj", "wiring only\n")
+        self.commit("fix + project file, no test")
+        fob = self.gate("fail-on-base", "--task", "T020", "--dir", self.code, "--base", "main")
+        self.assertEqual(fob.returncode, 31)
+        self.assertIn("changes no test path", fob.stderr)
+
+    # --- issue #58 item 5: a stale base is refreshed or refused ------------------------------
+
+    def with_remote(self):
+        """origin = a bare clone of main; local main tracks it; another clone then pushes."""
+        remote = Path(self.temp.name) / "origin.git"
+        subprocess.run(["git", "clone", "-q", "--bare", "-b", "main", str(self.code), str(remote)],
+                       check=True, capture_output=True)
+        self.git("remote", "add", "origin", str(remote))
+        self.git("fetch", "-q", "origin")
+        self.git("branch", "-q", "--set-upstream-to", "origin/main", "main")
+        other = Path(self.temp.name) / "other"
+        subprocess.run(["git", "clone", "-q", "-b", "main", str(remote), str(other)], check=True,
+                       capture_output=True)
+        (other / "upstream.txt").write_text("landed after our last fetch\n")
+        for cmd in (["add", "-A"], ["commit", "-q", "-m", "upstream work"], ["push", "-q", "origin", "main"]):
+            subprocess.run(["git", "-C", str(other), "-c", "user.email=t@t", "-c", "user.name=t", *cmd],
+                           check=True, capture_output=True)
+        return remote, subprocess.run(["git", "-C", str(other), "rev-parse", "HEAD"], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+    def test_a_remote_tracking_base_is_fetched_before_use(self):
+        self.fix_with_test()
+        _, pushed = self.with_remote()
+        self.assertNotEqual(self.git("rev-parse", "origin/main"), pushed)
+        result = self.gate("check", "--task", "T020", "--dir", self.code, "--base", "origin/main")
+        report = json.loads(result.stdout)
+        self.assertTrue(report["base_fetched"])
+        self.assertEqual(self.git("rev-parse", "origin/main"), pushed, "the gate must refresh the base")
+        self.assertTrue(self.ledger()[-1]["base_fetched"])
+
+    def test_no_fetch_uses_the_ref_as_is_and_says_so(self):
+        self.fix_with_test()
+        _, pushed = self.with_remote()
+        stale = self.git("rev-parse", "origin/main")
+        result = self.gate("check", "--task", "T020", "--dir", self.code, "--base", "origin/main",
+                           "--no-fetch")
+        self.assertEqual(self.git("rev-parse", "origin/main"), stale)
+        self.assertIn("--no-fetch", result.stderr)
+        self.assertFalse(json.loads(result.stdout)["base_fetched"])
+        self.assertNotEqual(stale, pushed)
+
+    def test_a_local_base_behind_its_upstream_is_refused(self):
+        self.fix_with_test()
+        self.with_remote()
+        for command in (("check",), ("fail-on-base",)):
+            result = self.gate(*command, "--task", "T020", "--dir", self.code, "--base", "main")
+            self.assertEqual(result.returncode, 31, result.stdout + result.stderr)
+            self.assertIn("1 commit(s) behind its upstream origin/main", result.stderr)
+        # Fast-forwarded, the same local base is accepted.
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--ff-only", "origin/main")
+        self.git("checkout", "-q", "task/T020")
+        result = self.gate("check", "--task", "T020", "--dir", self.code, "--base", "main")
+        self.assertNotIn("behind its upstream", result.stderr)
+
+    def test_an_unreachable_remote_is_a_policy_stop_not_a_silent_stale_base(self):
+        self.fix_with_test()
+        remote, _ = self.with_remote()
+        self.git("remote", "set-url", "origin", str(remote) + "-gone")
+        result = self.gate("check", "--task", "T020", "--dir", self.code, "--base", "origin/main")
+        self.assertEqual(result.returncode, 31)
+        self.assertIn("could not fetch main from origin", result.stderr)
+
+    def test_a_local_base_with_no_upstream_warns(self):
+        self.fix_with_test()
+        result = self.check()
+        self.assertIn("no upstream", result.stderr)
+        self.assertEqual(json.loads(result.stdout)["base_warnings"][0][:12], "--base main ")
+
+    # --- issue #58 item 1: closing a merge-gated task needs the merge gate -------------------
+
+    def managed(self):
+        from pm_state import PMState
+        (self.pm / ".orchestrator").mkdir(exist_ok=True)
+        (self.pm / ".orchestrator/config.json").write_text('{"version":1}')
+        (self.pm / "TASK_LOG.md").write_text("# Task log\n")
+        state = PMState(self.pm)
+        token = state.acquire("codex", "session", os.getpid())["token"]
+        return state, token, dict(os.environ, PM_ORCHESTRATOR_TOKEN=token)
+
+    def close(self, state, token, task, operation):
+        import hashlib
+        current = (self.pm / "PLAN.md").read_text()
+        chunks = current.split(f"  - id: {task}\n")
+        candidate = chunks[0] + f"  - id: {task}\n" + chunks[1].replace("status: in_progress", "status: done", 1)
+        return state.update_plan(token, hashlib.sha256(current.encode()).hexdigest(), candidate,
+                                 f"### task_completed\ntask_id: {task}\n", operation)
+
+    def test_a_gated_task_cannot_be_closed_before_the_merge_gate_passes(self):
+        from pm_state import StateError
+        state, token, env = self.managed()
+        self.fix_with_test()
+        with self.assertRaises(StateError) as refused:
+            self.close(state, token, "T020", "close-1")
+        self.assertIn("T020 cannot be marked done: no merge_gate.py check", str(refused.exception))
+        self.full_evidence()
+        self.gate("fail-on-base", "--task", "T020", "--dir", self.code, "--base", "main")
+        self.check()
+        self.assertTrue(self.ledger()[-1]["allowed"])
+        self.close(state, token, "T020", "close-2")
+        self.assertIn("status: done", (self.pm / "PLAN.md").read_text().split("- id: T021")[0])
+
+    def test_a_refused_check_or_failed_merge_does_not_close_the_task(self):
+        state, token, env = self.managed()
+        self.fix_with_test()
+        self.full_evidence()
+        self.check()                                  # observation missing: refused
+        self.assertFalse(self.ledger()[-1]["allowed"])
+        from pm_state import StateError
+        with self.assertRaises(StateError) as refused:
+            self.close(state, token, "T020", "close-1")
+        self.assertIn("refused the merge", str(refused.exception))
+        review_gate.append_row(self.pm / "logs", {"event": "merge_check", "task_id": "T020",
+                                                   "sha": "a" * 40, "allowed": True})
+        review_gate.append_row(self.pm / "logs", {"event": "merge", "task_id": "T020",
+                                                   "sha": "a" * 40, "exit": 1})
+        self.assertEqual(merge_gate.close_evidence(self.pm / "logs", "T020")[0], False)
+        review_gate.append_row(self.pm / "logs", {"event": "merge", "task_id": "T020",
+                                                   "sha": "a" * 40, "exit": 0})
+        self.assertEqual(merge_gate.close_evidence(self.pm / "logs", "T020")[0], True)
+
+    def test_an_operator_exemption_closes_a_gate2_skip(self):
+        from pm_state import StateError
+        state, token, env = self.managed()
+        no_reason = self.gate("exempt-close", "--task", "T021", "--kind", "gate2-skip", env=env)
+        self.assertEqual(no_reason.returncode, 31)
+        with self.assertRaises(StateError):
+            self.close(state, token, "T021", "close-1")
+        stranger = dict(env, PM_ORCHESTRATOR_TOKEN="not-the-lease")
+        self.assertEqual(self.gate("exempt-close", "--task", "T021", "--kind", "gate2-skip",
+                                   "--reason", "x", env=stranger).returncode, 31)
+        recorded = self.gate("exempt-close", "--task", "T021", "--kind", "gate2-skip",
+                             "--reason", "operator chose skip at Gate 2 (T021 twice exit 1)", env=env)
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.close(state, token, "T021", "close-2")
+        status = json.loads(self.gate("status", "--task", "T021").stdout)
+        self.assertEqual(status["close"]["allowed"], True)
+        self.assertIn("gate2-skip", status["close"]["detail"])
+
+    def test_legacy_design_and_already_done_tasks_close_without_the_gate(self):
+        state, token, _ = self.managed()
+        self.close(state, token, "T023", "close-legacy")      # no observation: field
+        self.close(state, token, "T027", "close-designer")    # agent: designer
+        self.assertEqual(merge_gate.close_gated({"agent": "user", "observation": "none"})[0], False)
+        self.assertEqual(merge_gate.close_gated({"agent": "pm", "observation": "runtime"})[0], True)
+        self.assertEqual(merge_gate.close_gated({"agent": "codex gpt-5.6-terra",
+                                                 "observation": "test"})[0], True)
+        # A task that was already done is not re-judged when another field of the PLAN changes.
+        done = PLAN.replace("status: in_progress", "status: done")
+        self.assertEqual(merge_gate.close_problems(self.pm, done, done.replace("R0", "R1")), [])
+        # Gated: every task carrying the field (T020-T022, T024-T026, incl. a null one); not
+        # T023 (legacy) or T027 (designer).
+        self.assertEqual([p.split()[0] for p in merge_gate.close_problems(self.pm, PLAN, done)],
+                         ["T020", "T021", "T022", "T024", "T025", "T026"])
+
+    def test_plan_update_cli_refuses_the_close_with_exit_31(self):
+        import hashlib
+        _, token, env = self.managed()
+        current = (self.pm / "PLAN.md").read_text()
+        candidate = self.pm / "candidate.md"
+        head, tail = current.split("  - id: T020\n")
+        candidate.write_text(head + "  - id: T020\n" + tail.replace("status: in_progress", "status: done", 1))
+        result = subprocess.run([sys.executable, SCRIPTS / "plan-update.py", "--pm-dir", self.pm,
+                                 "--token", token, "--expected-hash",
+                                 hashlib.sha256(current.encode()).hexdigest(),
+                                 "--candidate", candidate, "--event", "### task_completed\n",
+                                 "--operation-id", "cli-close"], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 31, result.stdout + result.stderr)
+        self.assertIn("T020 cannot be marked done", result.stderr)
+        self.assertEqual((self.pm / "PLAN.md").read_text(), current)
 
 if __name__ == "__main__":
     unittest.main()

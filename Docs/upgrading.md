@@ -1,7 +1,8 @@
 # Upgrading an existing project
 
 For a `<project>-pm/` directory set up before PRs #52, #53, #55, #56 and #59 (issues #15,
-#18, #35, #45, #50, #51), and the issue #57 review-gate follow-ups (step 10). Those changes turned the critique gate, the round caps, the
+#18, #35, #45, #50, #51), the issue #57 review-gate follow-ups (step 10) and the issue #58
+merge-gate follow-ups (step 11). Those changes turned the critique gate, the round caps, the
 worktree rule and the merge gate from prose into refusals, so an unmigrated project will hit
 exit 2 / exit 31 stops it did not see before. Work through the steps in order, at a quiet
 point with no build dispatch running.
@@ -185,7 +186,39 @@ $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <org/repo
       `task-`/`fixup-T0XX*.md`) prints a `WARNING ... NO review gate applies` line. Treat it
       as a mistake unless the run is deliberately ad hoc.
 
-## 11. New TASK_LOG events
+## 11. Merge-gate follow-ups (issue #58)
+
+- [ ] **Tasks close after the merge gate, not at PR open.** `plan-update.py` refuses (exit 31)
+      to mark a task that has an `observation:` field `done` unless its latest
+      `merge_gate.py check` passed or its `merge` succeeded. After `gh pr create` the task
+      stays `in_progress` and keeps its worktree; close it and remove the worktree after the
+      merge. A failed `gh pr create` no longer means "mark it done anyway": record the error
+      and retry. Legacy tasks (no `observation:` field) and designer / architect / user tasks
+      are not affected.
+- [ ] **Closes without a merge are recorded operator decisions**, written before the PLAN
+      transaction: `merge_gate.py exempt-close --task T0XX --kind gate2-skip|state-correction|operator
+      --reason "..."` (lease owner) plus `close_exempted` in TASK_LOG. That covers a Gate-2
+      *skip* and a #29 state correction for a task merged outside the gate.
+- [ ] **Open tasks already `done` at PR-open time** (the old rule) are not re-judged: only a
+      transition *into* `done` is checked. Nothing to migrate.
+- [ ] **Security merges need an Opus adjudication at the merged commit.** After the approving
+      review, record `merge_gate.py adjudicate --task T0XX --dir "$WT" --model <opus model>`
+      (refused for a `security: true` task unless Opus-class). `check` now has a `security`
+      check (skipped for other tasks). An in-flight security task needs that one call, or the
+      operator's `override --check security`, before it merges — there is no legacy form.
+- [ ] **The gate fetches the base.** Pass `--base origin/<base>`; `fail-on-base`, `check` and
+      `merge` fetch it themselves and refuse when the fetch fails (`--no-fetch` to accept the
+      last fetch, recorded). A local `--base` behind its upstream is refused.
+- [ ] **Test wiring in production files** (e.g. Xcode `*.pbxproj`) can be declared under
+      `## Test support paths` in PROJECT.md (see `Docs/examples/policy-ios.md`); fail-on-base
+      then overlays it with the tests. Optional; `project_policy.py validate` checks it.
+- [ ] **Exit 22 from dispatch.sh**: the verify command passed, but the builder's report ends
+      `ACCEPTANCE: UNMET — <why>`. Not green and not a failure; route it per
+      `.claude/rules/dispatch.md` (exit table) and log `acceptance_unmet`. Builders are told
+      to write the line by the injected preamble — no prompt changes needed. `cost.jsonl` rows
+      gain `verify_scope` and `acceptance`; old rows lack them.
+
+## 12. New TASK_LOG events
 
 | Event | When | Required fields |
 |---|---|---|
@@ -196,6 +229,10 @@ $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <org/repo
 | `merge_gate` | `merge_gate.py check`/`merge` ran | `sha`, `base_sha`, `allowed`, `checks`, `pr` |
 | `merge_gate_override` | the operator waived one check for one commit | `sha`, `check`, `reason` |
 | `inline_authored` | the orchestrator authored a change itself (`.claude/rules/pm-scope.md` § Inline authoring gate, #23) | `model`, `file`, `branch`, `observation`, `conditions` |
+| `merge_adjudicated` | the partner adjudicated a commit's approving review (`merge_gate.py adjudicate`, #58) | `sha`, `model`, `review_model` |
+| `close_exempted` | the operator let a merge-gated task close without the gate (`merge_gate.py exempt-close`, #58) | `kind`, `reason` |
+| `pr_failed` | `gh pr create` failed; the task stays `in_progress` (#58) | `error` |
+| `acceptance_unmet` | dispatch.sh exited 22 (#58) | `reason`, `route` (`merge_gate` / `fixup` / `respec`) |
 
 The full vocabulary is in the `TASK_LOG.md` template header (also `critic_returned`,
 `critic_override`, `lessons_consolidated`).
@@ -208,8 +245,9 @@ The full vocabulary is in the `TASK_LOG.md` template header (also `critic_return
 | `2` | dispatch.sh, gate scripts | invalid invocation — no `--worktree`, no verify command or tier on a build, model contradicts tier, worktree path holds another branch, a critic or reviewer run without `--read-only` | fix the call |
 | `20` | dispatch.sh | verifier never passed | tier / backend escalation, not a failure |
 | `21` | dispatch.sh `--read-only` | the run modified the tree | inspect; changes are left in place |
+| `22` | dispatch.sh (build) | the verify command passed, but the builder reported `ACCEPTANCE: UNMET` | route per `dispatch.md` exit table (merge gate / fixup / re-spec); not a failure, not green |
 | `30` | dispatch.sh | backend unavailable (quota, auth, burn gate, CLI missing) | next backend, same tier |
-| `31` | dispatch.sh, `review_gate.py`, `merge_gate.py` | ownership/routing stop or gate refusal: critique not adjudicated, spec changed since adjudication, security proceed not by Opus, round cap reached, another critic/reviewer run in flight on the task, merge evidence not pinned to this commit | resolve or escalate to the operator; **never** a `failure_count` event |
+| `31` | dispatch.sh, `review_gate.py`, `merge_gate.py` | ownership/routing stop or gate refusal: critique not adjudicated, spec changed since adjudication, security proceed not by Opus, round cap reached, another critic/reviewer run in flight on the task, merge evidence not pinned to this commit, security merge without Opus adjudication, stale or unfetchable base, a gated task closed without merge-gate evidence (`plan-update.py`) | resolve or escalate to the operator; **never** a `failure_count` event |
 
 `merge_gate.py verify` / `fail-on-base` also exit 1 when the command they ran failed (the
 result is recorded).

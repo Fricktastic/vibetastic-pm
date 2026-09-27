@@ -388,8 +388,8 @@ signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monit
   that exits non-zero after self-committing completed work (new commits, clean tree) is
   salvaged — dispatch.sh skips the fallback and sends the committed state to the verifier.
   All other post-dispatch steps (staged-change check, commit) run **in that worktree path**,
-  not the live checkout; after the PR is opened, remove it:
-  `git -C ../<project-name>/ worktree remove <path>`. Read-only
+  not the live checkout; after the merge gate passes and the task is closed (§ Merge gate),
+  remove it: `git -C ../<project-name>/ worktree remove <path>`. Read-only
   review/diagnosis dispatches may target either the worktree (to review its diff) or the
   live checkout, and don't need `--worktree` themselves.
 
@@ -444,6 +444,7 @@ echoes the last 40 lines so a failure is never silent.
 |------|---------|-----------|
 | `0` | Ran and (if a verifier was set) it passed — the verify-cmd's scope only, not the task's acceptance | Proceed to the staged-change check, then PR Opening; merge only through § Merge gate |
 | `20` | Code runs but the verifier never passed within the attempt budget | **Tier escalation** (below) — not a `failure_count` event |
+| `22` | The verifier passed (or none was set), but the builder's report ends `ACCEPTANCE: UNMET — <why>` (issues #21, #58; printed on stderr, `acceptance: unmet` in `cost.jsonl`) | **Not green, not a failure** — no `failure_count`, no tier escalation. Read the reason and log `acceptance_unmet` with a `route`: **`merge_gate`** when the unmet item is an observation only the orchestrator can make (a simulator test run, a red-first proof) — continue as for exit 0, and the merge gate's `fail-on-base` / `observe` is where it gets made; **`fixup`** when the work itself is incomplete — re-dispatch a fixup prompt naming the unmet criterion on the same worktree and tier; **`respec`** when the spec is contradictory or unachievable — Tech Lead |
 | `30` | Backend unavailable (CLI missing, bad slug, burn gate closed, or the backend refused the run for quota/rate-limit/auth) | **Backend skip** — re-dispatch same tier on the next backend in `builder_backends`; log `backend_skipped`; not a `failure_count` event |
 | `31` | Ownership/routing stop, or a review gate refused the run (critique not adjudicated, spec changed since adjudication, security proceed not by Opus, round cap reached, another run on the task in flight) | Resolve per § Pre-Build Critique / § Round caps; not a `failure_count` event |
 | other non-0 | builder infra/model failure (even via fallback) | Task failure — see `state.md` (`failure_count +1`) |
@@ -456,8 +457,8 @@ refusal from the backend's own diagnostics (codex `error`/`turn.failed` events, 
 `is_error` results, error-level stderr), never from the builder's report, and does not burn
 the same-backend fallback or a stall retry on it.
 
-**Exit 0 — staged-change check before opening PR** (run in the worktree path dispatch.sh
-printed, not the live checkout):
+**Exit 0 (and exit 22 routed `merge_gate`) — staged-change check before opening PR** (run in
+the worktree path dispatch.sh printed, not the live checkout):
 
 ```bash
 git -C <worktree-path> diff --cached --quiet
@@ -551,11 +552,17 @@ EOF
 - Issue number from `tasks[n].notes`
 - Summary and test plan from the relevant section of `prompts/build-spec.md`
 
-After PR created: append `pr_opened` (with PR URL) to TASK_LOG, mark task `done`, and
-remove the task's worktree (`git -C ../<project-name>/ worktree remove <worktree-path>`;
-add `--force` only if you've confirmed nothing in it is still needed).
+After PR created: append `pr_opened` (with PR URL) to TASK_LOG. The task **stays
+`in_progress`** and its worktree stays in place: review, verification and the merge all run
+against that worktree (§ Merge gate), and the task closes only after the merge gate passes.
 
-If `gh pr create` fails: log the error, mark task `done` anyway — do not let a PR failure block task completion.
+If `gh pr create` fails: record the error on the task (`error`, through `plan-update.py`; the
+status stays `in_progress`), append `pr_failed` with the error, and retry once the cause is
+fixed. Other ready tasks keep dispatching; this task's dependents wait. Until issue #58 the
+rule was "mark it `done` anyway"; `plan-update.py` now refuses that, because a `done` task with
+no PR and no merge looks shipped to every later session (issue #29's recovery rule would even
+treat it as shipped). If the operator decides the task is finished without a PR, that is an
+exemption: `merge_gate.py exempt-close --task T0XX --kind operator --reason "..."`.
 
 ---
 
@@ -568,13 +575,23 @@ dir against the task's worktree, with its branch checked out and committed:
 
 ```bash
 G="python3 framework/scripts/merge_gate.py --pm-dir ."
-WT=<task worktree>; git -C "$WT" fetch origin <base>; BASE=origin/<base>   # e.g. origin/develop — never a possibly stale local branch
+WT=<task worktree>; BASE=origin/<base>                      # e.g. origin/develop; the gate fetches it
 $G verify       --task T0XX --dir "$WT"                     # PROJECT.md § Test command; --label/--cmd per extra rung
 $G fail-on-base --task T0XX --dir "$WT" --base "$BASE"      # observation: test
 $G observe      --task T0XX --dir "$WT" --evidence <artifact> --summary "<run, state, before vs after>"   # observation: runtime
+$G adjudicate   --task T0XX --dir "$WT" --model <your model> # after the approving review; REQUIRED (Opus) for security: true
 $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <issue_repo> -- --squash
 ```
 
+- **The base (issue #58).** `fail-on-base`, `check` and `merge` fetch a remote-tracking
+  `--base` themselves and refuse (exit 31) when the fetch fails (`--no-fetch` to accept the
+  last fetch, recorded as a warning), and refuse a local `--base` that is behind its upstream.
+  Pass `origin/<base>`.
+- **Security (issue #58).** A `security: true` task needs a `merge_gate.py adjudicate` row at
+  the merged commit by an Opus-class `--model` (the `security` check). A Codex partner
+  records the exceptional Opus adjudication (`ORCHESTRATOR.md`) with that run's model; without
+  Opus the task stays blocked, or the operator overrides `--check security`. Log
+  `merge_adjudicated`.
 - **Review the worktree**, not the live checkout: `dispatch.sh --role reviewer` records the
   commit it read (`head_sha`, `tree_clean`), and the gate accepts only an approving review of
   the exact commit being merged from a clean tree. A Sonnet-subagent review is recorded with
@@ -590,6 +607,16 @@ $G merge        --task T0XX --dir "$WT" --base "$BASE" --pr <n> --repo <issue_re
 - Append `merge_gate` to TASK_LOG with the merged `sha`, each check's status and, for a runtime
   task, the observation (`observation_recorded` when you record it). The task's closing event
   cites that SHA.
+- **Then close the task** (issue #58): mark it `done` through `plan-update.py` and remove its
+  worktree (`git -C ../<project-name>/ worktree remove <path>`; `--force` only once nothing in
+  it is needed). `plan-update.py` refuses (exit 31) to mark a task with an `observation:`
+  field `done` unless its latest `check` passed or its `merge` succeeded. The only other close
+  is the operator's recorded exemption, written before the PLAN transaction:
+  `$G exempt-close --task T0XX --kind gate2-skip|state-correction|operator --reason "..."`
+  plus `close_exempted` in TASK_LOG — a Gate-2 *skip* (`state.md` § Failure Handling), a
+  shipped-but-unrecorded task with no merge-gate row (`state.md` § Recovery Protocol, the
+  reason carries the evidence), or an operator's "finished without a merge". Designer,
+  architect and user tasks and legacy tasks (no `observation:` field) are not gated.
 - **Legacy tasks** (no `observation:` field) skip the observation check with a warning; the
   pin, review-at-SHA and production-diff checks still apply. A review recorded before this
   change carries no `head_sha` — re-review, or override `review` with the reason.

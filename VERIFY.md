@@ -44,7 +44,18 @@ JSON/URLSession/persistence are R1, and what counts as a valid R2 pass on a simu
 
 Mechanical checks run inside `dispatch.sh`'s verify loop via the verify-cmd argument **only
 to the extent that project's verify-cmd covers them**. A green dispatch means "the verify-cmd
-exited 0" and nothing more. It does not mean tests ran.
+exited 0" and nothing more. It does not mean tests ran. `logs/cost.jsonl` says so on every
+run: `verify_scope` is `verify_cmd` (the green covers that command only) or `none`.
+
+**The builder's acceptance line (issues #21, #58).** Every build turn is told to end its
+report with `ACCEPTANCE: MET` or `ACCEPTANCE: UNMET — <which criterion, and why>`. The last
+such line across the run's turns wins. A run whose builder says UNMET **exits 22**, never 0,
+even when the verify-cmd passed: gamedaytastic T073's builder reported that the spec's
+red-first proof could not run, and dispatch still printed `verify passed` and exited 0. Exit
+22 is neither green nor a failure (`.claude/rules/dispatch.md`, exit table); `cost.jsonl`
+records `acceptance: met | unmet | null`. A MET claim proves nothing — acceptance is observed
+at the merge gate (§ Merge gate) — but an UNMET claim is the builder telling you the green is
+not what it looks like.
 
 | Check | Runs where | Owner |
 |---|---|---|
@@ -279,8 +290,18 @@ Effect — the review rung is forced up, in two places:
    security task whose clearing adjudication names another model. The operator's logged
    `--outcome override --reason ...` stands whatever model records it. Adjudications
    recorded before #57 carry no model and are accepted as legacy, with a warning. The
-   check is `review_gate.security_floor_problem`; the merge-time diff adjudication is not
-   yet checked by it (issue #58).
+   check is `review_gate.security_floor_problem`.
+   At merge time it is enforced too (issue #58): after the Sonnet-or-higher first-pass review
+   approves the commit, the Opus partner records its adjudication of that review with
+   `merge_gate.py adjudicate --task T0XX --dir <worktree> --model <opus model>`. The call is
+   refused for a `security: true` task unless `--model` is Opus-class, and `merge_gate.py
+   check` refuses a security task (`security` check) without such a row **at the commit being
+   merged** — the same `security_floor_problem` test, applied to the `merge_adjudication` row,
+   so a hand-written or pre-flag row from another model still fails. The operator's decision
+   to merge without it is `merge_gate.py override --check security --reason ...`. The row
+   type is new, so there is no legacy form: an in-flight security task needs one adjudicate
+   call (or the override) before it merges. The Sonnet-minimum first pass is still the
+   orchestrator's routing choice (the reviewer's model is recorded, not ranked).
 
 Where this collides with the family-diversity rule above (a claude-built security diff),
 both gates apply: use a non-Anthropic reviewer at or above the Sonnet capability rung in
@@ -348,12 +369,28 @@ production diff: empty. Every gate did its job against the wrong input.
 | `review` | the latest reviewer verdict for this commit approves, with no blockers, and read a clean tree | `dispatch.sh --role reviewer` (records `head_sha`/`tree_clean`), or `review_gate.py record --head-sha` for a subagent review |
 | `production_diff` | the net diff merge-base..commit is non-empty and touches a production path — unless the task is `observation: none` | git; path classes are project policy |
 | `observation` | `test`: a passing fail-on-base run on this commit · `runtime`: an observation recorded on this commit · `none`: nothing more | `merge_gate.py fail-on-base` / `observe` |
+| `security` | `security: true` only: an Opus-class adjudication of this commit's approving review (§ Security-sensitive tasks) | `merge_gate.py adjudicate --model` |
 
 Nothing carries forward: a commit after the evidence voids all of it, and the refusal lists the
 commits since. `merge_gate.py merge` runs the check and then `gh pr merge --match-head-commit
 <sha>`, so GitHub refuses the merge if the PR head moves after the check. The evidence lives in
 `logs/verdicts.jsonl` beside the reviewer verdicts it has to be joined with. The orchestrator's
 procedure is `.claude/rules/dispatch.md` § Merge gate.
+
+**The base is fetched, not trusted (issue #58).** A remote-tracking `--base origin/<x>` is
+fetched by the gate before the merge base is computed (`--no-fetch` skips it and records a
+warning; a failed fetch is a refusal, not a silent stale base). A local `--base <x>` whose
+upstream has commits it lacks is refused with the fix; a local branch with no upstream, a tag
+or a SHA is used as given, with a warning. Pass `origin/<base>`.
+
+**Closing the task (issue #58).** A task carrying the `observation:` field — every build or
+inline task written since #35 — may only be marked `done` (through `plan-update.py`) once its
+latest `merge_gate.py check` passed or its `merge` succeeded, so a task can no longer be
+closed at PR-open time or on a refused check. The two legitimate closes without a merge are
+operator decisions, recorded before the PLAN write: `merge_gate.py exempt-close --task T0XX
+--kind gate2-skip|state-correction|operator --reason "..."` (lease owner). Designer,
+architect and user tasks, and legacy tasks with no `observation:` field, are not gated;
+`superseded`/`failed` transitions are not closes.
 
 **Net-empty production diff.** A path is *test* if it matches `PROJECT.md § Test paths`,
 *non-production* if it matches `§ Non-production paths`, and *production* otherwise (generic
@@ -373,7 +410,13 @@ branch**, recorded on the task as `observation: test | runtime | none`:
   requires it to **fail**, then runs it on the branch and requires it to **pass**. A test that
   passes on the base tree observes nothing and is refused; so is a diff that changes no test.
   A failure that is a compile or harness error is weaker evidence than an assertion failure —
-  `--expect-fail-pattern` pins the expected one. This is the red-first proof #21's T073 asked
+  `--expect-fail-pattern` pins the expected one. Test wiring that lives in a production file
+  (an Xcode `project.pbxproj` registering the new test file) is overlaid too when the project
+  declares it under `PROJECT.md § Test support paths` (issue #58): without it the base run
+  fails on the harness ("no such test") rather than the assertion, or does not run the test at
+  all. A support file stays a production path for the production-diff check and never counts
+  as the changed test. `--overlay <path>` remains for a one-off test file outside the declared
+  classes. This is the red-first proof #21's T073 asked
   the builder for, run by the orchestrator, where a builder's claim cannot stand in for it.
 - **`runtime`** — only visible by running the product. The orchestrator (or operator)
   observes it on the commit being merged and records it with `merge_gate.py observe
@@ -412,6 +455,10 @@ the evidence ladder. What they apply to is **project policy**, declared in the p
   for the merge gate (#35). A glob with no `/` except a trailing one matches at any depth,
   `**` spans directories, a trailing `/` means everything under it. Declaring a class
   replaces its default.
+- `## Test support paths` — same glob syntax, default none: production files that carry test
+  wiring, overlaid onto the base tree by fail-on-base (#58). Policy, not a per-call flag,
+  because which files wire tests is a property of the project's build system, and a flag the
+  orchestrator must remember on every call is the kind of discipline that gets skipped.
 
 Everything is optional; absent parts use the generic defaults in
 `scripts/project_policy.py`. `orchestrator-doctor.py` fails on a malformed declaration, and
@@ -432,6 +479,7 @@ graduates into the framework.
 - The orchestrator does not merge until the tier's full ladder has passed and the diff
   review verdict is recorded — and `scripts/merge_gate.py check` (or `merge`) passes on the
   exact commit being merged (§ Merge gate). Tasks also carry `observation: test|runtime|none`
-  (+ `observation_cmd` for `test`).
+  (+ `observation_cmd` for `test`). `plan-update.py` refuses to close such a task without
+  that pass or a recorded exemption (issue #58).
 - Genuinely device-only checks (GPU effects, haptics, perf feel) are flagged as an
   explicit human pass — never silently skipped, never auto-passed.

@@ -187,13 +187,22 @@ def plan_task(plan_path, task_id):
         text = Path(plan_path).read_text()
     except OSError:
         return None
-    tasks = re.search(r'^tasks:\s*$(.*)', text, re.M | re.S)
+    return plan_tasks(text).get(task_id)
+
+
+def plan_tasks(text):
+    """Every task's scalar fields (PLAN_FIELDS) from PLAN.md text, keyed by task id, in order."""
+    found = {}
+    tasks = re.search(r'^tasks:\s*$(.*)', text or '', re.M | re.S)
     if not tasks:
-        return None
+        return found
     for chunk in re.split(r'(?m)^(?=\s+- id:)', tasks.group(1)):
         head = re.match(r'\s+- id:\s*(\S+)', chunk)
-        if not head or head.group(1).strip('"\'') != task_id:
+        if not head:
             continue
+        task_id = head.group(1).strip('"\'')
+        if task_id in found:
+            continue        # a duplicate id is plan-lint's to report; the first one wins here
         fields = {}
         for key in PLAN_FIELDS:
             # A quoted value may carry '#' (an observation_cmd); an unquoted one ends at a comment.
@@ -205,8 +214,8 @@ def plan_task(plan_path, task_id):
                 fields[key] = re.sub(r'\\(.)', r'\1', double)
             else:
                 fields[key] = single if single is not None else bare.strip()
-        return fields
-    return None
+        found[task_id] = fields
+    return found
 
 
 def critique_required(task):
@@ -258,8 +267,9 @@ def is_opus_class(model):
 def security_floor_problem(row):
     """Why an adjudication row does NOT satisfy the security Opus floor, or None when it does.
 
-    Reusable by any gate that must check a security task's adjudicator (issue #58 wants the
-    same check at merge time). Rules:
+    Reusable by any gate that must check a security task's adjudicator: the build gate here,
+    and merge_gate.check_security on the merge-time ``merge_adjudication`` row (issue #58).
+    Rules:
       - ``override`` is the operator's logged decision (it needs --reason); it stands whatever
         model recorded it.
       - a row with no ``model`` key predates issue #57 (legacy): accepted, with a warning from

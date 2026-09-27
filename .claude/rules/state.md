@@ -26,15 +26,17 @@ Three of the four telemetry streams are mechanical — no orchestrator disciplin
 | **Orchestrator's own burn** | `Stop` hook, `scripts/log-partner-burn.py` | `logs/cost.jsonl` (`role: partner`) |
 | Role + task attribution | **you**, via `cost_event` below | `TASK_LOG.md` |
 | Critic/reviewer verdicts, adjudications, round-cap overrides | `dispatch.sh` + `scripts/review_gate.py` | `logs/verdicts.jsonl` |
-| Merge evidence pinned to a SHA: verification, fail-on-base, observations, merge overrides and checks | `scripts/merge_gate.py` | `logs/verdicts.jsonl` (+ command output under `logs/merge-gate/`) |
+| Merge evidence pinned to a SHA: verification, fail-on-base, observations, merge adjudications, overrides and checks; close exemptions | `scripts/merge_gate.py` | `logs/verdicts.jsonl` (+ command output under `logs/merge-gate/`) |
 
 `logs/verdicts.jsonl` is not telemetry — it is **gate state** (issues #18, #50, #35): the
 critique build gate, the round caps and the merge gate are computed from it. Never edit or
 truncate it; write to it only through `review_gate.py` (`adjudicate`, `override-cap`,
-`record`) and `merge_gate.py` (`verify`, `fail-on-base`, `observe`, `override`, `check`,
-`merge`). Decisions (`adjudicate`, `override-cap`, `observe`, `override`) need the lease in a
-managed project. An `adjudication` row records `model` (the adjudicating model; a
-row without the key predates issue #57), `spec_path` and `spec_sha256` (the spec it decided
+`record`) and `merge_gate.py` (`verify`, `fail-on-base`, `observe`, `adjudicate`, `override`,
+`exempt-close`, `check`, `merge`). Decisions (both `adjudicate`s, `override-cap`, `observe`,
+`override`, `exempt-close`) need the lease in a managed project. `plan-update.py` reads it
+too: a task with an `observation:` field is not closed (`done`) without a passing merge-gate
+`check`/`merge` or a `close_exemption` row (issue #58). An `adjudication` row records
+`model` (the adjudicating model; a row without the key predates issue #57), `spec_path` and `spec_sha256` (the spec it decided
 on). `logs/locks/` holds the per-task critic/reviewer round locks; they are empty files,
 released by the kernel with their dispatch — never delete one to "unstick" a run.
 
@@ -42,6 +44,10 @@ The manual `cost_event` adds what the hooks cannot know: the **role** (Designer 
 vs Reviewer) and task attribution. Append one after every subagent spawn and before each
 `dispatch.sh` call; if you forget, the hook log still catches the spawn, just without role
 attribution.
+
+Every dispatch row also carries `verify_scope` (`verify_cmd`: the green covers the project's
+verify command only; `none`: no verifier ran) and `acceptance` (`met` | `unmet` | `null` — the
+builder's own `ACCEPTANCE:` line; `unmet` is the exit-22 case, issue #58).
 
 **The partner stream is the largest one.** Until 2026-08-20 it did not exist in practice —
 the hook was wired but silently wrote nothing (issue #30), and reconstructing it from session
@@ -171,7 +177,11 @@ Then:
 - **`failure_count == 1`**: Retry automatically. Append `task_retrying`. Re-dispatch.
 - **`failure_count == 2`**: **Gate 2** — stop. Report both errors to user. Wait for decision:
   - *retry*: reset `failure_count` to 0, re-dispatch
-  - *skip*: mark task `done` with note, continue (only if downstream tasks can proceed)
+  - *skip*: record the operator's decision first —
+    `merge_gate.py exempt-close --task T0XX --kind gate2-skip --reason "<the decision>"` and
+    `close_exempted` in TASK_LOG — then mark the task `done` with a note and continue (only if
+    downstream tasks can proceed). `plan-update.py` refuses the `done` without the exemption
+    for a task with an `observation:` field (issue #58).
   - *abort*: halt all work, leave state as-is for manual inspection
 
 Because dispatch.sh now self-corrects against the verifier and the PM escalates tiers
@@ -218,7 +228,10 @@ If invoked mid-project (context was reset, prior session ended):
    shows terminal evidence (`pr_opened` + merge, `task_completed`, a `stage_complete` naming
    it, branch/worktree removal) is `done`. Record it `done` with the `completed_at` the log
    gives, log a `state_correction` — never `task_failed`/`task_interrupted` — and leave
-   `failure_count` unchanged.
+   `failure_count` unchanged. If the merge went through `merge_gate.py merge`/`check`, its
+   ledger row already lets `plan-update.py` close the task; otherwise (a merge from before
+   #58, or outside the gate) record `merge_gate.py exempt-close --kind state-correction
+   --reason "<the evidence>"` first (issue #58).
 
 ### `state_correction`
 

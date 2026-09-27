@@ -25,6 +25,10 @@
 #   The build gate also refuses a task whose spec changed since its adjudication, and a
 #   security: true task whose proceed was not recorded by an Opus-class model.
 #
+# [issue #58] Build runs exit 22 when the verify-cmd passed (or none was set) but the builder's
+#   report ends with `ACCEPTANCE: UNMET — <why>`: not green, not a failure. cost.jsonl records
+#   `verify_scope` (verify_cmd | none) and `acceptance` (met | unmet | null) on every run.
+#
 # --backend: which builder CLI runs the task. Default is inferred from the model slug:
 #   gpt-* → codex; claude-*/sonnet/opus/haiku → claude; anything else (openrouter/*) → opencode.
 #   codex model slugs may carry a reasoning effort suffix: `gpt-5.6-sol@low` (default: the
@@ -57,9 +61,9 @@
 #   opencode and the verifier both run inside the worktree, so the human's working tree and
 #   any uncommitted work are untouchable, parallel dispatches can't collide, and opencode's
 #   per-directory session store makes --continue unambiguous per task. The worktree is left
-#   in place — the PM inspects it, opens the PR from its branch, then removes it with
-#   `git worktree remove <path>`. The worktree path is printed to stderr as
-#   "[dispatch] worktree: <path>".
+#   in place — the PM inspects it, opens the PR from its branch, runs the merge gate in it, and
+#   removes it with `git worktree remove <path>` once the task is closed (issue #58). The
+#   worktree path is printed to stderr as "[dispatch] worktree: <path>".
 #
 # Runs opencode on the task. If <verify-cmd> is given, it then verifies the working tree
 # and self-corrects: on a failed verify it continues the SAME opencode session with the
@@ -432,6 +436,14 @@ inside the spec's scope, implement it, and state the assumption in your final re
 stop early for something you truly cannot do (a missing file, a contradiction in the spec),
 and then report exactly what blocked you and what you completed.
 
+**End your final report with one acceptance line, on a line of its own:**
+`ACCEPTANCE: MET` when every acceptance criterion the spec assigns to you is met, or
+`ACCEPTANCE: UNMET — <which criterion, and why>` when any is not — including one the spec asks
+you to demonstrate that you could not (a test you could not run, a red-first proof you could
+not produce). dispatch.sh reads this line: UNMET makes the run exit 22 instead of green, so
+the orchestrator acts on it. Test execution the orchestrator performs after your run is not
+yours, and does not by itself make acceptance unmet.
+
 PREAMBLE_AUTONOMY
   [ -n "$shape" ] || { echo "---"; echo; return 0; }
 
@@ -720,6 +732,8 @@ fi
 # Never fatal — telemetry must not affect the dispatch exit code.
 START_EPOCH="$(date +%s)"
 ATTEMPTS_USED=1
+ACCEPTANCE_STATE=""        # met | unmet | "" (no ACCEPTANCE line) — the builder's own claim
+ACCEPTANCE_REASON=""
 # Primary-reliability telemetry: the cost record's `model` field is ACTIVE_MODEL (what actually
 # did the work, for correct cost attribution), which flips to the fallback on a primary infra
 # failure — so a primary that fails and is rescued is otherwise invisible in cost.jsonl. Record
@@ -792,11 +806,15 @@ emit_cost() {
   dur=$(( end_epoch - START_EPOCH ))
   if [ -z "$VERIFY_CMD" ]; then
     verify_passed=null   # no verifier configured — exit 0 means "opencode ran", not "verified"
-  elif [ "$code" -eq 0 ]; then
-    verify_passed=true
+  elif [ "$code" -eq 0 ] || [ "$code" -eq 22 ]; then
+    verify_passed=true   # 22: the verifier passed; the builder reported acceptance unmet
   else
     verify_passed=false
   fi
+  # [issues #21, #58] What a green covers, and what the builder said about acceptance.
+  local verify_scope=verify_cmd acceptance=null
+  { $READ_ONLY || [ -z "$VERIFY_CMD" ]; } && verify_scope=none
+  [ -n "$ACCEPTANCE_STATE" ] && acceptance="\"$ACCEPTANCE_STATE\""
   cost_usd=null; in_tok=null; out_tok=null; cache_tok=null; reason_tok=null
   case "$BACKEND" in
     opencode)
@@ -849,11 +867,11 @@ print(f'{i}|{o}|{c}')" "$CLAUDE_RESULTS" 2>/dev/null)"
   if [[ "$in_tok" =~ ^[0-9]+$ ]] && [[ "$out_tok" =~ ^[0-9]+$ ]]; then
     quota_tok=$((in_tok + out_tok))
   fi
-  printf '{"ts":"%s","role":"%s","backend":"%s","prompt":"%s","model":"%s","primary_model":"%s","fallback_used":%s,"stall_retries":%s,"tier":%s,"attempts":%s,"verify_passed":%s,"exit":%s,"duration_s":%s,"cost_usd":%s,"input_tokens":%s,"output_tokens":%s,"cache_read_tokens":%s,"reasoning_tokens":%s,"burn_proxy":%s,"quota_proxy_tokens":%s,"log":"%s"}\n' \
+  printf '{"ts":"%s","role":"%s","backend":"%s","prompt":"%s","model":"%s","primary_model":"%s","fallback_used":%s,"stall_retries":%s,"tier":%s,"attempts":%s,"verify_passed":%s,"verify_scope":"%s","acceptance":%s,"exit":%s,"duration_s":%s,"cost_usd":%s,"input_tokens":%s,"output_tokens":%s,"cache_read_tokens":%s,"reasoning_tokens":%s,"burn_proxy":%s,"quota_proxy_tokens":%s,"log":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PM_ROLE:-opencode}" "$BACKEND" "$(basename "$PROMPT_FILE")" "$ACTIVE_MODEL" \
     "$MODEL" "$FALLBACK_USED" "${STALL_RETRIES_USED:-0}" \
     "$([ -n "$TIER" ] && printf '"%s"' "$TIER" || echo null)" \
-    "${ATTEMPTS_USED:-1}" "$verify_passed" "$code" "$dur" \
+    "${ATTEMPTS_USED:-1}" "$verify_passed" "$verify_scope" "$acceptance" "$code" "$dur" \
     "${cost_usd:-null}" "${in_tok:-null}" "${out_tok:-null}" "${cache_tok:-null}" "${reason_tok:-null}" \
     "${BURN_PROXY:-null}" "$quota_tok" \
     "$(basename "$LOG_FILE")" | python3 "$DISPATCH_HERE/scripts/append-cost.py" "$LOG_DIR" || echo "[dispatch] cost telemetry append failed" >&2
@@ -1280,6 +1298,41 @@ finish() {
   exit "$code"
 }
 
+# --- [issues #21, #58] The builder's acceptance line ---------------------------------------
+# gamedaytastic T073: the builder reported plainly that the spec's red-first proof could not be
+# run, and dispatch still printed "verify passed" and exited 0 — its report was prose nobody
+# parsed. The preamble now asks every build turn to end with `ACCEPTANCE: MET` or
+# `ACCEPTANCE: UNMET — <why>`; the LAST such line across all of the run's turns wins (a later
+# turn may resolve an earlier UNMET, or a verify-fix turn may not repeat it). A run whose
+# builder said UNMET never exits 0: it exits 22 (see finish_build). Markdown decoration around
+# the line (`**`, backticks, a quote marker) is tolerated. A claim of MET is recorded but proves
+# nothing — the merge gate is where acceptance is observed.
+note_acceptance() {
+  local line
+  [ -s "$1" ] || return 0
+  line="$(grep -E '^[[:space:]>*`_]*ACCEPTANCE[*`_]*:[[:space:]*`_]*(UN)?MET([^A-Za-z]|$)' "$1" | tail -n 1)"
+  [ -n "$line" ] || return 0
+  case "$line" in
+    *UNMET*)
+      ACCEPTANCE_STATE=unmet
+      ACCEPTANCE_REASON="$(printf '%s' "$line" | sed -E 's/^.*UNMET[^A-Za-z0-9]*//' | cut -c1-300)" ;;
+    *) ACCEPTANCE_STATE=met; ACCEPTANCE_REASON="" ;;
+  esac
+}
+
+# A build run that got this far is green on its verify-cmd (or had none). The builder's own
+# UNMET turns that into exit 22: not green, not a failure — the orchestrator routes it
+# (.claude/rules/dispatch.md, exit table).
+finish_build() {
+  if [ "$ACCEPTANCE_STATE" = unmet ]; then
+    echo "[dispatch] acceptance UNMET (builder's report): ${ACCEPTANCE_REASON:-no reason given}" >&2
+    echo "[dispatch] exit 22 — not green: the verify-cmd passed, but the builder says an acceptance criterion is unmet. Not a failure_count event; route it per dispatch.md." >&2
+    echo "[dispatch] --- acceptance UNMET (exit 22) at $(date): ${ACCEPTANCE_REASON:-no reason given} ---" >> "$LOG_FILE"
+    finish 22
+  fi
+  finish 0
+}
+
 # --- Read-only mode: snapshot the tree state so violations are detectable ---
 # Snapshot = porcelain status (catches new/deleted/newly-modified files) + a hash of the
 # full diff against HEAD (catches further edits to files that were ALREADY dirty, which
@@ -1334,6 +1387,7 @@ if [ $? -ne 0 ]; then
     finish_failed_turn
   fi
 fi
+$READ_ONLY || note_acceptance "$STALL_OUT"
 
 # --- [issue #18] Record a critic/reviewer run's structured verdict --------------------------
 # The verdict is parsed from the role's CRITIC_RESULT / REVIEWER_RESULT block (never from its
@@ -1370,7 +1424,7 @@ if $READ_ONLY; then
 fi
 
 # --- No verifier configured: preserve legacy behavior (build/no-op check is the PM's job) ---
-[ -z "$VERIFY_CMD" ] && finish 0
+[ -z "$VERIFY_CMD" ] && finish_build
 
 # --- Verify + self-correct loop ---
 attempt=1
@@ -1381,7 +1435,7 @@ while true; do
     echo "[dispatch] verify passed on attempt $attempt/$MAX_ATTEMPTS." >&2
     # [issues #21, #35] Say what that green covers: the project's verify-cmd, nothing more.
     echo "[dispatch] scope: verify-cmd only — not the task's acceptance observation; the merge gate (scripts/merge_gate.py) pins and checks that." >&2
-    finish 0
+    finish_build
   fi
   RUN_VERIFY_PASSED=false
 
@@ -1400,6 +1454,7 @@ while true; do
   capture_builder_turn "$ACTIVE_MODEL" "$CONTINUE_OUT" \
     run_builder_continue "$ACTIVE_MODEL" "$FEEDBACK"
   continue_ec=$?
+  note_acceptance "$CONTINUE_OUT"
   rm -f "$CONTINUE_OUT"
   [ "$continue_ec" -eq 0 ] || finish_failed_turn
   attempt=$((attempt + 1))
