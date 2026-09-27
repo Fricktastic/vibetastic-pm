@@ -144,7 +144,7 @@ CODEX_LOGS="$DISPATCH_TMP/codex-logs"
 CODEX_CALLS="$DISPATCH_TMP/codex-calls"
 CODEX_FLAG="$DISPATCH_TMP/codex-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CODEX_CALLS" FAKE_VERIFY_FLAG="$CODEX_FLAG" \
-  CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" \
+  CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" DISPATCH_ALLOW_NO_WORKTREE=1 \
   bash dispatch.sh --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
   '' "test -f $CODEX_FLAG" 2 standard > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
 got=$?
@@ -185,7 +185,7 @@ CLAUDE_LOGS="$DISPATCH_TMP/claude-logs"
 CLAUDE_CALLS="$DISPATCH_TMP/claude-calls"
 CLAUDE_FLAG="$DISPATCH_TMP/claude-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CLAUDE_CALLS" FAKE_VERIFY_FLAG="$CLAUDE_FLAG" \
-  OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" \
+  OPENCODE_DISPATCH_LOG_DIR="$CLAUDE_LOGS" DISPATCH_ALLOW_NO_WORKTREE=1 \
   bash dispatch.sh --backend claude claude-sonnet-4.6 "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
   '' "test -f $CLAUDE_FLAG" 2 standard > /dev/null 2> "$DISPATCH_TMP/claude.stderr"
 got=$?
@@ -303,6 +303,35 @@ else
   fail "a worktree path holding another branch was reused (exit $got)"
 fi
 rm -rf "$WT_TMP"
+
+echo "[selftest] a build dispatch without --worktree is refused everywhere (issue #15)"
+# Only the leased path used to enforce this; a legacy project could build in the live checkout.
+NW_TMP="$(mktemp -d)"; NW_BIN="$NW_TMP/bin"; NW_PROJ="$NW_TMP/project"
+mkdir -p "$NW_BIN" "$NW_PROJ"; git -C "$NW_PROJ" init -q
+printf 'task\n' > "$NW_TMP/task-T991.md"
+printf '#!/bin/bash\nprintf call >> "$NW_CALLS"\nprintf "%%s\\n" %s\n' \
+  "'{\"session_id\":\"nw\",\"result\":\"nw report\"}'" > "$NW_BIN/claude"
+chmod +x "$NW_BIN/claude"
+nw_dispatch() {  # extra env assignment (or ''), extra flag (or '') -> exit code
+  env -u DISPATCH_ALLOW_NO_WORKTREE PATH="$NW_BIN:$PATH" NW_CALLS="$NW_TMP/calls" \
+    OPENCODE_DISPATCH_LOG_DIR="$NW_TMP/logs" ${1:+"$1"} \
+    bash dispatch.sh ${2:+"$2"} --backend claude sonnet "$NW_PROJ" "$NW_TMP/task-T991.md" '' true 1 standard \
+    > /dev/null 2> "$NW_TMP/stderr"
+}
+nw_dispatch '' ''; got=$?
+if [ "$got" = 2 ] && [ ! -e "$NW_TMP/calls" ] && grep -q 'no --worktree' "$NW_TMP/stderr"; then
+  pass "an unmanaged build dispatch without --worktree is refused before the builder runs"
+else
+  fail "a build dispatch without --worktree was not refused (exit $got)"
+fi
+nw_dispatch DISPATCH_ALLOW_NO_WORKTREE=1 ''; got=$?
+[ "$got" = 0 ] && pass "DISPATCH_ALLOW_NO_WORKTREE=1 permits a deliberate exception" \
+  || fail "DISPATCH_ALLOW_NO_WORKTREE=1 did not permit the dispatch (exit $got)"
+rm -f "$NW_TMP/calls"
+nw_dispatch '' --read-only; got=$?
+[ "$got" = 0 ] && pass "a --read-only dispatch needs no worktree" \
+  || fail "a --read-only dispatch was refused for lacking --worktree (exit $got)"
+rm -rf "$NW_TMP"
 
 echo "[selftest] partner-burn hook records orchestrator usage"
 # The whole cost of issue #30 was that this hook's failure and success looked identical from

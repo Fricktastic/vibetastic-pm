@@ -20,7 +20,8 @@
 #   The verify loop is skipped in this mode.
 #
 # --worktree <branch>: run the builder in an isolated git worktree instead of the live
-#   checkout. The worktree is created at <project-dir>/../<project>-worktrees/<branch-dirname>
+#   checkout. REQUIRED for build (non --read-only) dispatches: without it dispatch exits 2
+#   unless DISPATCH_ALLOW_NO_WORKTREE=1 (issue #15). The worktree is created at <project-dir>/../<project>-worktrees/<branch-dirname>
 #   (the branch with every character outside [A-Za-z0-9._-] replaced by '-', so task/T012 ->
 #   task-T012) on <branch> (created from the current HEAD if it doesn't exist; reused on a
 #   re-dispatch of the same branch, e.g. a tier-escalation re-run). The path is keyed on the
@@ -229,6 +230,17 @@ if [ -z "$VERIFY_CMD" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_VERIFY:-0}" !=
   echo "[dispatch] refusing a build dispatch with no verify-cmd (arg 5)." >&2
   echo "           Pass the project's verify command from PROJECT.md § Verify command," >&2
   echo "           or set DISPATCH_ALLOW_NO_VERIFY=1 to override deliberately." >&2
+  exit 2
+fi
+# --- [issue #15] A build dispatch without --worktree runs in the live checkout -----------
+# dispatch.md said "always pass it for build tasks" — prose, and only the managed (leased)
+# path enforced it. Same precedent as [0a]: the verifier rule was ignored on 86% of runs
+# until it became exit 2. Refuse every build (non --read-only) dispatch without a worktree;
+# DISPATCH_ALLOW_NO_WORKTREE=1 is the deliberate, TASK_LOG-justified exception.
+if [ -z "$WORKTREE_BRANCH" ] && ! $READ_ONLY && [ "${DISPATCH_ALLOW_NO_WORKTREE:-0}" != "1" ]; then
+  echo "[dispatch] refusing a build dispatch with no --worktree <branch>." >&2
+  echo "           Builders never run in the live checkout (dispatch.md). Pass the task's branch," >&2
+  echo "           or set DISPATCH_ALLOW_NO_WORKTREE=1 to override deliberately." >&2
   exit 2
 fi
 # --- [issue #36/#37] A verify-cmd that cannot compile the tests -------------------------

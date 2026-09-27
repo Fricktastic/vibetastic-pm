@@ -282,7 +282,11 @@ Corollary: if you find yourself wanting to poll for a dispatch's completion, tha
 signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monitor loop
 (`.claude/rules/economy.md`).
 
-- `--worktree <branch>`: **always pass it for build tasks.** The builder runs in an isolated
+- `--worktree <branch>`: **always pass it for build tasks.** dispatch.sh **refuses (exit 2)**
+  any build (non `--read-only`) dispatch without it, managed or not (issue #15);
+  `DISPATCH_ALLOW_NO_WORKTREE=1` exists for deliberate exceptions and must be justified in
+  the TASK_LOG entry, same convention as `DISPATCH_ALLOW_NO_VERIFY=1`. (Managed/leased
+  projects additionally stop with exit 31 before any reservation.) The builder runs in an isolated
   git worktree (`../<project-name>-worktrees/<branch-dirname>/`, e.g. `task-T0XX/` for
   branch `task/T0XX`) on `<branch>`, never in the live checkout — the human's uncommitted
   work is untouchable and parallel dispatches can't collide. The path is keyed on the
