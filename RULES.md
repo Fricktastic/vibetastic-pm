@@ -399,7 +399,7 @@ extraction bounded on the wrong line once tested nothing while reporting green.
 
 ### Tech Lead
 - **Receives:** Issue description, full build-spec, PLAN.md summary, target project path, optional error output
-- **Does:** Reads actual source files in the target project to understand current state; fetches Apple/framework docs via Sosumi MCP if relevant; writes a precise task spec
+- **Does:** Reads actual source files in the target project to understand current state; fetches Apple/framework docs via Sosumi MCP if relevant; writes a precise task spec. A defect-fix spec carries **Symptom / Mechanism / Evidence**, with Evidence an observed artifact cited by path; with only reasoning from source it specs an instrumentation task instead of the fix (lesson 4; `VERIFY.md` § Pre-build critique)
 - **Returns:** Task spec section (appended to build-spec.md) + structured YAML metadata (task title, branch, issue refs, depends_on, suggested tier, `verify_tier`, a `risk: true|false` flag set from the project's risk triggers — it alone decides pre-build critique — a `security: true|false` flag, and `observation: test|runtime|none` + `observation_cmd`: the one observation that fails on the base tree and passes on the branch, which the merge gate checks — `VERIFY.md` § Merge gate). Sets `security: true` when the diff touches auth, credentials, keychain, entitlements, network trust, sandboxing, or input validation on external data — this forces the review rung up (see `VERIFY.md` § Security-sensitive tasks). Bias toward `true` when unsure.
 - **Does not:** Write code, execute commands in the target project, or make implementation decisions beyond speccing
 - **Model:** Sonnet by default; PM may use Opus for complex architectural tasks

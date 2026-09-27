@@ -70,6 +70,20 @@ class RoleResultTests(unittest.TestCase):
         for name in ('architect.md','critic.md','reviewer.md'):
             self.assertIn('fails on', (ROOT/'prompts'/name).read_text(), name)
 
+    def test_defect_evidence_contract_spans_author_and_critic(self):
+        """The fields the Tech Lead writes are the ones the critic blocks on (issue #46)."""
+        spec=(ROOT/'prompts/tech-lead.md').read_text()
+        critic=(ROOT/'prompts/critic.md').read_text()
+        for field in ('**Symptom:**','**Mechanism:**','**Evidence:**'):
+            self.assertIn(field, spec, field)
+            self.assertIn(field.strip('*:'), critic, field)
+        self.assertIn('## Defect evidence check', critic)
+        check=critic.split('## Defect evidence check',1)[1].split('\n## ',1)[0]
+        self.assertIn('[BLOCKING-PLAN]', check)
+        self.assertIn('reasoning from source', check)
+        # the finding must use a tag the result block counts, or it never blocks the build
+        self.assertIn('blocking_plan: <number of [BLOCKING-PLAN] findings>', critic)
+
     def test_architect_separates_spec_body_from_registration_metadata(self):
         reply='long build spec\n<!-- ARCHITECT_RESULT_START -->\n```yaml\nselected_tier: standard\n```\n'
         spec, meta=self.module.architect_result(reply)

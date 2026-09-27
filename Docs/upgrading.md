@@ -84,6 +84,11 @@ or while the latest one carries a `[BLOCKING-PLAN]` finding. Never self-approve 
       from the new `framework/prompts/critic.md` / `reviewer.md`. Old renders have no
       `CRITIC_RESULT` / `REVIEWER_RESULT` block, so their run is recorded as `MALFORMED` —
       which still counts as a round.
+- [ ] Defect-fix specs not yet critiqued (issue #46): the new critic returns `[BLOCKING-PLAN]`
+      when a defect fix has no **Symptom / Mechanism / Evidence**, or its Evidence is
+      reasoning from source rather than an observed artifact cited by path. Before rendering
+      the critic, have the Tech Lead add the fields, or spec an instrumentation task first
+      (`VERIFY.md` § Pre-build critique). Otherwise the finding costs a critique round.
 - [ ] Name role prompts `critic-T0XX.md` / `review-T0XX.md` and fixup prompts
       `fixup-T0XX*.md`, or pass `--task T0XX`. The gates find the task from the name; a
       prompt they cannot attribute is not gated or counted.

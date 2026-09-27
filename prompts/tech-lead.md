@@ -93,6 +93,10 @@ If the issue involves an Apple framework or SwiftUI API, use the Sosumi MCP tool
 
 Record what you find. Your spec must be grounded in actual code state.
 
+For a defect, reading the code tells you where a fix would go. It does not tell you which
+branch actually ran or on what values. A root cause you derived by reading source is a
+hypothesis until something observed confirms it (Section 1, **Evidence**).
+
 ---
 
 ## Step 2 — Write the Task Spec
@@ -110,6 +114,35 @@ The spec must contain every section below, in order.
 - **Scope:** what is in scope and what is explicitly not (guard against scope creep)
 - **Branch:** the exact branch name to use (`feature/...`, `fix/...`, `chore/...`)
 - **Issue refs:** GitHub issue numbers this task closes (e.g. `Closes #3, #4`)
+
+**Defect fixes: three more fields (issue #46).** A defect fix is a task that corrects
+behaviour that is wrong on the current tree: a bug report, a regression, a failed task's
+defect. Features, refactors and docs skip these fields. Put them right after **Root cause or
+motivation**, labelled exactly as below:
+
+- **Symptom:** what is observed to go wrong. Give the input or state and the wrong output,
+  not an interpretation of it.
+- **Mechanism:** the code path that produces the symptom: the branch taken and the values it
+  was taken on, with `file:line`.
+- **Evidence:** the observed artifact that ties the mechanism to the symptom. Cite it by path
+  (plus test name, or run log / dispatch id) and quote the few lines that pin the branch and
+  values. Say which type it is:
+  - *observed* — a device or console log, an instrumentation dispatch's output, a crash log,
+    compiler or verifier output, or a failing test that pins the branch taken and the values
+    it was taken on. With this, state the root cause in one paragraph, cite the artifact and
+    go straight to the change. Do not commission more diagnosis to confirm what the artifact
+    already shows (`.claude/rules/dispatch.md` § Round caps, `[0h]`).
+  - *reasoning from source* — however convincing. It never qualifies, and neither does an
+    artifact that shows only the symptom recurring. If this is all you have, **do not spec the
+    fix.** Spec an instrumentation task instead: log the branch taken and the values it was
+    taken on at the decision points you suspect, say what to reproduce, and use
+    `observation: runtime` (the captured log is the observation). Name the fix it unblocks.
+    The fix gets its own spec once the log exists, and cites it (`framework/RULES.md`
+    operating lesson 4). If the failing path can be driven by a test, a test that fails on
+    the current tree and pins the branch and values is also observed evidence.
+
+A defect-fix spec with no Evidence, or with reasoning-only Evidence, draws a
+`[BLOCKING-PLAN]` from the pre-build critic.
 
 ---
 
@@ -281,5 +314,7 @@ model's output.
 - The delimiter `<!-- TECH_LEAD_RESULT_START -->` must appear exactly once, on its own line.
 - If you cannot write the file, say so plainly instead of returning the spec inline — a
   failed write must not silently become the old double-transit behaviour.
+- If a defect had no observed evidence and you specced an instrumentation task instead of the
+  fix, say so in the summary lines, so the orchestrator knows a second spec follows.
 
 Do not add preamble or meta-commentary.

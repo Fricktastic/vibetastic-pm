@@ -83,6 +83,26 @@ rules above), or `none` (no behaviour change, with the reason). Return `[BLOCKIN
   mocks away the path the change is in;
 - `observation: none` is claimed for work that changes behaviour.
 
+## Defect evidence check (issue #46)
+
+If the plan fixes a defect (behaviour that is wrong on the current tree: a bug, a regression,
+a failed task's defect), it must carry **Symptom**, **Mechanism** and **Evidence**, and the
+Evidence must be *observed*: a cited artifact (a device or console log, an instrumentation
+dispatch's output, a crash log, compiler or verifier output, or a failing test) that pins the
+branch taken and the values it was taken on. Return `[BLOCKING-PLAN]` when:
+
+- the defect fix has no Evidence, or Evidence names no artifact;
+- the Evidence is reasoning from source — "the code at line N clearly does X" — however
+  convincing, or the author's confidence in it;
+- the artifact shows only the symptom, not the mechanism the plan edits. A log that the bug
+  still happens does not show which branch caused it.
+
+The fix for any of these is an instrumentation task first (`framework/RULES.md` operating
+lesson 4), not a better argument. Do not raise this finding against an instrumentation task
+itself, or against a plan that is not a defect fix. When the Evidence *is* observed, do not
+re-derive the root cause: take it as given and spend the review on placement and blast radius
+(Stance 1). A correct root cause does not make an edit safe.
+
 ## Verify-tier check
 
 Does the planned tier name the evidence this change actually needs, by **this project's**
