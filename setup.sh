@@ -160,7 +160,7 @@ reviewer_fixup_round_cap: 3   # reviewer-driven fixup rounds per task
      feeds its output back to the model and retries. Leave the code block empty to disable.
 
      It must COMPILE THE TEST TARGET, not just the app — on iOS use
-     `xcodebuild build-for-testing`, never a bare `build` (issue #36).
+     \`xcodebuild build-for-testing\`, never a bare \`build\` (issue #36).
 
      THIS IS NOT A TEST RUN. Builders cannot execute simulator-dependent tests
      (CoreSimulatorService is a Mach service no sandbox grant provides). Running the suite is

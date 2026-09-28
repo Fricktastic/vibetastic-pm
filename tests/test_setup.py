@@ -40,6 +40,17 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(policy['sources']['verify_tiers'],'default')
             self.assertEqual(policy['sources']['risk_triggers'],'default')
 
+    def test_template_prose_is_written_not_executed(self):
+        # The PROJECT.md heredoc is unquoted so ${VARS} expand; an unescaped backtick in its
+        # prose became command substitution and ran `xcodebuild build-for-testing` at setup.
+        with tempfile.TemporaryDirectory() as d:
+            r=subprocess.run(['bash',str(ROOT/'setup.sh'),'test',d,'org/repo'],cwd=d,capture_output=True,text=True)
+            self.assertEqual(r.returncode,0,r.stderr)
+            self.assertNotIn('command not found',r.stderr)
+            self.assertNotIn('xcodebuild:',r.stderr)
+            project=(Path(d)/'PROJECT.md').read_text()
+            self.assertIn('`xcodebuild build-for-testing`, never a bare `build`',project)
+
     def test_accepts_test_command_as_fifth_argument(self):
         with tempfile.TemporaryDirectory() as d:
             r=subprocess.run(
