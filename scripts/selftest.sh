@@ -631,11 +631,11 @@ else
     if [ "$got" = "$1" ]; then pass "$6"; else fail "$6 (expected exit $1, got $got)"; fi
   }
   # tier must select the model (11 field runs contradicted MODELS.md)
-  gate_case 2 codex    gpt-5.6-sol@high    standard false "tier standard + sol@high is refused"
+  gate_case 2 codex    gpt-6.1-sol@high    standard false "tier standard + sol@high is refused"
   gate_case 0 codex    gpt-5.6-terra       standard false "tier standard + terra is allowed"
   gate_case 2 codex    gpt-5.6-terra       fast     false "tier fast + terra is refused"
-  gate_case 0 codex    gpt-5.6-luna        fast     false "tier fast + luna is allowed"
-  gate_case 0 codex    gpt-5.6-sol@medium  heavy    false "a within-rung effort bump still matches heavy"
+  gate_case 0 codex    gpt-6-luna          fast     false "tier fast + luna is allowed"
+  gate_case 0 codex    gpt-6.1-sol@medium  heavy    false "a within-rung effort bump still matches heavy"
   gate_case 0 claude   sonnet              standard false "claude standard + sonnet is allowed"
   gate_case 2 claude   sonnet              heavy    false "claude heavy + sonnet is refused (heavy=opus)"
   gate_case 0 opencode openrouter/minimax/minimax-m3       standard false "opencode standard resolves"
@@ -644,15 +644,15 @@ else
   gate_case 2 codex    gpt-5.6-terra       ""       false "a build dispatch with no tier is refused"
   gate_case 0 codex    gpt-5.6-terra       ""       true  "a read-only dispatch needs no tier"
   # sol@high is the terminal rung, and it is burn-gated
-  gate_case 2 codex    gpt-5.6-sol@high    heavy    true  "read-only never reaches sol@high"
-  gate_case 2 codex    gpt-5.6-sol@high    heavy    false "a first-attempt sol@high is refused"
+  gate_case 2 codex    gpt-6.1-sol@high    heavy    true  "read-only never reaches sol@high"
+  gate_case 2 codex    gpt-6.1-sol@high    heavy    false "a first-attempt sol@high is refused"
   GATE_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf '{"ts":"%s","backend":"codex","prompt":"task-T001.md","exit":20,"input_tokens":100}\n' \
     "$GATE_NOW" > "$GATE_TMP/logs/cost.jsonl"
-  gate_case 0 codex    gpt-5.6-sol@high    heavy    false "sol@high opens after a prior exit 20, under threshold"
+  gate_case 0 codex    gpt-6.1-sol@high    heavy    false "sol@high opens after a prior exit 20, under threshold"
   printf '{"ts":"%s","backend":"codex","prompt":"task-T001.md","exit":20,"input_tokens":9000000}\n' \
     "$GATE_NOW" > "$GATE_TMP/logs/cost.jsonl"
-  gate_case 30 codex   gpt-5.6-sol@high    heavy    false "sol@high is skipped (exit 30) above the burn threshold"
+  gate_case 30 codex   gpt-6.1-sol@high    heavy    false "sol@high is skipped (exit 30) above the burn threshold"
   rm -rf "$GATE_TMP"
 fi
 
@@ -834,7 +834,7 @@ inv "$INV_TMP/target" "q" "" heavy | grep -q -- '--backend claude opus' \
   && pass "PROJECT.md backend + heavy resolves to claude opus" \
   || fail "backend/tier resolution ignored PROJECT.md"
 printf -- '---\nbuilder_backends: [codex, claude]\n---\n' > "$INV_TMP/PROJECT.md"
-inv "$INV_TMP/target" "q" "" fast | grep -q 'gpt-5.6-luna' \
+inv "$INV_TMP/target" "q" "" fast | grep -q 'gpt-6-luna' \
   && pass "codex + fast resolves to luna" || fail "codex fast did not resolve to luna"
 
 # the context file must actually reach the rendered prompt
@@ -853,7 +853,7 @@ fi
 # investigate.sh carries its own tier->model table; MODELS.md is the source of truth, so
 # assert they agree. Without this the two drift silently — the read-only lane passes no
 # tier, so dispatch.sh's issue-#41 check never sees this pairing.
-for pair in "codex:fast:gpt-5.6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-5.6-sol" \
+for pair in "codex:fast:gpt-6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-6.1-sol" \
             "opencode:fast:openrouter/deepseek/deepseek-v4-flash-0731" "opencode:standard:openrouter/minimax/minimax-m3" "opencode:heavy:openrouter/moonshotai/kimi-k2.6"; do
   be="${pair%%:*}"; rest="${pair#*:}"; tr_="${rest%%:*}"; want="${rest#*:}"
   got="$(python3 -c "

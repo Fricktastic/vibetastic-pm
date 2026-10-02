@@ -148,14 +148,33 @@ effort second**.
 
 | Tier | Codex model | Notes |
 |------|-------------|-------|
-| `fast` | `gpt-5.6-luna` | default effort (medium) |
-| `standard` | `gpt-5.6-terra` | default effort (medium) |
-| `heavy` | `gpt-5.6-sol@low` | sol's default is low ("highly capable at lower efforts"); one retry bump to `gpt-5.6-sol@medium` counts as the heavy rung's second attempt, then one **burn-gated** bump to `gpt-5.6-sol@high` (below) before the backend counts as exhausted |
+| `fast` | `gpt-6-luna` | default effort (medium). **Adopted 2026-10-02** on the #69 field test |
+| `standard` | `gpt-5.6-terra` | default effort (medium). No GPT-6 Terra exists yet |
+| `heavy` | `gpt-6.1-sol@low` | **Provisional — review 2026-11-02** (below). Explicit `@low`; one retry bump to `gpt-6.1-sol@medium` counts as the heavy rung's second attempt, then one **burn-gated** bump to `gpt-6.1-sol@high` (below) before the backend counts as exhausted |
+
+**GPT-6 field test, 2026-10-02 (issue #69).** One fixed task (`Docs/field-tests/issue-69/`),
+5 runs per model, alternating, each judged by 18 hidden ground-truth checks. Every run was
+correct (18/18) and passed the verifier on its first attempt.
+
+| model | median wall | median quota-proxy tokens |
+|---|---|---|
+| `gpt-6-luna` | **83 s** | **41.7K** |
+| `gpt-5.6-luna` | 265 s | 73.3K |
+| `gpt-6.1-sol@low` | **124 s** | **48.8K** |
+| `gpt-5.6-sol@low` | 221 s | 53.1K |
+
+`fast` is a clear win (3x faster, 43% less quota). `heavy` saves wall time but only ~8% quota,
+and the task is too easy to test the heavy rung's real job, so it is **provisional**: real
+dispatches are the trial, the exit-20 ladder is the safety net. On 2026-11-02, compare its
+`cost-report.sh` verify pass rate and attempts against `gpt-5.6-sol@low`'s 20/20 at 185 s
+(§ Field results); roll back by restoring `gpt-5.6-sol@low` in the row above. Fewer tokens per
+run also means `codex_weekly_burn_threshold` closes later — re-check it at the same review.
+Previous rungs, kept for rollback: `gpt-5.6-luna` (fast), `gpt-5.6-sol@low` (heavy).
 
 **Extended heavy rung — `sol@high`, burn-gated (2026-07-17, provisional).** Goal: preserve
 the Claude subscription window (the scarcer pool) by letting the more generous codex
 allowance absorb more before control falls through to the claude backend. After
-`gpt-5.6-sol@medium` fails (exit 20), dispatch attempts `gpt-5.6-sol@high` **once** — but
+the heavy rung's `@medium` fails (exit 20), dispatch attempts its `@high` **once** — but
 only if the current ISO-week burn proxy is below `codex_weekly_burn_threshold` (below). If
 the week's burn is at/above the threshold, **skip the @high attempt** and fall through to
 the claude backend immediately (`backend_escalated`). This keeps the weekly-cliff guard —
@@ -329,6 +348,7 @@ offload lane). Context/prices verified on OpenRouter 2026-06-29.
 | `openrouter/deepseek/deepseek-v4-flash-0731` | 0.065 | 0.18 | 1.31M | **fast** primary — 28 providers, unaffected by the 2026-09-10 DeepSeek retirements |
 | `openrouter/z-ai/glm-5.2` | 0.95 | 3.00 | 1M | **heavy fallback** + reviewer/critic family-diversity rung. Demoted from heavy primary 2026-08 — see § Field results |
 | `openrouter/qwen/qwen3-coder-flash` | 0.195 | 0.975 | 1M | **fast** primary — non-reasoning coder specialist (e2e confirmed 2026-07-02) |
+| `gpt-6.1-sol` / `gpt-6-luna` | — | — | — | Codex backend, ChatGPT subscription, same quota-proxy accounting as the 5.6 row below. Live `heavy`/`fast` rungs since 2026-10-02 (#69) |
 | `gpt-5.6-sol` / `-terra` / `-luna` | — | — | — | Codex backend, ChatGPT subscription — no per-token spend; tracked as weekly-quota burn proxy (tokens in cost.jsonl) |
 | `openrouter/google/gemini-3-flash-preview` | 0.50 | 3.00 | 1M | Dropped 2026-07-02 (priced above deepseek; latency-only advantage) |
 | `openrouter/google/gemini-3.5-flash` | 1.50 | 9.00 | 1M | Dropped (reasoning-stall on big tasks); kept for reference |
