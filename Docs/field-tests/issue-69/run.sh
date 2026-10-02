@@ -36,7 +36,7 @@ for i in $(seq 1 "$RUNS"); do
       bash "$REPO/dispatch.sh" --backend codex --worktree "$branch" \
         "$m" "$REPO" "$prompt" "" "bash $HERE/verify.sh" 3 2>"$OUT/$tag.stderr"
     rc=$?; wall=$(( $(date +%s) - t0 ))
-    wt="$(sed -n 's/^\[dispatch\] worktree: //p' "$OUT/$tag.stderr" | tail -1)"
+    wt="$(sed -n 's/^\[dispatch\] worktree: \([^ ]*\).*/\1/p' "$OUT/$tag.stderr" | tail -1)"
     res='{"passed":0,"total":0,"failures":["no worktree"]}'
     [ -n "$wt" ] && res="$(python3 "$HERE/check.py" "$wt")"
     python3 -c 'import json,sys; r=json.loads(sys.argv[4]); r.update(model=sys.argv[1],run=int(sys.argv[2]),exit=int(sys.argv[3]),wall_s=int(sys.argv[5]),pair=sys.argv[6]); print(json.dumps(r))' \

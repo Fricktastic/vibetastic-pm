@@ -1,7 +1,8 @@
 # Field-test task (issue #69) — `scripts/tier-table.py`
 
 You are in the vibetastic-pm framework repo. Write **one new file**, `scripts/tier-table.py`
-(Python 3 standard library only, executable, no other file changes). Commit it.
+(Python 3 standard library only, executable, no other file changes). Do not commit;
+the orchestrator commits.
 
 ## What it does
 

@@ -94,8 +94,12 @@ with tempfile.TemporaryDirectory() as d:
     check("unreadable file exits 1", run(str(pathlib.Path(d, "absent.md"))).returncode == 1)
 
 # Changed files: exactly the one new script.
-diff = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "main...HEAD"],
-                      capture_output=True, text=True).stdout.split()
+# Committed or not (codex's sandbox cannot write the worktree index), vs main.
+st = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "-uall"],
+                    capture_output=True, text=True).stdout.splitlines()
+diff = sorted(set(l[3:] for l in st) | set(subprocess.run(
+    ["git", "-C", str(wt), "diff", "--name-only", "main...HEAD"],
+    capture_output=True, text=True).stdout.split()))
 check("only scripts/tier-table.py changed", diff == ["scripts/tier-table.py"])
 
 print(json.dumps({"worktree": str(wt), "passed": total - len(failures), "total": total, "failures": failures}))
