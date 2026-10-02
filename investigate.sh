@@ -79,9 +79,9 @@ BACKEND="$(sed -n '/^---$/,/^---$/p' "$PM_DIR/PROJECT.md" 2>/dev/null \
            | sed -n 's/^builder_backends:[[:space:]]*\[\([^,]*\).*/\1/p' | tr -d ' ' | head -1)"
 BACKEND="${BACKEND:-codex}"
 case "$BACKEND:$TIER" in
-  codex:fast)        MODEL=gpt-5.6-luna ;;
+  codex:fast)        MODEL=gpt-6-luna ;;
   codex:standard)    MODEL=gpt-5.6-terra ;;
-  codex:heavy)       MODEL=gpt-5.6-sol@low ;;
+  codex:heavy)       MODEL=gpt-6.1-sol@low ;;
   claude:fast|claude:standard) MODEL=sonnet ;;
   claude:heavy)      MODEL=opus ;;
   opencode:fast)     MODEL=openrouter/deepseek/deepseek-v4-flash-0731 ;;

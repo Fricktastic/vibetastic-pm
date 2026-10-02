@@ -669,7 +669,7 @@ print(1 if any((lambda r: r and r.get('prompt')==prompt and r.get('exit')==20)(
     (lambda l: (json.loads(l) if l.strip().startswith('{') else None))(l)) for l in f) else 0)
 " "${LOG_DIR}/cost.jsonl" "$(basename "$PROMPT_FILE")" 2>/dev/null || echo 1)"
     if [ "$PRIOR_20" != "1" ]; then
-      echo "[dispatch] refusing a first-attempt gpt-5.6-sol@high." >&2
+      echo "[dispatch] refusing a first-attempt sol@high (the heavy rung at @high)." >&2
       echo "           @high is the terminal rung, reached only by climbing the ladder on" >&2
       echo "           exit 20: heavy -> sol@low -> sol@medium -> (burn gate) -> sol@high." >&2
       echo "           No prior exit-20 run of $(basename "$PROMPT_FILE") is in cost.jsonl." >&2
