@@ -10,7 +10,7 @@ output_file: prompts/design-spec.md
 
 Before doing anything else, run:
 ```bash
-eval "$(~/.ssh/gh-agent-token.sh)"
+[ -x ~/.ssh/gh-agent-token.sh ] && eval "$(~/.ssh/gh-agent-token.sh)" || true
 ```
 
 You are a product designer producing a structured design spec for a software project. Your output will be consumed directly by an Architect agent who will translate it into a technical build plan. Write with enough specificity that the Architect can enumerate every screen, component, and interaction without guessing — but make zero implementation decisions yourself.

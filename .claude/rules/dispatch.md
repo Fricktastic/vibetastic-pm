@@ -111,11 +111,8 @@ After the agent returns:
 **This is now mechanical for both providers.** The managed `PreToolUse` adapter invokes
 `framework/scripts/spec-body-guard.py` and **blocks** a whole-file read or `cat` of
 `prompts/task-T*.md` /
-`prompts/critic-T*.md`. It exists because the rule above was correct, stated its own
-rationale, and was violated **217 times** on gamedaytastic — ~367K tokens, **37% of
-everything the orchestrator ingested**, the single largest line item in partner burn
-(issue #39). Instruction-based discipline degrades over a long session; this is the same
-lesson that produced `plan-lint-hook.py`.
+`prompts/critic-T*.md` (issue #39): stated as prose alone, this rule was the single largest
+line item in partner burn.
 
 Still allowed, because steps 1–2 need them: `test -s` / `wc -c` existence checks, `grep`,
 `awk`, `sed -n` YAML extraction, and `head`/`tail`/`Read limit` up to 60 lines. Deliberate
@@ -234,15 +231,13 @@ escalate.
 ## Round caps
 
 **[0e] Critique rounds — the project's cap (default 2), then the operator.** A critic with no
-stopping rule does not converge: observed four-round REWORK loops on T024, T070 and T071, with
-later rounds surfacing pre-existing defects rather than plan defects, and T211 ran five rounds
-under the prose version of this rule. `dispatch.sh --role critic` now **refuses** round
-cap+1 (exit 31). Count: every recorded critic verdict except `ERROR`. Only one critic (and
+stopping rule does not converge — later rounds surface pre-existing defects rather than plan
+defects. `dispatch.sh --role critic` **refuses** round cap+1 (exit 31). Count: every recorded critic verdict except `ERROR`. Only one critic (and
 one reviewer) run per task is in flight at a time: dispatch.sh holds a round lock from the cap
 check to the verdict record, and refuses a concurrent run on the same task (exit 31, "in
 flight") — wait for the first, do not re-dispatch it.
 
-**Reviewer fixup rounds — the project's cap (default 3), then the operator.** T211 ran ten.
+**Reviewer fixup rounds — the project's cap (default 3), then the operator.**
 A fixup round is a recorded review that did not approve (`REJECT`, any blocker, or
 `MALFORMED`). With cap 3: review 1 → fixup 1 → … → fixup 3 → review 4 is allowed; if review 4
 also rejects, both the fourth fixup build and a fifth review are refused (exit 31). Dispatch
@@ -309,7 +304,7 @@ Do not spawn an Agent. Execute via the dispatch wrapper.
 
 OpenCode always receives a task-scoped file at `prompts/task-T0XX.md`:
 
-- **Tech Lead tasks:** PM writes the file directly from Tech Lead output (before delimiter). Pass straight to dispatch.
+- **Tech Lead tasks:** the Tech Lead wrote `prompts/task-T0XX.md` itself (§ Tech Lead [0g]). Pass it straight to dispatch.
 - **Architect-generated tasks (Stage 3):** Extract the task section from `prompts/build-spec.md` with awk:
 
 ```bash
@@ -399,12 +394,9 @@ signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monit
   the verifier output back into the same builder session and retries — entirely in bash,
   costing no PM tokens.
   **Mandatory. Read it from `PROJECT.md` every dispatch; never omit it, never pass `""`.**
-  dispatch.sh now refuses a build dispatch without it (exit 2). Field data: 86% of one
-  project's dispatches and 52% of another's carried no verifier, so the self-correct loop
-  never ran and the whole tier/backend escalation ladder — which is driven by exit 20 — fired
-  4 times in 307 runs. What that actually means is that correctness silently moved into this
-  session, at peak cost: with no verifier, "did it work?" gets answered by the orchestrator
-  reading code or running the build by hand. `DISPATCH_ALLOW_NO_VERIFY=1` exists for
+  dispatch.sh refuses a build dispatch without it (exit 2). Without a verifier the
+  self-correct loop and the exit-20 escalation ladder never run, and "did it work?" moves
+  into this session at peak cost. `DISPATCH_ALLOW_NO_VERIFY=1` exists for
   deliberate exceptions and must be justified in the TASK_LOG entry.
 - 6th arg: max verify attempts (default 3).
 - 7th arg `tier`: the task's current tier (`fast`/`standard`/`heavy`). **It selects the
@@ -414,15 +406,9 @@ signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monit
   bumps still match — `heavy` accepts `sol@low`/`@medium`/`@high` — and on the claude backend
   the alias and the pinned slug are one lane (`sonnet` ≡ `claude-sonnet-*`).
 
-  It was telemetry-only until issue #41, and the consequence was that the ladder was
-  decorative: **zero** `tier_escalated`/`backend_escalated`/`backend_skipped` events across
-  307+ field dispatches, `tier` missing on 78% of runs, and 11 runs whose tier contradicted
-  `MODELS.md` (`standard` on `sol@high`, `fast` on `terra`). Also recorded in
-  `logs/cost.jsonl`. Also append
-  a `cost_event` to TASK_LOG before dispatching (see `state.md` → Cost telemetry).
-  **Always pass it.** It was missing on 79% of field dispatches, which is why `cost-report.sh`
-  cannot attribute cost by tier today and why the tier table in `MODELS.md` rests on a
-  minority of runs. dispatch.sh warns (does not refuse) when it is absent.
+  Enforced since issue #41; without it the escalation ladder never fires and
+  `cost-report.sh` cannot attribute cost by tier. Also recorded in `logs/cost.jsonl`. Also
+  append a `cost_event` to TASK_LOG before dispatching (see `state.md` → Cost telemetry).
 
 - **codex + iOS/Xcode tasks** (`CODEX_EXTRA_WRITABLE_ROOTS`): on the codex backend the
   builder's in-sandbox `xcodebuild` is denied SwiftPM-cache and DerivedData writes, so it
@@ -500,9 +486,7 @@ exhausted before metered tokens** — that is why `builder_backends` defaults to
   rung, reachable only after a prior exit-20 on the same prompt
   (`DISPATCH_ALLOW_UNLADDERED_HIGH=1` overrides) — and refuses `@high` on any `--read-only`
   dispatch, since diagnosis is cheap-tier work. Still log `burn_proxy` in the `cost_event`
-  for role attribution; the enforcement no longer depends on it. All 6 field `@high`
-  dispatches were first-attempt direct picks totalling 21.5M input tokens, ~37% of that
-  ISO-week's codex burn, and `cost-report.sh` flagged every one of them *after* the spend. Efforts above high are never
+  for role attribution; the enforcement no longer depends on it. Efforts above high are never
   auto-dispatched (weekly-cliff guard — Gate 2 only).
 
 **Axis 2 — backend, when the current backend's ladder is exhausted or unavailable.**
@@ -558,10 +542,9 @@ against that worktree (§ Merge gate), and the task closes only after the merge 
 
 If `gh pr create` fails: record the error on the task (`error`, through `plan-update.py`; the
 status stays `in_progress`), append `pr_failed` with the error, and retry once the cause is
-fixed. Other ready tasks keep dispatching; this task's dependents wait. Until issue #58 the
-rule was "mark it `done` anyway"; `plan-update.py` now refuses that, because a `done` task with
-no PR and no merge looks shipped to every later session (issue #29's recovery rule would even
-treat it as shipped). If the operator decides the task is finished without a PR, that is an
+fixed. Other ready tasks keep dispatching; this task's dependents wait. `plan-update.py` refuses
+to mark it `done` (issue #58): a `done` task with no PR and no merge looks shipped to every
+later session. If the operator decides the task is finished without a PR, that is an
 exemption: `merge_gate.py exempt-close --task T0XX --kind operator --reason "..."`.
 
 ---

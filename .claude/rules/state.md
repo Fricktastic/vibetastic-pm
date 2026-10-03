@@ -49,10 +49,8 @@ Every dispatch row also carries `verify_scope` (`verify_cmd`: the green covers t
 verify command only; `none`: no verifier ran) and `acceptance` (`met` | `unmet` | `null` — the
 builder's own `ACCEPTANCE:` line; `unmet` is the exit-22 case, issue #58).
 
-**The partner stream is the largest one.** Until 2026-08-20 it did not exist in practice —
-the hook was wired but silently wrote nothing (issue #30), and reconstructing it from session
-transcripts put the orchestrator at **~71% of every token the system had consumed**. Both burn
-gates read `cost.jsonl`, so for five days they ran on a proxy missing its dominant term. If
+**The partner stream is the largest one** — the orchestrator is most of the system's token
+use, and both burn gates read `cost.jsonl`, so a silent stream skews them (issue #30). If
 `logs/telemetry-errors.log` appears or grows, a stream has stopped writing — read it, do not
 ignore it. `scripts/backfill-partner-burn.py` replays historical sessions from transcripts
 (dry run by default; `--apply` to write).
@@ -63,8 +61,8 @@ ignore it. `scripts/backfill-partner-burn.py` replays historical sessions from t
 task_id: <id or null>
 role: <designer | architect | tech_lead | opencode | pm>
 model: <model/alias actually used — e.g. sonnet, opus, openrouter/google/gemini-3.5-flash>
-tier: <fast | standard | heavy | null>   # OpenCode only
-burn_proxy: <ISO-week token total consulted, integer | null>   # REQUIRED for any gpt-5.6-sol@high dispatch (see below)
+tier: <fast | standard | heavy | null>   # builder dispatches; null for subagents
+burn_proxy: <ISO-week token total consulted, integer | null>   # REQUIRED for any codex sol@high dispatch (see below)
 note: <one line, optional>
 ```
 ```
@@ -72,8 +70,8 @@ note: <one line, optional>
 **Burn-gate audit rule (codex `sol@high`):** since issue #41, `dispatch.sh` computes the
 burn proxy, enforces `codex_weekly_burn_threshold` itself (exit 30 when closed), and stamps
 `burn_proxy` into the `cost.jsonl` row — the gate no longer depends on this being remembered.
-It was skipped 6 times out of 6 while it did. Still record the `cost_event` for **role**
-attribution, which the hooks cannot infer: every `gpt-5.6-sol@high` dispatch **must**
+Still record the `cost_event` for **role**
+attribution, which the hooks cannot infer: every codex `sol@high` dispatch **must**
 record in its `cost_event` the `burn_proxy` reading it consulted before the gate (the
 current ISO-week token total from `logs/cost.jsonl` — see `framework/MODELS.md` §
 `codex_weekly_burn_threshold`). This keeps enforcement out of the read-only `dispatch.sh`

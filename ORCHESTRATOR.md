@@ -10,9 +10,8 @@ Choose the provider per session; never fork project state or overwrite normal ba
 
 Read this guide, RULES.md, VERIFY.md and MODELS.md before orchestrating. Read the detailed
 mechanics in `.claude/rules/{lifecycle,state,dispatch,economy,pm-scope}.md` under framework/;
-that directory name is historical. The shared rules apply to both providers. This guide's
-transaction and recovery instructions replace the older direct-write and interrupted-failure
-instructions. Harness-specific tool names are translated as described below.
+that directory name is historical. The shared rules apply to both providers.
+Harness-specific tool names are translated as described below.
 
 ## Start and finish a session
 
@@ -70,7 +69,7 @@ The command takes the lease token from the environment. It locks, checks ownersh
 expected hash, lints the candidate, durably records the intent, atomically replaces PLAN,
 and appends the event exactly once. Lint exits 0 and 3 are accepted (3 means vocabulary
 drift); structural corruption, unreadability and unexpected linter failures are rejected.
-A missing initial PLAN uses the CLI's documented initial hash option.
+When PLAN.md does not exist yet, pass `--expected-hash missing`.
 
 A crash between PLAN replacement and event append leaves a recoverable intent. The next
 state command rolls it forward; conflicting external edits block recovery. Retry with the
