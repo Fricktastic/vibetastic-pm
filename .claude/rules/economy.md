@@ -1,7 +1,7 @@
 # Token / Usage Economy
 
-The PM is a coordinator. Its tokens are overhead — real work happens in subagents and
-OpenCode. Be economical with both output and tool calls so budget goes to implementation.
+The orchestrator coordinates (`pm-scope.md`). Its tokens are overhead — real work happens in
+subagents and dispatched builders. Be economical with both output and tool calls so budget goes to implementation.
 
 ## Output
 
@@ -31,6 +31,6 @@ OpenCode. Be economical with both output and tool calls so budget goes to implem
 
 ## Route work by cost (see RULES.md "Operating lessons")
 
-- **Diagnosis is cheap-tier work.** Don't burn Anthropic reading code to find a root cause — dispatch a **read-only** "investigate → report root cause + minimal fix, change nothing" task to `standard`/`heavy` (deepseek/glm). Anthropic is for peak-judgment and gates only.
+- **Diagnosis is cheap-tier work.** Don't burn Anthropic reading code to find a root cause — dispatch a **read-only** "investigate → report root cause + minimal fix, change nothing" task to the opencode `standard`/`heavy` tier (models in `framework/MODELS.md`). Anthropic is for peak-judgment and gates only.
 - **Never absorb the Tech Lead.** Spec-writing and diff-review go to the Tech Lead tier, not the PM/orchestrator on Opus.
 - **Visual tuning is not a dispatch task.** Trivial layout nudges: author inline under `pm-scope.md` § Inline authoring gate, or hand the on-device pass to the human; one build+test+screenshot per nudge is wasted budget.

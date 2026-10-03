@@ -63,8 +63,8 @@ ignore it. `scripts/backfill-partner-burn.py` replays historical sessions from t
 task_id: <id or null>
 role: <designer | architect | tech_lead | opencode | pm>
 model: <model/alias actually used — e.g. sonnet, opus, openrouter/google/gemini-3.5-flash>
-tier: <fast | standard | heavy | null>   # OpenCode only
-burn_proxy: <ISO-week token total consulted, integer | null>   # REQUIRED for any gpt-5.6-sol@high dispatch (see below)
+tier: <fast | standard | heavy | null>   # builder dispatches; null for subagents
+burn_proxy: <ISO-week token total consulted, integer | null>   # REQUIRED for any codex sol@high dispatch (see below)
 note: <one line, optional>
 ```
 ```
@@ -73,7 +73,7 @@ note: <one line, optional>
 burn proxy, enforces `codex_weekly_burn_threshold` itself (exit 30 when closed), and stamps
 `burn_proxy` into the `cost.jsonl` row — the gate no longer depends on this being remembered.
 It was skipped 6 times out of 6 while it did. Still record the `cost_event` for **role**
-attribution, which the hooks cannot infer: every `gpt-5.6-sol@high` dispatch **must**
+attribution, which the hooks cannot infer: every codex `sol@high` dispatch **must**
 record in its `cost_event` the `burn_proxy` reading it consulted before the gate (the
 current ISO-week token total from `logs/cost.jsonl` — see `framework/MODELS.md` §
 `codex_weekly_burn_threshold`). This keeps enforcement out of the read-only `dispatch.sh`

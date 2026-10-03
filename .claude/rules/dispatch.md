@@ -309,7 +309,7 @@ Do not spawn an Agent. Execute via the dispatch wrapper.
 
 OpenCode always receives a task-scoped file at `prompts/task-T0XX.md`:
 
-- **Tech Lead tasks:** PM writes the file directly from Tech Lead output (before delimiter). Pass straight to dispatch.
+- **Tech Lead tasks:** the Tech Lead wrote `prompts/task-T0XX.md` itself (§ Tech Lead [0g]). Pass it straight to dispatch.
 - **Architect-generated tasks (Stage 3):** Extract the task section from `prompts/build-spec.md` with awk:
 
 ```bash
@@ -422,7 +422,7 @@ signal the dispatch was backgrounded wrong. Fix the dispatch; do not add a monit
   a `cost_event` to TASK_LOG before dispatching (see `state.md` → Cost telemetry).
   **Always pass it.** It was missing on 79% of field dispatches, which is why `cost-report.sh`
   cannot attribute cost by tier today and why the tier table in `MODELS.md` rests on a
-  minority of runs. dispatch.sh warns (does not refuse) when it is absent.
+  minority of runs.
 
 - **codex + iOS/Xcode tasks** (`CODEX_EXTRA_WRITABLE_ROOTS`): on the codex backend the
   builder's in-sandbox `xcodebuild` is denied SwiftPM-cache and DerivedData writes, so it
