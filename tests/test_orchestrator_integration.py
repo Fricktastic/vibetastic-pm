@@ -158,6 +158,23 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.pm / ".codex").exists())
         self.assertFalse((self.pm / ".orchestrator").exists())
 
+    def test_symlinked_entry_file_becomes_a_project_entry(self):
+        (self.framework / "CLAUDE.md").write_text("This repository is the framework source.\n")
+        (self.pm / "CLAUDE.md").symlink_to("framework/CLAUDE.md")
+
+        result = self.install()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entry = self.pm / "CLAUDE.md"
+        self.assertFalse(entry.is_symlink())
+        text = entry.read_text()
+        self.assertNotIn("framework source", text)
+        self.assertIn("framework-managed PM directory", text)
+        self.assertIn("<!-- BEGIN VIBETASTIC ORCHESTRATOR HARNESS -->", text)
+        self.assertEqual((self.framework / "CLAUDE.md").read_text(), "This repository is the framework source.\n")
+        self.assertEqual(self.install().returncode, 0)
+        self.assertEqual(entry.read_text(), text)
+
     def test_incomplete_managed_document_markers_fail_preflight(self):
         original = b"Local notes\n<!-- BEGIN VIBETASTIC ORCHESTRATOR HARNESS -->\nbroken\n"
         (self.pm / "CLAUDE.md").write_bytes(original)
@@ -312,6 +329,16 @@ class HookTests(unittest.TestCase):
         self.assertEqual([record["evidence"] for record in records], ["selftest", "selftest", "selftest"])
         self.assertEqual(records[-1]["transcript_path"], str(self.pm / "transcript.jsonl"))
         self.assertEqual(records[-1]["hook_event_name"], "PreToolUse")
+
+    def test_pretool_allows_reads_without_a_lease_but_not_shell(self):
+        notes = str(self.pm / "HANDOFF.md")
+        read = self.invoke("claude", self.payload("PreToolUse", tool="Read", tool_input={"file_path": notes}), token="wrong")
+        self.assertEqual(read.returncode, 0, read.stderr)
+        shell = self.invoke("claude", self.payload("PreToolUse", tool="Bash", tool_input={"command": "ls"}), token="wrong")
+        self.assertEqual(shell.returncode, 2)
+        spec = str(self.pm / "prompts/task-T033.md")
+        guarded = self.invoke("claude", self.payload("PreToolUse", tool="Read", tool_input={"file_path": spec}), token="wrong")
+        self.assertEqual(guarded.returncode, 2)
 
     def test_codex_pretool_blocks_task_spec_reads_and_bulk_shell_reads(self):
         task = str(self.pm / "prompts/task-T033.md")

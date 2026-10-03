@@ -26,6 +26,11 @@ python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir fram
 - [ ] The doctor passes. It checks both SessionStart hooks, exercises the volatile banner,
       and validates the policy in `PROJECT.md` (step 2).
 - [ ] In Codex, review and trust the new hook with `/hooks`. An untrusted hook does not run.
+- [ ] Run this step from a terminal, or relaunch through `python3 framework/orchestrate.py`
+      straight after it. Once the hooks are installed, a session without a lease can still
+      Read but every Bash, Write and Edit call is blocked.
+- [ ] A `CLAUDE.md` or `AGENTS.md` that was a symlink into `framework/` is replaced by a
+      project entry file plus the harness block. Review it before committing.
 
 ## 2. Declare project policy in PROJECT.md (optional)
 

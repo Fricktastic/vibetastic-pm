@@ -124,6 +124,37 @@ def merged_config(original, provider, hook_script, pm_dir, prior_commands=()):
     return result
 
 
+PROJECT_ENTRIES = {
+    "CLAUDE.md": """# Claude orchestrator entry point
+
+This is a framework-managed PM directory. Start sessions with
+`python3 framework/orchestrate.py claude` from here. Use tracked Bash background sessions for
+long dispatches. Native Claude role agents remain available; stage their artifacts and let the
+lease owner register them. Use the transactional state commands for all durable changes.
+""",
+    "AGENTS.md": """# Codex orchestrator entry point
+
+This is a framework-managed PM directory. Start sessions with
+`python3 framework/orchestrate.py codex` from here. Use exec session handles for long
+dispatches, and `framework/scripts/dispatch-role.py` for Designer, Tech Lead and Architect.
+Codex does not auto-load `framework/.claude/rules/`; read it explicitly.
+""",
+}
+
+
+def entry_document(path, framework_dir):
+    """Existing text to keep for a provider entry file.
+
+    A symlink into the framework is a pre-v3 layout: its target is the framework repository's
+    own entry file, not project text, so it is replaced by a project entry rather than copied.
+    """
+    if path.is_symlink():
+        target = path.resolve()
+        if target.is_relative_to(framework_dir.resolve()):
+            return PROJECT_ENTRIES[path.name]
+    return path.read_text() if path.exists() else ""
+
+
 def managed_document(original, contract_ref):
     plan_update_ref = os.path.join(os.path.dirname(contract_ref), "scripts", "plan-update.py")
     block = f"""{BEGIN}
@@ -254,7 +285,7 @@ def install(pm_dir, framework_dir):
     for name in ("CLAUDE.md", "AGENTS.md"):
         path = pm_dir / name
         try:
-            documents[path] = path.read_text() if path.exists() else ""
+            documents[path] = entry_document(path, framework_dir)
             validate_managed_document(path, documents[path])
         except OSError as exc:
             raise InstallError(f"cannot read {path}: {exc}") from exc
