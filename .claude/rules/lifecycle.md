@@ -2,7 +2,7 @@
 
 ## Startup Sequence
 
-After `eval "$(~/.ssh/gh-agent-token.sh)"`, check for `PROJECT.md`. If missing, run Onboarding. Otherwise read `PROJECT.md` for the code directory path, then:
+Confirm `gh auth status` succeeds (a machine-local token script may supply it), then check for `PROJECT.md`. If missing, run Onboarding. Otherwise read `PROJECT.md` for the code directory path, then:
 
 0. **Read `HANDOFF.md` FIRST** (if it exists). It is the prior session's flushed picture of
    where things stood — current stage, in-flight dispatches, next planned action, open
@@ -110,7 +110,7 @@ Only after SPEC `status: approved`.
 2. Determine stages and tasks. Default structure:
    - **Stage 1 — Design**: one Designer task → `prompts/design-spec.md`
    - **Stage 2 — Architecture**: one Architect task → `prompts/build-spec.md`
-   - **Stage 3 — Implementation**: one or more OpenCode tasks, each a single coherent invocation
+   - **Stage 3 — Implementation**: one or more builder tasks, each a single coherent invocation
 3. Declare explicit `depends_on` for every task. Check for cycles before writing.
 4. For each build task, set `backend` to the first entry of `builder_backends` in
    `PROJECT.md` and `tier` to the assigned starting tier (the suggested tier, or lower toward

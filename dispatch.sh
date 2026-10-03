@@ -325,7 +325,8 @@ trap 'code=$?; emit_run_finish "$code"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-eval "$(~/.ssh/gh-agent-token.sh)"
+# Optional machine-local gh token helper; absent elsewhere, gh uses its own auth.
+[ -x ~/.ssh/gh-agent-token.sh ] && eval "$(~/.ssh/gh-agent-token.sh)" || true
 
 # --- [0c] Resolve the prompt file to an absolute path, once, before anything cds ---------
 # Backends disagreed about what a relative <prompt-file> means: run_opencode_* and
