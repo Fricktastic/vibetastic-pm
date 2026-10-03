@@ -200,8 +200,13 @@ def check_owner(pm_dir, framework_dir, provider):
     return True
 
 
+READ_ONLY_TOOLS = {"Read", "read_file"}
+
+
 def pre_tool_use(pm_dir, framework_dir, provider, payload):
-    if not check_owner(pm_dir, framework_dir, provider):
+    # Read-only inspection needs no ownership (ORCHESTRATOR.md); mutation-capable tools do.
+    read_only = payload.get("tool_name") in READ_ONLY_TOOLS
+    if not read_only and not check_owner(pm_dir, framework_dir, provider):
         return 2, "blocked"
     if not check_spec_body(framework_dir, payload):
         return 2, "blocked"
