@@ -45,6 +45,11 @@ def architect_result(reply):
     return body, '```yaml\n' + yaml_block(result) + '\n```\n'
 
 
+def derive_task_id_from_output(output_path: str) -> str | None:
+    match = re.match(r"^task-(T[0-9][0-9]*)\.md$", Path(output_path).name)
+    return match.group(1) if match else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pm-dir', default=os.environ.get('PM_DIR', '.'))
@@ -56,6 +61,7 @@ def main():
     parser.add_argument('--model', required=True)
     parser.add_argument('--fallback-model', default='')
     parser.add_argument('--tier', default='standard', choices=['fast','standard','heavy'])
+    parser.add_argument('--task-id', default='', help='explicit task ID; required when --output is not a task-T<id>.md name')
     args = parser.parse_args()
     from pm_state import PMState, StateError
     pm = Path(args.pm_dir).resolve()
@@ -67,6 +73,16 @@ def main():
         # Reject invalid destinations before dispatching paid work.
         if not args.output.startswith('prompts/'):
             raise ValueError('--output must be a relative prompts/ artifact')
+        state._target(args.output)
+        # Every planning-role dispatch is task-scoped. Derive --task-id from the output
+        # name when it matches prompts/task-T<id>.md; otherwise require it explicitly so
+        # dispatch.sh's attribution gate never fires after we've paid for a paid dispatch.
+        if not args.task_id:
+            args.task_id = derive_task_id_from_output(args.output) or ''
+        if not args.task_id:
+            raise ValueError(
+                '--task-id is required for planning roles when --output is not a '
+                'task-T<id>.md name (got: ' + args.output + ')')
         state._target(args.output)
         log_dir = pm/'logs'
         log_dir.mkdir(exist_ok=True)
@@ -85,8 +101,10 @@ def main():
             env = {**os.environ, 'PM_DIR': str(pm), 'OPENCODE_DISPATCH_LOG_DIR': str(log_dir)}
             extra = env.get('CODEX_EXTRA_WRITABLE_ROOTS', '')
             env['CODEX_EXTRA_WRITABLE_ROOTS'] = str(stage) + (':' + extra if extra else '')
-            command = ['bash',str(Path(__file__).resolve().parents[1]/'dispatch.sh'), '--read-only', '--role', args.role,
-                       '--backend',args.backend,args.model,args.code_dir,str(prompt),args.fallback_model,'','1',args.tier]
+            command = ['bash',str(Path(__file__).resolve().parents[1]/'dispatch.sh'),
+                       '--read-only','--role',args.role,'--task-id',args.task_id,
+                       '--backend',args.backend,args.model,args.code_dir,str(prompt),
+                       args.fallback_model,'','1',args.tier]
             with report.open('w') as output:
                 result = subprocess.run(command, env=env, stdout=output)
             if result.returncode:

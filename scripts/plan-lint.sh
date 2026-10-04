@@ -65,15 +65,25 @@ if not tasks_m:
     print(f"plan-lint: {path}: no tasks: section in frontmatter", file=sys.stderr)
     sys.exit(1)
 
+# Bound the captured tasks body at the first subsequent zero-indent top-level
+# recommended_next: or attention: line (whichever comes first) so trailing non-task
+# sections are never parsed as task chunks and the escape-scan below does not
+# escape-check their content. re.split with maxsplit=1 returns the body unchanged
+# when neither key appears — old-format PLANs lint byte-for-byte as today.
+tasks_body = re.split(
+    r"(?m)^(?:recommended_next|attention):\s*$",
+    tasks_m.group(1), maxsplit=1)[0]
+
 # Double-quoted YAML scalars have a deliberately small escape vocabulary. A live PLAN.md
 # contained Swift's @Environment(\.dismiss) in notes:, where \. makes the whole YAML
 # document unparseable even though this regex linter previously accepted it. Check the
 # simple one-line scalars we support so authors use a legal escape, single quotes, or a
-# block scalar for code-heavy text.
+# block scalar for code-heavy text. The scan runs against the truncated tasks body so
+# trailing recommended_next:/attention: content is never escape-checked as task content.
 simple_escapes = set('0abtnvfre"\\N_LP/ ')
 in_tasks = False
 current_task = None
-for line_no, line in enumerate(fm.splitlines(), 1):
+for line_no, line in enumerate(tasks_body.splitlines(), 1):
     if re.match(r"^tasks:\s*$", line):
         in_tasks = True
         continue
@@ -117,7 +127,7 @@ for line_no, line in enumerate(fm.splitlines(), 1):
             f"'{escape}'; use a legal YAML escape or a single-quoted/block scalar")
         i += width
 
-chunks = re.split(r"(?m)^(?=\s+- id:)", tasks_m.group(1))
+chunks = re.split(r"(?m)^(?=\s+- id:)", tasks_body)
 tasks = {}
 order = []
 for chunk in chunks:
@@ -197,6 +207,49 @@ def visit(n, stack):
 for t in order:
     if color[t] == WHITE:
         visit(t, [])
+
+# Top-level recommended_next: list of task IDs (or []). Parsed from the FULL frontmatter
+# independently of the truncated tasks body above; same nested-list rejection rule as
+# depends_on. Unknown IDs are structural (exit 1).
+recommended_next_m = re.search(r"(?m)^recommended_next:\s*(.*)$", fm)
+if recommended_next_m:
+    raw = recommended_next_m.group(1).strip()
+    if raw.startswith("[") and "[" in raw[1:]:
+        errors.append(
+            f"recommended_next has nested-list value '{raw}'; use a flat list like "
+            f"[T001, T002] (or [])")
+    for ref in [d.strip().strip("\"'") for d in raw.strip("[]").split(",") if d.strip()]:
+        if ref not in tasks:
+            errors.append(f"recommended_next references unknown task '{ref}'")
+
+# Top-level attention: list of items with required scalar fields. Each `- id:` chunk is
+# parsed the same way tasks are; missing required fields carry a distinguishable prefix
+# so the real-lint-path tests prove the Step 2a truncation kept these items out of the
+# task chunker. Duplicate attention ids and unknown task_id references are structural.
+attention_m = re.search(r"(?m)^attention:\s*$(.*)", fm, re.S)
+attention_seen = set()
+if attention_m:
+    attention_items = re.split(r"(?m)^(?=\s+- id:)", attention_m.group(1))
+    for item in attention_items:
+        idm = re.match(r"\s+- id:\s*(\S+)", item)
+        if not idm:
+            continue
+        aid = idm.group(1).strip("\"'")
+        if aid in attention_seen:
+            errors.append(f"duplicate attention id {aid}")
+            continue
+        attention_seen.add(aid)
+        def afield(name):
+            fm_ = re.search(rf"(?m)^\s+{name}:\s*(.*)$", item)
+            return fm_.group(1).strip() if fm_ else None
+        # 'id' is captured from the chunk header (re.match above), so only the remaining
+        # four required scalars are validated here.
+        for req in ("kind", "task_id", "reason", "requested_at"):
+            if afield(req) is None:
+                errors.append(f"attention item {aid}: missing required field '{req}'")
+        task_ref = afield("task_id")
+        if task_ref and task_ref not in tasks:
+            errors.append(f"attention item {aid}: references unknown task '{task_ref}'")
 
 if errors:
     for e in errors:

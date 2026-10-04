@@ -33,11 +33,15 @@ echo "[selftest] plan-lint fixture expectations"
 # fixture:expected_exit — 0 clean, 1 STRUCTURAL corruption, 3 vocabulary drift only
 FIXTURES="
 plan-good.md:0
+plan-good-attention-first.md:0
 plan-vocab.md:3
 plan-missing-field.md:1
 plan-bad-dep.md:1
 plan-nested-depends.md:1
 plan-bad-escape.md:1
+plan-recommended-bad-id.md:1
+plan-attention-duplicate-id.md:1
+plan-attention-missing-field.md:1
 "
 for entry in $FIXTURES; do
   [ -n "$entry" ] || continue
@@ -542,6 +546,105 @@ for l in lines[start+1:]:
   fi
 done
 rm -rf "$INV_TMP"
+
+echo "[selftest] dispatch requires explicit task linkage or --project-wide"
+# The gate runs after the flag loop + RUN_TASK_ID wiring and BEFORE the managed-PM block,
+# so a synthetic fake backend proves the gate fires before any builder runs. The fake
+# `opencode` prints a marker that the gate cases assert is ABSENT (exit 2 cases) or
+# PRESENT (exit 0 cases that reached the backend). DISPATCH_ALLOW_NO_VERIFY=1 disables the
+# verifier-missing check so its exit 2 cannot be confused with the gate's exit 2 here.
+TASK_LINK_TMP="$(mktemp -d)"
+mkdir -p "$TASK_LINK_TMP/bin" "$TASK_LINK_TMP/project"
+git -C "$TASK_LINK_TMP/project" init -q
+printf 'fake task\n' > "$TASK_LINK_TMP/prompt.md"
+
+cat > "$TASK_LINK_TMP/bin/opencode" <<'SH'
+#!/bin/bash
+printf 'fake opencode output\n'
+exit 0
+SH
+chmod +x "$TASK_LINK_TMP/bin/opencode"
+
+# Helper: run dispatch.sh capturing stdout, return its exit code via $?
+gate_run() {
+  PATH="$TASK_LINK_TMP/bin:$PATH" OPENCODE_DISPATCH_LOG_DIR="$TASK_LINK_TMP/logs" \
+    bash dispatch.sh "$@" >/tmp/t004_gate_out 2>/tmp/t004_gate_err
+}
+
+# 1. Build dispatch with no --task-id and a non-task prompt name -> exit 2 at the gate,
+#    before the fake opencode backend runs.
+DISPATCH_ALLOW_NO_VERIFY=1 gate_run openrouter/minimax/minimax-m3 "$TASK_LINK_TMP/project" \
+  "$TASK_LINK_TMP/prompt.md" '' '' 3 standard
+got=$?
+if [ "$got" = 2 ] && ! grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "build dispatch without --task-id exits 2 before any builder runs"
+else
+  fail "build dispatch without --task-id (expected exit 2 before backend, got $got)"
+fi
+
+# 2. --project-wide on a build (no --read-only) -> exit 2.
+gate_run --project-wide openrouter/minimax/minimax-m3 "$TASK_LINK_TMP/project" \
+  "$TASK_LINK_TMP/prompt.md" '' '' 3 standard
+got=$?
+if [ "$got" = 2 ] && ! grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "project-wide build is rejected (exit 2)"
+else
+  fail "project-wide build (expected exit 2, got $got)"
+fi
+
+# 3. read-only --project-wide is allowed and reaches the fake backend.
+gate_run --read-only --project-wide openrouter/minimax/minimax-m3 "$TASK_LINK_TMP/project" \
+  "$TASK_LINK_TMP/prompt.md" '' '' 3 standard
+got=$?
+if [ "$got" = 0 ] && grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "read-only --project-wide is allowed"
+else
+  fail "read-only --project-wide (expected exit 0, got $got)"
+fi
+
+# 4. read-only --task-id T001 is allowed and reaches the fake backend.
+gate_run --read-only --task-id T001 openrouter/minimax/minimax-m3 "$TASK_LINK_TMP/project" \
+  "$TASK_LINK_TMP/prompt.md" '' '' 3 standard
+got=$?
+if [ "$got" = 0 ] && grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "read-only --task-id T001 is allowed"
+else
+  fail "read-only --task-id (expected exit 0, got $got)"
+fi
+
+# 5. --task alias works the same as --task-id.
+gate_run --read-only --task T001 openrouter/minimax/minimax-m3 "$TASK_LINK_TMP/project" \
+  "$TASK_LINK_TMP/prompt.md" '' '' 3 standard
+got=$?
+if [ "$got" = 0 ] && grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "--task alias works"
+else
+  fail "--task alias (expected exit 0, got $got)"
+fi
+
+# 6. Conflicting --task-id and --project-wide -> exit 2 before backend.
+gate_run --read-only --task-id T001 --project-wide openrouter/minimax/minimax-m3 \
+  "$TASK_LINK_TMP/project" "$TASK_LINK_TMP/prompt.md" '' '' 3 standard
+got=$?
+if [ "$got" = 2 ] && ! grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "conflicting --task-id and --project-wide exits 2"
+else
+  fail "conflicting flags (expected exit 2, got $got)"
+fi
+
+# 7. Inference fallback: a task-T001.md prompt name with no --task-id still passes the
+#    gate (backward compatibility) and reaches the fake backend.
+printf 'fake task\n' > "$TASK_LINK_TMP/task-T001.md"
+gate_run --read-only openrouter/minimax/minimax-m3 "$TASK_LINK_TMP/project" \
+  "$TASK_LINK_TMP/task-T001.md" '' '' 3 standard
+got=$?
+if [ "$got" = 0 ] && grep -q 'fake opencode output' /tmp/t004_gate_out; then
+  pass "task-T0XX prompt name inference still passes the gate (backward compat)"
+else
+  fail "inference fallback (expected exit 0, got $got)"
+fi
+
+rm -rf "$TASK_LINK_TMP" /tmp/t004_gate_out /tmp/t004_gate_err
 
 echo "[selftest] additive orchestration regression suite"
 if python3 -m unittest discover -s tests -p 'test_*.py'; then

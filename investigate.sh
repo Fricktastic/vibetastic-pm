@@ -91,4 +91,4 @@ case "$BACKEND:$TIER" in
 esac
 
 echo "[investigate] $BACKEND $MODEL ($TIER, read-only) -> $(basename "$PROMPT_FILE")" >&2
-exec bash "$HERE/dispatch.sh" --read-only --backend "$BACKEND" "$MODEL" "$CODE_DIR" "$PROMPT_FILE"
+exec bash "$HERE/dispatch.sh" --read-only --project-wide --backend "$BACKEND" "$MODEL" "$CODE_DIR" "$PROMPT_FILE"

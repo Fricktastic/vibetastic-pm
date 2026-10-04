@@ -262,7 +262,7 @@ worktree. Backend order comes from the effective session profile. The normal pro
 project routing; Codex fallback uses OpenCode only for child work.
 
 ```bash
-bash framework/dispatch.sh --worktree <branch> --backend <backend> \
+bash framework/dispatch.sh --worktree <branch> --backend <backend> --task-id T00X \
   <model> ../my-app/ prompts/task-T00X.md [fallback] [verify-cmd]
 ```
 

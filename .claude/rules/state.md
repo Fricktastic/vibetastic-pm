@@ -26,6 +26,12 @@ Three of the four telemetry streams are mechanical — no orchestrator disciplin
 | **Orchestrator's own burn** | `Stop` hook, `scripts/log-partner-burn.py` | `logs/cost.jsonl` (`role: partner`) |
 | Role + task attribution | **you**, via `cost_event` below | `TASK_LOG.md` |
 
+`dispatch.sh` requires explicit task linkage (`--task-id <T0XX>` or its `--task` alias)
+for task-scoped dispatches, and `--project-wide` (with `--read-only`) for read-only
+project-wide work — the gate rejects an unattributed build with exit 2 before any
+backend or paid model call. A `task-T0XX.md` prompt name is accepted as an inference
+fallback for legacy scripts.
+
 The manual `cost_event` adds what the hooks cannot know: the **role** (Designer vs Tech Lead
 vs Reviewer) and task attribution. Append one after every subagent spawn and before each
 `dispatch.sh` call; if you forget, the hook log still catches the spawn, just without role

@@ -16,22 +16,15 @@ tasks:
     failure_count: 0
     tier: fast
     verify_tier: R0
-  - id: T002
-    stage: 1
-    title: "Second task"
-    agent: opencode
-    status: pending
-    depends_on: [T001]
-    failure_count: 0
-    tier: standard
-    verify_tier: R1
-recommended_next: [T002]
 attention:
-  - id: gate-T001-device
+  - id: dup-1
     kind: device_evidence
     task_id: T001
-    reason: "Run the approved device verification steps"
+    reason: "First"
     requested_at: "2026-09-13T00:00:00Z"
+  - id: dup-1
+    kind: device_evidence
+    task_id: T001
+    reason: "Second"
+    requested_at: "2026-09-13T00:01:00Z"
 ---
-
-## Task Overview

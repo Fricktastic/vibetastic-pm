@@ -149,9 +149,14 @@ Claude review/adjudication using `--exceptional-adjudication`; if unavailable, t
 blocked pending that judgment. The Codex partner cannot impersonate Opus or treat an ordinary
 OpenCode review as satisfying the security floor. Never route Anthropic through OpenRouter.
 
-Dispatch exits: 0 success; 2 invalid invocation; 20 verification exhausted (escalate);
+Dispatch exits: 0 success; 2 invalid invocation (also: the attribution gate refuses
+unattributed or project-wide build dispatches here); 20 verification exhausted (escalate);
 21 read-only violation (inspect); 30 backend unavailable (next legal backend);
 31 ownership/routing/reconciliation blocked (**do not** increment failure_count).
+Every task-scoped dispatch must pass `--task-id <T0XX>` (or the `--task` alias), and
+read-only project-wide dispatches pass `--project-wide` instead — `--project-wide`
+requires `--read-only` and is mutually exclusive with `--task-id`. A `task-T0XX.md`
+prompt name is accepted as an attribution fallback for legacy scripts.
 Only true failures after the configured ladder is exhausted trigger the failure rules.
 
 ## Gates that remain unchanged

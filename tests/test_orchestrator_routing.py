@@ -100,7 +100,7 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"test"}' '{"type":"item.com
             token=json.loads(own.stdout)['token']
             env={**os.environ,'PM_DIR':str(pm),'PM_ORCHESTRATOR_TOKEN':token,'PM_ORCHESTRATOR_PROVIDER':'codex','PM_ORCHESTRATOR_SESSION':'test',
                  'PATH':str(bin_dir)+os.pathsep+os.environ['PATH'],'CHECK_ENV':str(pm/'env-check')}
-            r=subprocess.run(['bash',str(ROOT/'dispatch.sh'),'--read-only','--role','investigator','--backend','codex','gpt-5.6-terra',str(code),str(prompt)],env=env,capture_output=True,text=True)
+            r=subprocess.run(['bash',str(ROOT/'dispatch.sh'),'--read-only','--role','investigator','--task-id','T001','--backend','codex','gpt-5.6-terra',str(code),str(prompt)],env=env,capture_output=True,text=True)
             self.assertEqual(r.returncode,0,r.stderr)
             self.assertEqual((pm/'env-check').read_text().strip(),'stripped')
             reservations=json.loads((pm/'.orchestrator/runs.json').read_text())

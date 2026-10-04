@@ -87,6 +87,8 @@ def parse_plan(text: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     raw_tasks = _parse_task_fields(frontmatter, digest, warnings)
     task_ids = {task["id"] for task in raw_tasks if task["valid_identity"]}
     tasks = _normalize_tasks(raw_tasks, task_ids, warnings)
+    recommended_next = _parse_recommended_next(frontmatter)
+    attention = _parse_plan_attention(frontmatter, digest, warnings)
 
     plan = {
         "project": top_level.get("project"),
@@ -94,6 +96,8 @@ def parse_plan(text: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         "updated": top_level.get("updated"),
         "stages": stages,
         "tasks": tasks,
+        "recommended_next": recommended_next,
+        "attention": attention,
         "provenance": {"path": "PLAN.md", "sha256": digest},
     }
     return plan, warnings
@@ -191,7 +195,7 @@ def _parse_stages(
 def _parse_task_fields(
     lines: list[tuple[int, str]], digest: str, warnings: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    section = _section(lines, "tasks")
+    section = _section(lines, "tasks", stop_at={"recommended_next", "attention"})
     if section is None:
         _warning(warnings, "missing_tasks_section", "PLAN.md has no tasks section")
         return []
@@ -257,6 +261,94 @@ def _parse_task_fields(
     return tasks
 
 
+def _parse_plan_attention(
+    lines: list[tuple[int, str]], digest: str, warnings: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    # The two keys are unordered top-level keys; either order is valid. Whichever comes
+    # first bounded the tasks section above; the other key is read from the region after
+    # it. Read attention: directly via a small helper that bounds at any other
+    # zero-indent top-level key — when attention: sits at the end of the frontmatter
+    # (recommended_next first, attention second) the helper reads to end-of-frontmatter;
+    # when the keys are swapped (attention first, recommended_next second) the helper
+    # bounds at recommended_next and reads the items immediately below attention:.
+    section = _attention_section(lines)
+    if section is None:
+        return []
+    items: list[dict[str, Any]] = []
+    seen_ids: dict[str, int] = {}
+    for ordinal, item in enumerate(_items(section), 1):
+        fields, field_lines = _fields(item)
+        source_id = fields.get("id")
+        attention_id, valid_identity, entry_key = _unique_id(
+            source_id, seen_ids, "attention", ordinal, item[0][0], warnings
+        )
+        for field in ("kind", "task_id", "reason", "requested_at"):
+            if fields.get(field) is None:
+                _warning(
+                    warnings,
+                    "missing_required_field",
+                    f"Attention item {attention_id or '<unknown>'} is missing required field '{field}'",
+                    line=item[0][0],
+                    attention_id=attention_id,
+                    field=field,
+                )
+        items.append(
+            {
+                "id": attention_id,
+                "source_id": source_id,
+                "entry_key": entry_key,
+                "valid_identity": valid_identity,
+                "kind": fields.get("kind"),
+                "task_id": fields.get("task_id"),
+                "reason": fields.get("reason"),
+                "requested_at": fields.get("requested_at"),
+                "field_lines": field_lines,
+                "provenance": _provenance(digest, item[0][0]),
+            }
+        )
+    return items
+
+
+def _attention_section(lines: list[tuple[int, str]]) -> list[tuple[int, str]] | None:
+    # Locate `attention:` and return the lines until the next zero-indent top-level key
+    # (`recommended_next:` in the swapped-order case, or end-of-frontmatter in the default).
+    start = None
+    for index, (_, line) in enumerate(lines):
+        if line.rstrip() == "attention:":
+            start = index + 1
+            break
+    if start is None:
+        return None
+    for index in range(start, len(lines)):
+        text = lines[index][1]
+        if text.startswith((" ", "\t")):
+            continue
+        if text.rstrip() == "recommended_next:" or text.rstrip() == "tasks:" \
+                or text.rstrip() == "stages:" or text.rstrip() == "project:" \
+                or text.rstrip() == "created:" or text.rstrip() == "updated:":
+            return lines[start:index]
+    return lines[start:]
+
+
+def _parse_recommended_next(lines: list[tuple[int, str]]) -> list[str]:
+    # Tolerant: an absent, malformed, or nested-list value falls back to [] (lint is the
+    # hard gate; the snapshot never raises on these keys).
+    for _, line in lines:
+        if line.startswith((" ", "\t", "-")):
+            continue
+        match = re.match(r"^recommended_next:\s*(.*)$", line)
+        if match:
+            raw = match.group(1).strip()
+            if not (raw.startswith("[") and "[" in raw[1:]):
+                return [
+                    part.strip().strip("\"'")
+                    for part in raw.strip("[]").split(",")
+                    if part.strip()
+                ]
+            return []
+    return []
+
+
 def _normalize_tasks(
     tasks: list[dict[str, Any]], task_ids: set[str], warnings: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -306,7 +398,8 @@ def _normalize_tasks(
 
 
 def _section(
-    lines: list[tuple[int, str]], name: str, stop_at: str | None = None
+    lines: list[tuple[int, str]], name: str,
+    stop_at: str | set[str] | None = None,
 ) -> list[tuple[int, str]] | None:
     start = None
     for index, (_, line) in enumerate(lines):
@@ -317,9 +410,12 @@ def _section(
         return None
     if stop_at is None:
         return lines[start:]
+    stops = {stop_at} if isinstance(stop_at, str) else set(stop_at)
     for index in range(start, len(lines)):
-        if lines[index][1].rstrip() == f"{stop_at}:":
-            return lines[start:index]
+        line = lines[index][1].rstrip()
+        for stop in stops:
+            if line == f"{stop}:":
+                return lines[start:index]
     return lines[start:]
 
 
@@ -488,14 +584,44 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
         "generation": _prior_generation(Path(pm_dir), warnings), "project": project,
         "plan": {key: plan[key] for key in ("project", "created", "updated", "provenance")},
         "stages": [{key: value for key, value in stage.items() if key != "field_lines"}
-                   for stage in plan["stages"]], "tasks": tasks, "recommended_next": [], "attention": [],
+                   for stage in plan["stages"]], "tasks": tasks,
+        "recommended_next": list(plan.get("recommended_next", [])), "attention": [],
         "ownership": ownership, "runs": runs, "capacity": capacity, "sources": sources,
         "warnings": [],
     }
     explicit = _explicit_attention(captures["TASK_LOG.md"], warnings)
     snapshot["warnings"] = _sort_warnings(warnings)
-    snapshot["attention"] = _derive_attention(snapshot, generated, explicit, captures["HANDOFF.md"].get("mtime"))
+    plan_attention = _plan_attention_items(plan, captures["PLAN.md"], generated)
+    derived = _derive_attention(snapshot, generated, explicit, captures["HANDOFF.md"].get("mtime"))
+    snapshot["attention"] = plan_attention + derived
     return snapshot
+
+
+def _plan_attention_items(
+    plan: dict[str, Any], plan_capture: dict[str, Any], now: str
+) -> list[dict[str, Any]]:
+    # Project PLAN attention into the snapshot with classification="plan", distinguishing
+    # them from explicit TASK_LOG items ("explicit") and inferred ones ("inferred"). The
+    # PLAN's `requested_at` is renamed to `observed_at` here, at the projection layer;
+    # the PLAN keeps `requested_at`. No secrets or raw model content — evidence lists the
+    # already-public PLAN.md path + digest + the line of the attention item's id field.
+    digest = plan_capture.get("sha256")
+    result: list[dict[str, Any]] = []
+    for item in plan.get("attention", []):
+        if not item.get("id") or not item.get("valid_identity"):
+            continue
+        line = item.get("provenance", {}).get("line")
+        result.append({
+            "id": item["id"],
+            "classification": "plan",
+            "task_id": item.get("task_id"),
+            "kind": item.get("kind"),
+            "reason": item.get("reason"),
+            "rule": None,
+            "observed_at": item.get("requested_at") or now,
+            "evidence": [{"path": "PLAN.md", "sha256": digest, "line": line or 1}],
+        })
+    return sorted(result, key=lambda item: item["id"])
 
 
 def derive_attention(snapshot: dict[str, Any], now: datetime) -> list[dict[str, Any]]:

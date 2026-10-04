@@ -7,6 +7,21 @@ backend preferences for this session only. All durable changes use the state com
 
 # Dispatch
 
+## Attribution gate
+
+`dispatch.sh` requires explicit task linkage (or an explicit read-only project-wide flag)
+before any backend work — exit 2 otherwise, with no lease, reservation, or paid model call:
+
+- **Task-scoped dispatches:** pass `--task-id <T0XX>` (or the `--task` alias). Every
+  build/review/critic dispatch must carry one. A `task-T0XX.md` prompt name is also
+  accepted via the inference fallback (existing scripts keep working). Planning roles
+  (`scripts/dispatch-role.py --role designer|architect|tech-lead`) derive `--task-id`
+  from `prompts/task-T<id>.md` output names and require it explicitly otherwise.
+- **Read-only project-wide dispatches:** pass `--project-wide` together with `--read-only`.
+  Use this for investigation lanes (e.g. `investigate.sh`) that are not tied to a single
+  task. `--project-wide` is rejected on build dispatches and when combined with
+  `--task-id` (exit 2 in both cases).
+
 ## Task Dispatch Loop
 
 ```
@@ -37,8 +52,8 @@ For mid-project invocations, also prepend a brief description of the specific UI
 
 On Claude, spawn the native Designer and stage its result before promoting it with
 `orchestrator-state.py write`. On Codex, use `scripts/dispatch-role.py --role designer
---output prompts/design-spec.md`. For a mid-project addition, stage the combined document
-and replace it through the same guarded write command.
+--task-id <task-id> --output prompts/design-spec.md`. For a mid-project addition, stage
+the combined document and replace it through the same guarded write command.
 
 After return, append `agent_returned` + `task_completed` through the guarded TASK_LOG
 append and update the task through `plan-update.py`.
@@ -53,9 +68,9 @@ Read `framework/prompts/architect.md`. Substitute:
 - `{{TARGET_PROJECT_PATH}}` → absolute path to the target project
 
 On Claude, spawn the native Architect and stage its return. On Codex, use
-`scripts/dispatch-role.py --role architect --output prompts/build-spec.md`. Parse the
-`ARCHITECT_RESULT_START` metadata, resolve its selected tier/model through MODELS.md and
-the session routing profile, promote the build spec through the guarded state command,
+`scripts/dispatch-role.py --role architect --task-id <task-id> --output prompts/build-spec.md`.
+Parse the `ARCHITECT_RESULT_START` metadata, resolve its selected tier/model through MODELS.md
+and the session routing profile, promote the build spec through the guarded state command,
 and update PLAN/TASK_LOG transactionally. Missing delimiters, malformed metadata, or an
 empty artifact are role failures.
 
@@ -162,7 +177,7 @@ path to the target code. Full rules: `framework/VERIFY.md` § Pre-build critique
    configured order. Same wrapper the Reviewer uses:
 
    ```bash
-   bash framework/dispatch.sh --read-only <critic-model> ../<project-name>/ prompts/critic-T0XX.md 2>&1
+   bash framework/dispatch.sh --read-only --task-id T0XX <critic-model> ../<project-name>/ prompts/critic-T0XX.md 2>&1
    ```
 
 3. **Adjudicate (Partner):** read the verdict.
@@ -259,7 +274,9 @@ loop degrades to the legacy single-run behavior.
 Dispatch:
 
 ```bash
-bash framework/dispatch.sh --worktree "<branch>" <tasks[n].model> ../<project-name>/ "${TASK_PROMPT}" "<tasks[n].fallback_model>" "<verify-cmd>" 3 "<tasks[n].tier>" 2>&1
+bash framework/dispatch.sh --worktree "<branch>" --task-id "$TASK_ID" \
+  <tasks[n].model> ../<project-name>/ "${TASK_PROMPT}" \
+  "<tasks[n].fallback_model>" "<verify-cmd>" 3 "<tasks[n].tier>" 2>&1
 ```
 
 **Issue this through the Bash tool with `run_in_background: true`. Never `&`, `nohup`, or

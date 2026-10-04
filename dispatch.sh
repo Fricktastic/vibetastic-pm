@@ -3,7 +3,16 @@
 #
 # Usage:
 #   bash dispatch.sh [--read-only] [--worktree <branch>] [--backend <codex|claude|opencode>] \
+#     [--task-id <T0XX> | --project-wide] \
 #     <model> <project-dir> <prompt-file> [fallback-model] [verify-cmd] [max-attempts] [tier]
+#
+# --task-id <T0XX>: link the dispatch to a specific PLAN task (or pass the same id via the
+#   legacy `--task` alias). Every task-scoped dispatch must pass it; the gate rejects an
+#   unattributed build with exit 2 before any backend work. A `task-T0XX.md` prompt name is
+#   also accepted via the inference fallback (so existing scripts keep working) — the gate
+#   recognises the derived reservation key as task attribution.
+# --project-wide: read-only project-wide work (e.g. `investigate.sh`). Rejected when used
+#   on a build dispatch or alongside --task-id; requires --read-only.
 #
 # --backend: which builder CLI runs the task. Default is inferred from the model slug:
 #   gpt-* → codex; claude-*/sonnet/opus/haiku → claude; anything else (openrouter/*) → opencode.
@@ -65,6 +74,8 @@ PM_AUTHOR_MODEL=""
 PM_SECURITY=false
 PM_EXCEPTIONAL=false
 PM_RESERVED=false
+PM_TASK_ID=""
+PM_PROJECT_WIDE=false
 READ_ONLY=false
 WORKTREE_BRANCH=""
 BACKEND=""
@@ -77,6 +88,9 @@ while true; do
     --read-only) READ_ONLY=true; shift ;;
     --worktree)  WORKTREE_BRANCH="$2"; shift 2 ;;
     --backend)   BACKEND="$2"; shift 2 ;;
+    --task-id)   PM_TASK_ID="$2"; shift 2 ;;
+    --task)      PM_TASK_ID="$2"; shift 2 ;;
+    --project-wide) PM_PROJECT_WIDE=true; shift ;;
     *) break ;;
   esac
 done
@@ -97,8 +111,12 @@ RUN_TS_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_PROMPT="$(basename "${PROMPT_FILE:-unknown}")"
 RUN_ROLE=build; $READ_ONLY && RUN_ROLE=read-only
-RUN_TASK_ID=""
-case "$RUN_PROMPT" in task-T[0-9]*) RUN_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -n 's/^task-\(T[0-9][0-9]*\).*$/\1/p')" ;; esac
+# RUN_TASK_ID is the reservation-key + telemetry value. It prefers the explicit
+# --task-id/--task flag, otherwise falls back to the legacy task-T[0-9]* prompt-name
+# inference so legacy `task-T0XX.md` dispatches still get a reservation key.
+RUN_TASK_ID="${PM_TASK_ID:-}"
+[ -n "$RUN_TASK_ID" ] || case "$RUN_PROMPT" in task-T[0-9]*) \
+  RUN_TASK_ID="$(printf '%s\n' "$RUN_PROMPT" | sed -n 's/^task-\(T[0-9][0-9]*\).*$/\1/p')" ;; esac
 if [ -z "$BACKEND" ]; then
   case "$MODEL" in
     gpt-*|codex-*) RUN_BACKEND=codex ;;
@@ -128,6 +146,22 @@ else
     case "$PROMPT_FILE" in /*) RUN_PROMPT_DIR="$(dirname "$PROMPT_FILE")" ;; *) RUN_PROMPT_DIR="$(pwd)/$(dirname "$PROMPT_FILE")" ;; esac
   fi
   LOG_DIR="$(dirname "$RUN_PROMPT_DIR")/logs"
+fi
+# --- Attribution gate: every dispatch must be linked to a task or to project-wide read-only ---
+# The gate keys on PM_TASK_ID / PM_PROJECT_WIDE (explicit-attribution variables), NEVER on
+# RUN_TASK_ID alone, so the inference fallback and the reservation key do not collide. Exit 2
+# here means no lease, no reservation, no backend selection, no paid model call.
+if [ -n "$PM_TASK_ID" ] && [ "${PM_PROJECT_WIDE:-false}" = "true" ]; then
+  echo "[dispatch] pass --task-id or --project-wide, not both" >&2
+  exit 2
+fi
+if [ -z "$RUN_TASK_ID" ] && [ "${PM_PROJECT_WIDE:-false}" != "true" ]; then
+  echo "[dispatch] pass --task-id or explicitly use --project-wide" >&2
+  exit 2
+fi
+if [ "${PM_PROJECT_WIDE:-false}" = "true" ] && ! $READ_ONLY; then
+  echo "[dispatch] --project-wide is only valid for read-only dispatches" >&2
+  exit 2
 fi
 # Resolve explicit PM context first; installed projects require a current lease even
 # when hooks are disabled. Legacy projects keep the old dispatch contract.

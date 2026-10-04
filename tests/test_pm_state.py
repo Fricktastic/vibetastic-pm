@@ -100,6 +100,30 @@ class StateTests(unittest.TestCase):
         self.assertEqual(result['lint_exit'], 3)
         self.assertIn('future-provider', (self.pm / 'PLAN.md').read_text())
 
+    def test_plan_update_round_trips_recommended_next_and_attention(self):
+        # Guards the "plan-update.py needs no production change" invariant: lint accepts
+        # the new keys, and the round-trip preserves them verbatim in PLAN.md. On base
+        # (before Step 2a truncation fix), the candidate lints exit 1 (attention items
+        # mis-chunked as tasks), update_plan raises StateError, and this test fails.
+        insertion = (
+            "recommended_next: [T001]\n"
+            "attention:\n"
+            "  - id: gate-T001-device\n"
+            "    kind: device_evidence\n"
+            "    task_id: T001\n"
+            "    reason: \"Device check\"\n"
+            "    requested_at: \"2026-09-13T00:00:00Z\"\n"
+        )
+        # Insert just before the closing '---' so the new keys sit after tasks:, as the
+        # template documents.
+        candidate = PLAN.replace("\n---\n", "\n" + insertion + "---\n", 1)
+        result = self.update(self.own(), candidate=candidate)
+        self.assertIn(result['lint_exit'], (0, 3))
+        written = (self.pm / 'PLAN.md').read_text()
+        self.assertIn('recommended_next: [T001]', written)
+        self.assertIn('attention:', written)
+        self.assertIn('gate-T001-device', written)
+
     def test_operation_replay_is_idempotent_and_reuse_is_rejected(self):
         token = self.own()
         self.update(token)

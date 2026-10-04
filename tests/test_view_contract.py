@@ -184,6 +184,18 @@ tasks:
         self.assertEqual(plan["stages"][0]["state"], "active")
         self.assertEqual(plan["tasks"][1]["state"], "ready")
 
+    def test_parse_plan_does_not_absorb_recommended_next_or_attention(self):
+        text = (FIXTURES / "plan-good.md").read_text()
+        plan, warnings = parse_plan(text)
+        self.assertEqual([task["id"] for task in plan["tasks"]], ["T001", "T002"])
+        self.assertEqual(plan["recommended_next"], ["T002"])
+        self.assertEqual(len(plan["attention"]), 1)
+        self.assertEqual(plan["attention"][0]["id"], "gate-T001-device")
+        self.assertEqual(plan["attention"][0]["task_id"], "T001")
+        self.assertFalse(
+            [warning for warning in warnings if warning["code"] == "missing_required_field"]
+        )
+
     def test_plan_parser_warns_on_unknown_dependencies(self):
         text = (FIXTURES / "plan-bad-dep.md").read_text()
         plan, warnings = parse_plan(text)
@@ -392,6 +404,85 @@ reason: \"Approve device verification\"
         self.assertEqual(attention[1]["classification"], "inferred")
         self.assertEqual(attention[1]["rule"], "stale_heartbeat")
         self.assertEqual(attention[1]["evidence"][0]["path"], ".orchestrator/runs.json")
+
+    def test_recommended_next_reads_from_plan(self):
+        plan_text = (self.pm / "PLAN.md").read_text()
+        # Insert before the closing '---' so the new key sits after tasks:, as the
+        # template documents.
+        insertion = "recommended_next: [T001]\n"
+        plan_text = plan_text.replace("\n---\n", "\n" + insertion + "---\n", 1)
+        (self.pm / "PLAN.md").write_text(plan_text)
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertEqual(snapshot["recommended_next"], ["T001"])
+
+    def test_plan_attention_items_are_projected_with_classification_plan(self):
+        plan_text = (self.pm / "PLAN.md").read_text()
+        attention_yaml = (
+            "attention:\n"
+            "  - id: gate-T001-device\n"
+            "    kind: device_evidence\n"
+            "    task_id: T001\n"
+            "    reason: \"Run the approved device verification steps\"\n"
+            "    requested_at: \"2026-09-13T00:00:00Z\"\n"
+        )
+        plan_text = plan_text.replace("\n---\n", "\n" + attention_yaml + "---\n", 1)
+        (self.pm / "PLAN.md").write_text(plan_text)
+        snapshot = build_snapshot(self.pm, now=self.now)
+        plan_items = [a for a in snapshot["attention"] if a.get("classification") == "plan"]
+        self.assertEqual(len(plan_items), 1)
+        self.assertEqual(plan_items[0]["id"], "gate-T001-device")
+        self.assertEqual(plan_items[0]["task_id"], "T001")
+        self.assertEqual(plan_items[0]["kind"], "device_evidence")
+        self.assertEqual(plan_items[0]["rule"], None)
+        self.assertEqual(plan_items[0]["observed_at"], "2026-09-13T00:00:00Z")
+        self.assertEqual(plan_items[0]["evidence"][0]["path"], "PLAN.md")
+        self.assertEqual(plan_items[0]["evidence"][0]["sha256"],
+                         hashlib.sha256((self.pm / "PLAN.md").read_bytes()).hexdigest())
+
+    def test_plan_attention_sorts_before_explicit_and_inferred(self):
+        plan_text = (self.pm / "PLAN.md").read_text()
+        attention_yaml = (
+            "attention:\n"
+            "  - id: gate-T001-device\n"
+            "    kind: device_evidence\n"
+            "    task_id: T001\n"
+            "    reason: \"Run the approved device verification steps\"\n"
+            "    requested_at: \"2026-09-13T00:00:00Z\"\n"
+        )
+        plan_text = plan_text.replace("\n---\n", "\n" + attention_yaml + "---\n", 1)
+        (self.pm / "PLAN.md").write_text(plan_text)
+        snapshot = build_snapshot(self.pm, now=self.now)
+        classes = [a.get("classification") for a in snapshot["attention"]]
+        self.assertIn("plan", classes)
+        self.assertIn("explicit", classes)
+        self.assertEqual(classes.index("plan"), 0)
+
+    def test_empty_recommended_next_when_plan_absent(self):
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertEqual(snapshot["recommended_next"], [])
+
+    def test_empty_attention_when_plan_absent(self):
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertFalse(any(a.get("classification") == "plan" for a in snapshot["attention"]))
+
+    def test_sanitizer_still_excludes_secrets_with_plan_attention(self):
+        plan_text = (self.pm / "PLAN.md").read_text()
+        attention_yaml = (
+            "attention:\n"
+            "  - id: gate-T001-device\n"
+            "    kind: device_evidence\n"
+            "    task_id: T001\n"
+            "    reason: \"Run the approved device verification steps\"\n"
+            "    requested_at: \"2026-09-13T00:00:00Z\"\n"
+        )
+        plan_text = plan_text.replace("\n---\n", "\n" + attention_yaml + "---\n", 1)
+        (self.pm / "PLAN.md").write_text(plan_text)
+        snapshot = build_snapshot(self.pm, now=self.now)
+        encoded = json.dumps(snapshot)
+        self.assertNotIn("lease-secret", encoded)
+        self.assertNotIn("raw model output", encoded)
+        self.assertNotIn("secret prompt", encoded)
+        self.assertNotIn("/secret/source", encoded)
 
     def test_sanitize_lease_uses_allowlist(self):
         lease = {"provider": "codex", "session": "s", "profile": "normal", "token": "x",

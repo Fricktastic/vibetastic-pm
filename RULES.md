@@ -312,7 +312,7 @@ These override convenience. Each cost real cycles when ignored.
 - **Model:** Sonnet by default; PM may use Opus for complex architectural tasks
 
 ### Reviewer (first-pass diff review — cheap tier, read-only)
-- **Invoked with:** `bash framework/dispatch.sh --read-only <standard-tier-model> <target-project-path> <rendered-reviewer-prompt>` (template: `framework/prompts/reviewer.md`), or as a Sonnet `Agent` subagent with the same rendered prompt
+- **Invoked with:** `bash framework/dispatch.sh --read-only --task-id <task-id> <standard-tier-model> <target-project-path> <rendered-reviewer-prompt>` (template: `framework/prompts/reviewer.md`), or as a Sonnet `Agent` subagent with the same rendered prompt
 - **Receives:** task spec, `verify_tier`, diff range
 - **Returns:** VERDICT (APPROVE / APPROVE-WITH-FOLLOWUPS / REJECT) + findings; the orchestrator adjudicates against the spec and decides merge / reject / re-dispatch
 - **Does not:** modify any file (enforced — dispatch exits 21 on a dirty tree), merge, or decide
@@ -321,7 +321,7 @@ These override convenience. Each cost real cycles when ignored.
 - **Security override:** for a `security: true` task the first pass runs on **Sonnet minimum** (not the cheap opencode tier) and adjudication is **mandatory Opus, never delegated, never Fable**. This is the deliberate exception to the cheap-first bias (see `VERIFY.md` § Security-sensitive tasks).
 
 ### OpenCode (via PM shell invocation)
-- **Invoked with:** `bash framework/dispatch.sh --worktree <branch> <model> <target-project-path> <per-task-prompt-file> [fallback] [verify-cmd] [max-attempts] [tier]` — PM extracts a task-scoped prompt file via awk before calling dispatch (see `.claude/rules/dispatch.md`). `--worktree` isolates the builder in a per-task git worktree so the live checkout is never touched.
+- **Invoked with:** `bash framework/dispatch.sh --worktree <branch> --task-id <task-id> <model> <target-project-path> <per-task-prompt-file> [fallback] [verify-cmd] [max-attempts] [tier]` — PM extracts a task-scoped prompt file via awk before calling dispatch (see `.claude/rules/dispatch.md`). `--worktree` isolates the builder in a per-task git worktree so the live checkout is never touched.
 - **PM captures:** stdout/stderr, exit code
 - **On success:** PM marks task done, logs output summary
 - **On failure:** PM writes exit code + stderr to `error` field, evaluates retry
