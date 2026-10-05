@@ -68,6 +68,7 @@ def _make_pm():
     shutil.copy2(SCRIPTS / "orchestrator-hook.py", scripts / "orchestrator-hook.py")
     shutil.copy2(SCRIPTS / "plan-lint.sh", scripts / "plan-lint.sh")
     (scripts / "plan-lint.sh").chmod(0o755)
+    shutil.copy2(SCRIPTS / "handoff-volatile-hook.py", scripts / "handoff-volatile-hook.py")
     for name in (
         "orchestrator-state.py", "plan-update.py",
         "pm_state.py", "log-partner-burn.py",
