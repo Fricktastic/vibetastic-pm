@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -265,6 +266,8 @@ def install(pm_dir, framework_dir):
         framework_dir / "scripts/dispatch-role.py",
         framework_dir / "scripts/spec-body-guard.py",
         framework_dir / VOLATILE_SCRIPT,
+        framework_dir / "scripts/view_contract.py",
+        framework_dir / "scripts/export-view-contract.py",
         framework_dir / "orchestrate.py",
     )
     missing = [str(path) for path in required if not path.is_file()]
@@ -330,6 +333,64 @@ def install(pm_dir, framework_dir):
     for path, content in changes:
         atomic_write(path, content)
 
+    view_outcome = {"path": None, "warnings": []}
+    if changes:
+        view_outcome = _project_initial_view(pm_dir, framework_dir)
+    return view_outcome
+
+
+def _project_initial_view(pm_dir, framework_dir):
+    """Build the initial View snapshot after a non-trivial installer write.
+
+    Returns a dict with the snapshot path (string or None) and a list of warning codes.
+    Projection failure is non-fatal for an already-durable installation: the marker is
+    written (best-effort) and the installer still exits 0. The state-layer marker under
+    `.orchestrator/view/dirty` is never written here.
+    """
+    sys_path_first = sys.path[0] if sys.path else ""
+    if not sys_path_first or not (Path(sys_path_first) / "view_contract.py").is_file():
+        scripts_dir = str((framework_dir / "scripts").resolve())
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+    try:
+        from view_contract import build_snapshot, write_snapshot
+    except Exception as exc:
+        return _record_projection_failure(pm_dir, exc)
+
+    try:
+        snapshot = build_snapshot(pm_dir)
+        path = write_snapshot(pm_dir, snapshot)
+    except Exception as exc:
+        return _record_projection_failure(pm_dir, exc)
+
+    stale_marker = pm_dir / ".orchestrator/view/install-projection-failed.json"
+    if stale_marker.exists() or stale_marker.is_symlink():
+        try:
+            stale_marker.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"install-orchestrators: stale marker could not be removed: {exc.__class__.__name__}: {exc.strerror or 'unlink failed'}", file=sys.stderr)
+    warnings = [str(w.get("code")) for w in snapshot.get("warnings", []) if isinstance(w, dict) and w.get("code")]
+    return {"path": str(path), "warnings": warnings}
+
+
+def _record_projection_failure(pm_dir, exc):
+    """Write the distinct install-projection-failed marker; never raise."""
+    marker_path = pm_dir / ".orchestrator/view/install-projection-failed.json"
+    reason = f"{exc.__class__.__name__}: {getattr(exc, 'strerror', None) or str(exc) or 'projection failed'}"
+    payload = {
+        "schema_version": 1,
+        "kind": "install_projection_failed",
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "warning": {"code": "view_projection_dirty", "message": reason},
+    }
+    try:
+        atomic_write(marker_path, (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode())
+    except OSError as marker_exc:
+        print(f"install-orchestrators: install-projection-failed marker could not be written: {marker_exc.__class__.__name__}: {marker_exc.strerror or 'write failed'}", file=sys.stderr)
+    return {"path": None, "warnings": ["view_projection_dirty"], "reason": reason, "marker": str(marker_path)}
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -337,11 +398,23 @@ def main(argv=None):
     parser.add_argument("--framework-dir", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        install(args.pm_dir, args.framework_dir)
+        view_outcome = install(args.pm_dir, args.framework_dir)
     except InstallError as exc:
         print(f"install-orchestrators: {exc}", file=sys.stderr)
         return 2
     print(f"Installed Claude and Codex orchestrator adapters in {args.pm_dir.resolve()}")
+    if view_outcome.get("path"):
+        print(f"view contract: {view_outcome['path']}")
+        codes = view_outcome.get("warnings") or []
+        if codes:
+            print(f"view contract warnings: {', '.join(codes)}")
+        else:
+            print("view contract warnings: none")
+    else:
+        marker = view_outcome.get("marker") or str(args.pm_dir.resolve() / ".orchestrator/view/install-projection-failed.json")
+        reason = view_outcome.get("reason") or "projection failed"
+        print("view contract: unavailable")
+        print(f"view contract warning: view_projection_dirty {reason} (marker: {marker})")
     return 0
 
 

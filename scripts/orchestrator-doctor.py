@@ -19,6 +19,14 @@ EVENTS = ("PreToolUse", "PostToolUse", "Stop")
 BEGIN = "<!-- BEGIN VIBETASTIC ORCHESTRATOR HARNESS -->"
 VOLATILE_SCRIPT = "scripts/handoff-volatile-hook.py"
 VOLATILE_HEADING = "## Volatile — re-verify before use"
+VIEW_V1_DIR = ".orchestrator/view/v1"
+VIEW_SNAPSHOT = VIEW_V1_DIR + "/snapshot.json"
+VIEW_EVENTS = VIEW_V1_DIR + "/events.jsonl"
+VIEW_INSTALL_FAILED = ".orchestrator/view/install-projection-failed.json"
+VIEW_FORBIDDEN_KEYS = (
+    "token", "api_key", "secret", "password",
+    "credential", "prompt", "transcript", "environment",
+)
 
 
 def load_object(path, errors):
@@ -305,6 +313,214 @@ def diagnose(pm_dir, framework_dir):
         "adapter_selftest": selftest,
         "policy": policy,
         "runtime_evidence": runtime_evidence(pm_dir),
+        "checks": {"view_contract_v1": check_view_contract_v1(pm_dir, framework_dir)},
+    }
+
+
+def run_doctor(pm_dir, framework_dir):
+    """Library entry point returning the same dict `diagnose` builds."""
+    return diagnose(pm_dir, framework_dir)
+
+
+def _import_view_contract(framework_dir):
+    """Resolve view_contract via sys.path[0] (sibling-module pattern used by pm_state.py:20).
+
+    Falls back to the framework's scripts directory when sys.path[0] lacks it. The doctor
+    is diagnostic only; missing/empty contracts are still reported through the checks dict
+    even when the module cannot be imported.
+    """
+    scripts_dir = (framework_dir / "scripts").resolve()
+    try:
+        import view_contract  # noqa: WPS433 (lazy import for sibling module)
+    except Exception:
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        try:
+            import view_contract  # noqa: WPS433 (lazy import for sibling module)
+        except Exception:
+            return None
+    return view_contract
+
+
+def _scan_forbidden(value, key_name, location, errors):
+    """Recursively check a JSON-shaped value for the view contract's forbidden keys."""
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                next_path = f"{path}.{key}" if path else key
+                if key in VIEW_FORBIDDEN_KEYS:
+                    errors.append(f"forbidden key '{key}' in {location} {next_path}")
+                else:
+                    walk(child, next_path)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+    walk(value, "")
+
+
+def check_view_contract_v1(pm_dir, framework_dir):
+    """Read-only validation of `.orchestrator/view/v1/`. Never writes."""
+    errors: list[str] = []
+    warnings: list[dict] = []
+    assertions: list[str] = []
+    snapshot_path = pm_dir / VIEW_SNAPSHOT
+    events_path = pm_dir / VIEW_EVENTS
+
+    snapshot = None
+    if snapshot_path.is_file():
+        try:
+            raw = snapshot_path.read_text()
+        except OSError as exc:
+            errors.append(f"cannot read {snapshot_path}: {exc.__class__.__name__}")
+        else:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                errors.append(f"{snapshot_path} is not valid JSON: {exc.msg}")
+            else:
+                if not isinstance(parsed, dict):
+                    errors.append(f"{snapshot_path} must be a JSON object")
+                else:
+                    snapshot = parsed
+                    contract = parsed.get("contract")
+                    schema_version = parsed.get("schema_version")
+                    generation = parsed.get("generation")
+                    if contract == "vibetastic-view/v1":
+                        assertions.append("snapshot.contract == vibetastic-view/v1")
+                    else:
+                        errors.append(
+                            f"snapshot.contract is {contract!r}; expected 'vibetastic-view/v1'"
+                        )
+                    if isinstance(schema_version, int) and not isinstance(schema_version, bool):
+                        assertions.append("snapshot.schema_version is an integer")
+                    else:
+                        errors.append(
+                            f"snapshot.schema_version is {schema_version!r}; expected an integer"
+                        )
+                    if (
+                        isinstance(generation, int)
+                        and not isinstance(generation, bool)
+                        and generation >= 1
+                    ):
+                        assertions.append("snapshot.generation >= 1")
+                    else:
+                        errors.append(
+                            f"snapshot.generation is {generation!r}; expected an integer >= 1"
+                        )
+                    _scan_forbidden(parsed, "snapshot", str(snapshot_path), errors)
+                    for warning in parsed.get("warnings", []) or []:
+                        if isinstance(warning, dict) and warning.get("code"):
+                            warnings.append({
+                                "code": str(warning["code"]),
+                                "message": str(warning.get("message", "")),
+                                "path": str(snapshot_path),
+                            })
+    else:
+        errors.append(
+            "no view projection; run the installer or export-view-contract.py "
+            f"(expected {snapshot_path})"
+        )
+
+    view_contract = _import_view_contract(framework_dir)
+    allowed_event_types = getattr(view_contract, "_EVENT_FIELDS", None)
+
+    if events_path.is_file():
+        try:
+            raw = events_path.read_text()
+        except OSError as exc:
+            errors.append(f"cannot read {events_path}: {exc.__class__.__name__}")
+        else:
+            lines = raw.splitlines()
+            non_empty = [line for line in lines if line.strip()]
+            if not non_empty:
+                warnings.append({
+                    "code": "events_jsonl_empty",
+                    "message": f"{events_path} is present but contains no events",
+                    "path": str(events_path),
+                })
+            else:
+                for line_no, line in enumerate(non_empty, 1):
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        errors.append(
+                            f"{events_path} line {line_no} is not valid JSON: {exc.msg}"
+                        )
+                        continue
+                    if not isinstance(row, dict):
+                        errors.append(
+                            f"{events_path} line {line_no} is not an object"
+                        )
+                        continue
+                    if allowed_event_types is None:
+                        continue
+                    event_id = row.get("event_id")
+                    event_type = row.get("type")
+                    operation = row.get("operation")
+                    if not (isinstance(event_id, str) and isinstance(event_type, str)
+                            and isinstance(operation, str)):
+                        errors.append(
+                            f"{events_path} line {line_no}: event_id, type, operation must be strings"
+                        )
+                        continue
+                    if event_type not in allowed_event_types:
+                        errors.append(
+                            f"{events_path} line {line_no}: unknown event type {event_type!r}"
+                        )
+                        continue
+                    expected_keys = {"event_id", "type", "operation", *allowed_event_types[event_type]}
+                    extra = set(row) - expected_keys
+                    if extra:
+                        sample = sorted(extra)[0]
+                        errors.append(
+                            f"{events_path} line {line_no}: unexpected key {sample!r}"
+                        )
+                    _scan_forbidden(row, "event", f"{events_path} line {line_no}", errors)
+    else:
+        warnings.append({
+            "code": "events_jsonl_absent",
+            "message": f"{events_path} is absent; the installer and exporter do not create it",
+            "path": str(events_path),
+        })
+
+    for path in (snapshot_path, events_path):
+        if path.is_file():
+            try:
+                mode = path.stat().st_mode
+            except OSError as exc:
+                errors.append(f"cannot stat {path}: {exc.__class__.__name__}")
+                continue
+            if mode & 0o002:
+                errors.append(
+                    f"{path} mode is world-writable (0{mode & 0o777:o}); tighten file permissions"
+                )
+            elif mode & 0o020:
+                warnings.append({
+                    "code": "group_writable",
+                    "message": (
+                        f"{path} mode is 0{mode & 0o777:o} (group-writable); "
+                        "review whether group write access is required"
+                    ),
+                    "path": str(path),
+                })
+
+    stale_marker = pm_dir / VIEW_INSTALL_FAILED
+    if stale_marker.is_file() or stale_marker.is_dir():
+        warnings.append({
+            "code": "install_projection_failed",
+            "message": (
+                "installer initial view projection failed; reconstruct with "
+                "export-view-contract.py or re-run install-orchestrators.py with a "
+                "real change and confirm"
+            ),
+            "path": str(stale_marker),
+        })
+
+    return {
+        "status": "error" if errors else "ok",
+        "assertions": assertions,
+        "errors": errors,
+        "warnings": warnings,
     }
 
 
@@ -327,9 +543,16 @@ def main(argv=None):
               + ", ".join(f"{k} {v}" for k, v in sorted(policy["sources"].items())) + ")")
         for provider, observed in report["runtime_evidence"].items():
             print(f"{provider} runtime hook evidence:", "observed" if observed else "not observed")
+        view = report.get("checks", {}).get("view_contract_v1", {})
+        if view:
+            status = view.get("status", "ok")
+            print(f"view contract v1: {status if status == 'ok' else 'failed'}")
         for section in ("configuration", "adapter_selftest", "policy"):
             for error in report[section]["errors"]:
                 print(f"- {error}", file=sys.stderr)
+        view_errors = view.get("errors", []) if isinstance(view, dict) else []
+        for error in view_errors:
+            print(f"- {error}", file=sys.stderr)
     return 0 if report["ok"] else 1
 
 
