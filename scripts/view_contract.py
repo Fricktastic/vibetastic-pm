@@ -493,6 +493,7 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
         "warnings": [],
     }
     explicit = _explicit_attention(captures["TASK_LOG.md"], warnings)
+    snapshot["recommended_next"] = _recommended_next(captures["TASK_LOG.md"], tasks, warnings)
     snapshot["warnings"] = _sort_warnings(warnings)
     snapshot["attention"] = _derive_attention(snapshot, generated, explicit, captures["HANDOFF.md"].get("mtime"))
     return snapshot
@@ -721,6 +722,10 @@ def _journal_rows(capture: dict[str, Any], warnings: list[dict[str, Any]]) -> di
         for field in ("run_id", "task_id", "role", "backend", "model", "tier", "status", "phase", "heartbeat_at"):
             if field in record and _is_scalar(record.get(field)):
                 row[field] = record[field]
+        # dispatch.sh journals the review-gate task (--task, or task|fixup|critic|review-T0XX
+        # prompt names) as gate_task_id; task_id is only the narrower reservation key.
+        if row["task_id"] is None and isinstance(record.get("gate_task_id"), str):
+            row["task_id"] = record["gate_task_id"]
         for source, target in mapping.items():
             if source in record and _is_scalar(record.get(source)):
                 row[target] = record[source]
@@ -781,14 +786,53 @@ def _explicit_attention(capture: dict[str, Any], warnings: list[dict[str, Any]])
         end = next((i for i in range(index + 1, len(lines)) if lines[i].startswith("### ")), len(lines))
         fields = {m.group(1): m.group(2).strip().strip("\"'") for line in lines[index + 1:end] if (m := re.match(r"^\s*(task_id|reason):\s*(.*?)\s*$", line))}
         task_id, reason = fields.get("task_id"), fields.get("reason")
+        if task_id in {"null", "~", ""}:
+            task_id = None
         observed = _parse_timestamp(match.group(1))
-        if not task_id or not reason or observed is None:
+        event = match.group(2)
+        if (not task_id and event != "operator_action_requested") or not reason or observed is None:
             _view_warning(warnings, "malformed_explicit_attention", "Explicit attention block is incomplete or has an invalid timestamp", "TASK_LOG.md", index + 1)
             continue
         evidence = [_provenance_for(capture, "TASK_LOG.md", index + 1)]
-        event = match.group(2)
-        result.append({"id": f"explicit:{event}:{task_id}:{index + 1}", "classification": "explicit", "task_id": task_id, "kind": event, "reason": reason, "rule": None, "observed_at": observed, "evidence": evidence})
+        result.append({"id": f"explicit:{event}:{task_id or 'none'}:{index + 1}", "classification": "explicit", "task_id": task_id, "kind": event, "reason": reason, "rule": None, "observed_at": observed, "evidence": evidence})
     return sorted(result, key=lambda item: item["id"])
+
+
+def _recommended_next(capture: dict[str, Any], tasks: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The orchestrator's ordering from the latest `next_recommended` TASK_LOG event.
+
+    Each item carries the task's title and state from PLAN plus the orchestrator's `why`, so the
+    viewer can show what the task accomplishes without computing priority itself. Tasks that are
+    unknown, done or closed are dropped (a stale recommendation must not resurface finished work).
+    """
+    lines = capture["text"].splitlines()
+    heading = re.compile(r"^###\s+(\S+)\s+·\s+next_recommended\s*$")
+    start = next((i for i in range(len(lines) - 1, -1, -1) if heading.match(lines[i])), None)
+    if start is None:
+        return []
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("### ")), len(lines))
+    observed = _parse_timestamp(heading.match(lines[start]).group(1))
+    by_id = {task["id"]: task for task in tasks if task.get("valid_identity")}
+    evidence = [_provenance_for(capture, "TASK_LOG.md", start + 1)]
+    result: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    items: list[dict[str, Any]] = []
+    for line in lines[start + 1:end]:
+        if m := re.match(r"^\s*-\s+task_id:\s*(.*?)\s*$", line):
+            current = {"task_id": m.group(1).strip("\"'"), "why": None}
+            items.append(current)
+        elif current is not None and (m := re.match(r"^\s+why:\s*(.*?)\s*$", line)):
+            current["why"] = m.group(1).strip("\"'") or None
+    for rank, item in enumerate(items, 1):
+        task = by_id.get(item["task_id"])
+        if task is None:
+            _view_warning(warnings, "unknown_recommended_task", "next_recommended names a task not in PLAN", "TASK_LOG.md", start + 1, task_id=item["task_id"])
+            continue
+        if task.get("state") in {"done", "closed"}:
+            continue
+        result.append({"rank": rank, "task_id": task["id"], "title": task.get("title"), "state": task.get("state"),
+                       "why": item["why"], "recommended_at": observed, "evidence": evidence})
+    return result
 
 
 def _derive_attention(snapshot: dict[str, Any], now: str, explicit: list[dict[str, Any]], handoff_mtime: float | None = None) -> list[dict[str, Any]]:

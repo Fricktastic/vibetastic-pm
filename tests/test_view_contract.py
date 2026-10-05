@@ -393,6 +393,40 @@ reason: \"Approve device verification\"
         self.assertEqual(attention[1]["rule"], "stale_heartbeat")
         self.assertEqual(attention[1]["evidence"][0]["path"], ".orchestrator/runs.json")
 
+    def test_journal_run_links_to_gate_task_when_reservation_key_is_absent(self):
+        (self.pm / ".orchestrator" / "runs.json").write_text("{}")
+        (self.pm / "logs" / "runs.jsonl").write_text(json.dumps({
+            "event": "run_start", "run_id": "run-2", "task_id": None, "gate_task_id": "T001",
+            "ts_start": "2026-09-13T00:00:00Z", "role": "read-only",
+        }) + "\n")
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertEqual(snapshot["runs"][0]["task_id"], "T001")
+        task = next(task for task in snapshot["tasks"] if task["id"] == "T001")
+        self.assertEqual(task["runs"], ["run-2"])
+        self.assertFalse(any(w["code"] == "missing_task_linkage" for w in snapshot["warnings"]))
+
+    def test_operator_action_request_needs_no_task(self):
+        with (self.pm / "TASK_LOG.md").open("a") as log:
+            log.write("\n### 2026-09-13T00:03:00Z · operator_action_requested\n```yaml\n"
+                      "task_id: null\nagent: pm\nreason: \"Renew the signing certificate\"\n```\n")
+        attention = build_snapshot(self.pm, now=self.now)["attention"]
+        request = next(item for item in attention if item["kind"] == "operator_action_requested")
+        self.assertIsNone(request["task_id"])
+        self.assertEqual(request["reason"], "Renew the signing certificate")
+
+    def test_recommended_next_carries_title_state_and_why(self):
+        with (self.pm / "TASK_LOG.md").open("a") as log:
+            log.write("\n### 2026-09-13T00:03:00Z · next_recommended\n```yaml\ntask_id: null\nagent: pm\n"
+                      "items:\n  - task_id: T001\n    why: \"Unblocks the device pass\"\n"
+                      "  - task_id: T999\n    why: gone\n```\n")
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertEqual(snapshot["recommended_next"], [{
+            "rank": 1, "task_id": "T001", "title": "Fixture task", "state": "ready",
+            "why": "Unblocks the device pass", "recommended_at": "2026-09-13T00:03:00Z",
+            "evidence": snapshot["recommended_next"][0]["evidence"],
+        }])
+        self.assertTrue(any(w["code"] == "unknown_recommended_task" for w in snapshot["warnings"]))
+
     def test_sanitize_lease_uses_allowlist(self):
         lease = {"provider": "codex", "session": "s", "profile": "normal", "token": "x",
                  "pid": 42, "process_start": "y", "acquired_at": "a", "renewed_at": "r"}
