@@ -131,6 +131,32 @@ one; its closing event cites the merged SHA.
 
 ---
 
+## View events (optional)
+
+`scripts/view_contract.py` publishes a read-only dashboard projection from existing state. Two
+optional TASK_LOG events feed it; nothing gates on them, and omitting them only leaves the
+panels empty.
+
+```markdown
+### <ISO8601> · operator_action_requested      # "needs your action"; task_id may be null
+```yaml
+task_id: <id | null>
+agent: pm
+reason: <what the operator must do>
+```
+
+### <ISO8601> · next_recommended               # the latest one replaces earlier ones
+```yaml
+task_id: null
+agent: pm
+items:                                          # in recommended order
+  - task_id: <id>
+    why: <one line: what doing it now unblocks or achieves>
+```
+```
+
+---
+
 ## Volatile handoff claims (issue #51)
 
 `HANDOFF.md § Volatile — re-verify before use` holds claims, not facts (format:

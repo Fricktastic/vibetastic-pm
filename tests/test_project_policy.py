@@ -190,7 +190,7 @@ class PolicyTests(unittest.TestCase):
         (framework / "orchestrate.py").write_text("# fixture\n")
         for name in ("orchestrator-hook.py", "orchestrator-state.py", "plan-update.py", "pm_state.py",
                      "plan-lint.sh", "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",
-                     "orchestrator-routing.py", "dispatch-role.py", "spec-body-guard.py",
+                     "orchestrator-routing.py", "dispatch-role.py", "spec-body-guard.py", "view_contract.py", "export-view-contract.py",
                      "handoff-volatile-hook.py"):
             (framework / "scripts" / name).write_text("# fixture\n")
         self.write_project("critic_round_cap: 1\n", "## Risk triggers\n- audio ownership\n")
