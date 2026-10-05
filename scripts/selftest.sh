@@ -16,6 +16,18 @@ FAIL=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; FAIL=1; }
 
+# Isolation: selftest drives dispatch.sh and the PM state scripts against throwaway dirs. An
+# orchestrator session exports PM_DIR and its lease identity; inherited, they point those runs
+# at the caller's real PM dir (a fake task-T998 reservation and view snapshot once landed in a
+# live project). Drop them here, and fail below if the inherited PM dir changed anyway.
+CALLER_PM_DIR="${PM_DIR:-}"
+pm_state_fingerprint() {
+  [ -n "$CALLER_PM_DIR" ] && [ -d "$CALLER_PM_DIR" ] || return 0
+  find "$CALLER_PM_DIR/.orchestrator" "$CALLER_PM_DIR/logs" -type f -exec ls -ln {} + 2>/dev/null | LC_ALL=C sort
+}
+CALLER_PM_BEFORE="$(pm_state_fingerprint)"
+unset PM_DIR PM_ORCHESTRATOR_TOKEN PM_ORCHESTRATOR_PROVIDER PM_ORCHESTRATOR_SESSION OPENCODE_DISPATCH_LOG_DIR
+
 echo "[selftest] shell syntax"
 for f in ./*.sh scripts/*.sh; do
   [ -e "$f" ] || continue
@@ -887,6 +899,11 @@ if python3 -m unittest discover -s tests -p 'test_*.py'; then
 else
   fail "additive orchestration regression suite"
 fi
+
+echo "[selftest] caller's PM dir untouched"
+if [ -z "$CALLER_PM_DIR" ]; then pass "no PM_DIR inherited"
+elif [ "$(pm_state_fingerprint)" = "$CALLER_PM_BEFORE" ]; then pass "$CALLER_PM_DIR/.orchestrator and logs unchanged"
+else fail "selftest wrote into the caller's PM dir $CALLER_PM_DIR"; fi
 
 echo
 if [ "$FAIL" = 0 ]; then echo "[selftest] PASS"; else echo "[selftest] FAIL"; fi
