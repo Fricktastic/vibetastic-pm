@@ -46,6 +46,7 @@ class InstallerTests(unittest.TestCase):
             "plan-lint.sh", "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",
             "orchestrator-routing.py", "dispatch-role.py",
             "spec-body-guard.py",
+            "view_contract.py", "export-view-contract.py",
         ):
             (scripts / name).write_text("# fixture\n")
         (self.framework / "orchestrate.py").write_text("# fixture\n")
@@ -184,6 +185,61 @@ class InstallerTests(unittest.TestCase):
         released = self.install()
         self.assertEqual(released.returncode, 0, released.stderr)
         self.assertTrue(json.loads(path.read_text())["user_customization"])
+
+    def test_projection_failure_writes_distinct_marker_and_still_exit_0(self):
+        first = self.install()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        snapshot = self.pm / ".orchestrator/view/v1/snapshot.json"
+        self.assertTrue(snapshot.is_file(), "expected initial projection snapshot")
+
+        codex_path = self.pm / ".codex/hooks.json"
+        config = json.loads(codex_path.read_text())
+        config["user_customization"] = True
+        codex_path.write_text(json.dumps(config))
+
+        runs_path = self.pm / "logs/runs.jsonl"
+        if runs_path.exists() or runs_path.is_symlink():
+            runs_path.unlink()
+        runs_path.mkdir(parents=True, exist_ok=True)
+
+        second = self.install()
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        marker = self.pm / ".orchestrator/view/install-projection-failed.json"
+        self.assertTrue(marker.is_file(), "expected distinct install-projection-failed marker")
+        payload = json.loads(marker.read_text())
+        self.assertEqual(payload.get("kind"), "install_projection_failed")
+        for forbidden_key in ("before", "version", "command", "identity_seed", "entity"):
+            self.assertNotIn(forbidden_key, payload)
+        self.assertFalse((self.pm / ".orchestrator/view/dirty").exists())
+
+    def test_stale_marker_removal_failure_keeps_marker_and_exit_0(self):
+        first = self.install()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        marker = self.pm / ".orchestrator/view/install-projection-failed.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({
+            "schema_version": 1,
+            "kind": "install_projection_failed",
+            "written_at": "2026-10-04T00:00:00Z",
+            "warning": {"code": "view_projection_dirty", "message": "stale fixture"},
+        }))
+
+        codex_path = self.pm / ".codex/hooks.json"
+        config = json.loads(codex_path.read_text())
+        config["user_customization"] = True
+        codex_path.write_text(json.dumps(config))
+
+        marker.unlink()
+        marker.mkdir()
+
+        second = self.install()
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertTrue(marker.is_dir(), "expected unlink failure to leave the marker path in place")
+
+        report_result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        report = json.loads(report_result.stdout)
+        codes = [w.get("code") for w in report["checks"]["view_contract_v1"].get("warnings", [])]
+        self.assertIn("install_projection_failed", codes)
 
 
 class HookTests(unittest.TestCase):
@@ -368,6 +424,7 @@ class DoctorTests(unittest.TestCase):
             "orchestrator-state.py", "plan-update.py", "pm_state.py",
             "log-partner-burn.py", "partner_telemetry.py", "append-cost.py",
             "orchestrator-routing.py", "dispatch-role.py",
+            "view_contract.py", "export-view-contract.py",
         ):
             (self.framework / "scripts" / name).write_text("# fixture\n")
         (self.framework / "orchestrate.py").write_text("# fixture\n")
@@ -451,6 +508,104 @@ class DoctorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(json.loads(result.stdout)["configuration"]["ok"])
+
+    def test_doctor_warns_on_stale_install_projection_marker(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+
+        marker = self.pm / ".orchestrator/view/install-projection-failed.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({
+            "schema_version": 1,
+            "kind": "install_projection_failed",
+            "written_at": "2026-10-04T00:00:00Z",
+            "warning": {"code": "view_projection_dirty", "message": "fixture"},
+        }))
+
+        result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["ok"])
+        view = report["checks"]["view_contract_v1"]
+        self.assertEqual(view["status"], "ok")
+        codes = [w.get("code") for w in view.get("warnings", [])]
+        self.assertIn("install_projection_failed", codes)
+
+    def test_doctor_flags_malformed_or_forbidden_events_rows(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+
+        events_path = self.pm / ".orchestrator/view/v1/events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        valid_row = json.dumps({
+            "event_id": "cmd:lease_acquired:abc:def:0",
+            "type": "lease_acquired",
+            "operation": "acquire",
+            "provider": "codex",
+            "session": "test",
+            "profile": "normal",
+        }, sort_keys=True, separators=(",", ":"))
+        forbidden_row = json.dumps({
+            "event_id": "cmd:lease_acquired:abc:def2:0",
+            "type": "lease_acquired",
+            "operation": "acquire",
+            "provider": "codex",
+            "session": "test",
+            "profile": "normal",
+            "token": "x",
+        }, sort_keys=True, separators=(",", ":"))
+        events_path.write_text("\n".join([valid_row, "null", forbidden_row]) + "\n")
+
+        result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["ok"])
+        view = report["checks"]["view_contract_v1"]
+        self.assertEqual(view["status"], "error")
+        joined = "\n".join(view.get("errors", []))
+        self.assertIn("not an object", joined)
+        self.assertIn("forbidden key 'token'", joined)
+        self.assertNotIn('"x"', view.get("errors", []).__repr__())
+        self.assertNotIn("null", view.get("errors", [])[0] if view.get("errors") else "")
+
+    def test_doctor_group_write_warns_and_world_write_errors(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+
+        events_path = self.pm / ".orchestrator/view/v1/events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        valid_row = json.dumps({
+            "event_id": "cmd:lease_acquired:abc:def:0",
+            "type": "lease_acquired",
+            "operation": "acquire",
+            "provider": "codex",
+            "session": "test",
+            "profile": "normal",
+        }, sort_keys=True, separators=(",", ":"))
+        events_path.write_text(valid_row + "\n")
+        os.chmod(events_path, 0o664)
+
+        group_result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        self.assertEqual(group_result.returncode, 0, group_result.stdout + group_result.stderr)
+        group_report = json.loads(group_result.stdout)
+        self.assertTrue(group_report["ok"])
+        group_view = group_report["checks"]["view_contract_v1"]
+        self.assertEqual(group_view["status"], "ok")
+        warning_messages = "\n".join(
+            str(w) for w in group_view.get("warnings", [])
+        )
+        self.assertIn("group", warning_messages.lower())
+
+        os.chmod(events_path, 0o666)
+        world_result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        self.assertEqual(world_result.returncode, 0, world_result.stdout + world_result.stderr)
+        world_report = json.loads(world_result.stdout)
+        self.assertTrue(world_report["ok"])
+        world_view = world_report["checks"]["view_contract_v1"]
+        self.assertEqual(world_view["status"], "error")
+        world_errors = "\n".join(world_view.get("errors", []))
+        self.assertIn("world", world_errors.lower())
+        self.assertNotIn(events_path.read_text(), world_errors)
 
 
 class RealStateHookTests(unittest.TestCase):

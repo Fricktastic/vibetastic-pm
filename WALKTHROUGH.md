@@ -108,6 +108,17 @@ Validate the installation before the first session:
 python3 framework/scripts/orchestrator-doctor.py --pm-dir . --framework-dir framework
 ```
 
+After install, doctor also reports `view_contract_v1`. The View read contract
+limits consumers to `.orchestrator/view/v1/` plus explicitly allowlisted artifact
+paths; the directory is fully reconstructable via
+`python3 framework/scripts/export-view-contract.py --pm-dir .`. It contains no
+lease credentials or raw operational journals. LAN exposure of the projection
+belongs to the consumer — the dashboard binds loopback by default, not the
+framework. If `.orchestrator/view/install-projection-failed.json` appears, the
+install still succeeded (exit 0); reconstruct with the exporter (or a
+subsequent installer run that makes a real change) and confirm the marker is
+gone.
+
 ---
 
 ## 3. Start the PM
