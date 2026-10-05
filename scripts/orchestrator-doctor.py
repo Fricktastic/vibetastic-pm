@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -358,6 +359,11 @@ def _scan_forbidden(value, key_name, location, errors):
     walk(value, "")
 
 
+def _is_allowlisted_code(value):
+    """Allow only short, low-charset codes so the doctor can echo them safely."""
+    return bool(value) and bool(re.match(r"^[a-z0-9_]{1,64}$", value))
+
+
 def check_view_contract_v1(pm_dir, framework_dir):
     """Read-only validation of `.orchestrator/view/v1/`. Never writes."""
     errors: list[str] = []
@@ -389,14 +395,12 @@ def check_view_contract_v1(pm_dir, framework_dir):
                         assertions.append("snapshot.contract == vibetastic-view/v1")
                     else:
                         errors.append(
-                            f"snapshot.contract is {contract!r}; expected 'vibetastic-view/v1'"
+                            "snapshot.contract has unexpected value (expected 'vibetastic-view/v1')"
                         )
                     if isinstance(schema_version, int) and not isinstance(schema_version, bool):
                         assertions.append("snapshot.schema_version is an integer")
                     else:
-                        errors.append(
-                            f"snapshot.schema_version is {schema_version!r}; expected an integer"
-                        )
+                        errors.append("snapshot.schema_version has unexpected value (expected integer)")
                     if (
                         isinstance(generation, int)
                         and not isinstance(generation, bool)
@@ -404,17 +408,16 @@ def check_view_contract_v1(pm_dir, framework_dir):
                     ):
                         assertions.append("snapshot.generation >= 1")
                     else:
-                        errors.append(
-                            f"snapshot.generation is {generation!r}; expected an integer >= 1"
-                        )
+                        errors.append("snapshot.generation has unexpected value (expected integer >= 1)")
                     _scan_forbidden(parsed, "snapshot", str(snapshot_path), errors)
                     for warning in parsed.get("warnings", []) or []:
                         if isinstance(warning, dict) and warning.get("code"):
-                            warnings.append({
-                                "code": str(warning["code"]),
-                                "message": str(warning.get("message", "")),
-                                "path": str(snapshot_path),
-                            })
+                            code = str(warning["code"])
+                            if _is_allowlisted_code(code):
+                                warnings.append({
+                                    "code": code,
+                                    "path": str(snapshot_path),
+                                })
     else:
         errors.append(
             "no view projection; run the installer or export-view-contract.py "
@@ -423,6 +426,10 @@ def check_view_contract_v1(pm_dir, framework_dir):
 
     view_contract = _import_view_contract(framework_dir)
     allowed_event_types = getattr(view_contract, "_EVENT_FIELDS", None)
+    if view_contract is None and events_path.is_file():
+        errors.append(
+            f"{events_path}: view_contract module unavailable; event rows unvalidated"
+        )
 
     if events_path.is_file():
         try:
@@ -452,29 +459,30 @@ def check_view_contract_v1(pm_dir, framework_dir):
                             f"{events_path} line {line_no} is not an object"
                         )
                         continue
-                    if allowed_event_types is None:
-                        continue
-                    event_id = row.get("event_id")
-                    event_type = row.get("type")
-                    operation = row.get("operation")
-                    if not (isinstance(event_id, str) and isinstance(event_type, str)
-                            and isinstance(operation, str)):
-                        errors.append(
-                            f"{events_path} line {line_no}: event_id, type, operation must be strings"
-                        )
-                        continue
-                    if event_type not in allowed_event_types:
-                        errors.append(
-                            f"{events_path} line {line_no}: unknown event type {event_type!r}"
-                        )
-                        continue
-                    expected_keys = {"event_id", "type", "operation", *allowed_event_types[event_type]}
-                    extra = set(row) - expected_keys
-                    if extra:
-                        sample = sorted(extra)[0]
-                        errors.append(
-                            f"{events_path} line {line_no}: unexpected key {sample!r}"
-                        )
+                    if allowed_event_types is not None:
+                        event_id = row.get("event_id")
+                        event_type = row.get("type")
+                        operation = row.get("operation")
+                        if not (isinstance(event_id, str) and isinstance(event_type, str)
+                                and isinstance(operation, str)):
+                            errors.append(
+                                f"{events_path} line {line_no}: event_id, type, operation must be strings"
+                            )
+                            _scan_forbidden(row, "event", f"{events_path} line {line_no}", errors)
+                            continue
+                        if event_type not in allowed_event_types:
+                            errors.append(
+                                f"{events_path} line {line_no}: unknown event type"
+                            )
+                            _scan_forbidden(row, "event", f"{events_path} line {line_no}", errors)
+                            continue
+                        expected_keys = {"event_id", "type", "operation", *allowed_event_types[event_type]}
+                        extra = set(row) - expected_keys
+                        if extra:
+                            sample = sorted(extra)[0]
+                            errors.append(
+                                f"{events_path} line {line_no}: unexpected key"
+                            )
                     _scan_forbidden(row, "event", f"{events_path} line {line_no}", errors)
     else:
         warnings.append({

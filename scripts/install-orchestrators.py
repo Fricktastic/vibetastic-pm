@@ -333,7 +333,7 @@ def install(pm_dir, framework_dir):
     for path, content in changes:
         atomic_write(path, content)
 
-    view_outcome = {"path": None, "warnings": []}
+    view_outcome = {"path": None, "warnings": [], "skipped": True}
     if changes:
         view_outcome = _project_initial_view(pm_dir, framework_dir)
     return view_outcome
@@ -370,15 +370,30 @@ def _project_initial_view(pm_dir, framework_dir):
         except FileNotFoundError:
             pass
         except OSError as exc:
-            print(f"install-orchestrators: stale marker could not be removed: {exc.__class__.__name__}: {exc.strerror or 'unlink failed'}", file=sys.stderr)
+            print(f"install-orchestrators: stale marker could not be removed: {_content_free_reason(exc)}", file=sys.stderr)
     warnings = [str(w.get("code")) for w in snapshot.get("warnings", []) if isinstance(w, dict) and w.get("code")]
     return {"path": str(path), "warnings": warnings}
+
+
+def _content_free_reason(exc):
+    """Return a content-free reason string for ``exc``.
+
+    The framework rule is that the marker and stdout must echo only the
+    exception class, plus a short ``strerror`` for OSError; raw exception
+    text from a non-OSError (e.g. a ValueError from build_snapshot over
+    PLAN content) must never reach an operator or an artifact.
+    """
+    cls = exc.__class__.__name__
+    if isinstance(exc, OSError):
+        suffix = exc.strerror or "unlink failed"
+        return f"{cls}: {suffix}"
+    return cls
 
 
 def _record_projection_failure(pm_dir, exc):
     """Write the distinct install-projection-failed marker; never raise."""
     marker_path = pm_dir / ".orchestrator/view/install-projection-failed.json"
-    reason = f"{exc.__class__.__name__}: {getattr(exc, 'strerror', None) or str(exc) or 'projection failed'}"
+    reason = _content_free_reason(exc)
     payload = {
         "schema_version": 1,
         "kind": "install_projection_failed",
@@ -388,7 +403,7 @@ def _record_projection_failure(pm_dir, exc):
     try:
         atomic_write(marker_path, (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode())
     except OSError as marker_exc:
-        print(f"install-orchestrators: install-projection-failed marker could not be written: {marker_exc.__class__.__name__}: {marker_exc.strerror or 'write failed'}", file=sys.stderr)
+        print(f"install-orchestrators: install-projection-failed marker could not be written: {_content_free_reason(marker_exc)}", file=sys.stderr)
     return {"path": None, "warnings": ["view_projection_dirty"], "reason": reason, "marker": str(marker_path)}
 
 
@@ -403,7 +418,9 @@ def main(argv=None):
         print(f"install-orchestrators: {exc}", file=sys.stderr)
         return 2
     print(f"Installed Claude and Codex orchestrator adapters in {args.pm_dir.resolve()}")
-    if view_outcome.get("path"):
+    if view_outcome.get("skipped"):
+        print("view contract: unchanged (no installer writes; use export-view-contract.py to refresh)")
+    elif view_outcome.get("path"):
         print(f"view contract: {view_outcome['path']}")
         codes = view_outcome.get("warnings") or []
         if codes:
