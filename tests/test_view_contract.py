@@ -292,6 +292,18 @@ reason: \"Approve device verification\"
         self.assertEqual(usage["quota_proxy_tokens"], 1.5)
         self.assertIsNone(usage["cost_usd"])
 
+    def test_capacity_projects_duration_fallback_and_exit(self):
+        (self.pm / "logs" / "cost.jsonl").write_text(json.dumps({
+            "run_id": "x", "duration_s": 42, "primary_model": "terra", "model": "luna",
+            "fallback_used": True, "stall_retries": 1, "exit": 30, "log": "raw",
+        }) + "\n" + json.dumps({"run_id": "y", "duration_s": "42", "fallback_used": "true"}) + "\n")
+        usage = {row["run_id"]: row for row in build_snapshot(self.pm, now=self.now)["capacity"]["usage"]}
+        self.assertEqual((usage["x"]["duration_s"], usage["x"]["primary_model"], usage["x"]["fallback_used"],
+                          usage["x"]["stall_retries"], usage["x"]["exit"]), (42, "terra", True, 1, 30))
+        self.assertIsNone(usage["y"]["duration_s"])
+        self.assertIsNone(usage["y"]["fallback_used"])
+        self.assertNotIn("log", usage["x"])
+
     def test_write_snapshot_is_valid_complete_json(self):
         path = write_snapshot(self.pm, build_snapshot(self.pm, now=self.now))
         self.assertEqual(json.loads(path.read_text())["generation"], 1)
@@ -350,7 +362,11 @@ reason: \"Approve device verification\"
         append_view_events(self.pm, [event, event])
         rows = (self.pm / ".orchestrator/view/v1/events.jsonl").read_text().splitlines()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(set(json.loads(rows[0])), {"event_id", "type", "operation", "run_id", "task_id", "status"})
+        row = json.loads(rows[0])
+        self.assertEqual(set(row), {"event_id", "type", "operation", "run_id", "task_id", "status", "recorded_at"})
+        self.assertRegex(row["recorded_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        append_view_events(self.pm, [event])  # a retried append still deduplicates
+        self.assertEqual(len((self.pm / ".orchestrator/view/v1/events.jsonl").read_text().splitlines()), 1)
 
     def test_event_mapping_allowlists_and_renewal_identity_are_fixed(self):
         mappings = {
