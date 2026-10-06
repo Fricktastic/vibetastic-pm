@@ -49,7 +49,8 @@ _SOURCE_PATHS = (
 )
 _LEASE_FIELDS = ("provider", "session", "profile", "acquired_at", "renewed_at")
 _RUN_FIELDS = ("run_id", "task_id", "status", "phase", "role", "backend", "model", "tier", "started_at", "finished_at", "heartbeat_at")
-_CAPACITY_FIELDS = ("run_id", "task_id", "role", "backend", "model", "tier", "ts", "input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd")
+_CAPACITY_FIELDS = ("run_id", "task_id", "role", "backend", "model", "tier", "ts", "input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd",
+                    "duration_s", "primary_model", "fallback_used", "stall_retries", "exit")
 _SCALARS = (str, int, float, bool)
 _EXPLICIT_TYPES = {"user_escalation", "gate_requested", "device_evidence_requested", "verification_requested", "operator_action_requested"}
 
@@ -575,8 +576,13 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any], operation: str
     return [{"event_id": event_id, "type": event_type, "operation": operation, **allowed}]
 
 
-def append_view_events(pm_dir: Path, events: list[dict[str, Any]]) -> Path:
-    """Durably append valid sanitized event rows, preserving malformed old rows."""
+def append_view_events(pm_dir: Path, events: list[dict[str, Any]], now: datetime | None = None) -> Path:
+    """Durably append valid sanitized event rows, preserving malformed old rows.
+
+    Each new row is stamped ``recorded_at`` (UTC, append time).  It is not part of
+    ``event_id``, so a retried append of the same event still deduplicates.
+    """
+    recorded_at = _utc_timestamp(now or datetime.now(timezone.utc))
     target = Path(pm_dir) / ".orchestrator" / "view" / "v1" / "events.jsonl"
     target.parent.mkdir(parents=True, exist_ok=True)
     existing: set[str] = set()
@@ -595,9 +601,10 @@ def append_view_events(pm_dir: Path, events: list[dict[str, Any]]) -> Path:
         event_type = event.get("type")
         if (event_type not in _EVENT_FIELDS or not all(isinstance(event.get(key), str)
                 for key in ("event_id", "type", "operation")) or
-                set(event) - {"event_id", "type", "operation", *_EVENT_FIELDS[event_type]}):
+                set(event) - {"event_id", "type", "operation", "recorded_at", *_EVENT_FIELDS[event_type]}):
             raise ValueError("unsanitized view event")
         if event["event_id"] not in existing:
+            event = {**event, "recorded_at": event.get("recorded_at") or recorded_at}
             rows.append(json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
             existing.add(event["event_id"])
     if rows:
@@ -767,9 +774,12 @@ def _capacity_rows(capture: dict[str, Any], warnings: list[dict[str, Any]]) -> l
             _view_warning(warnings, "invalid_cost_record", "Invalid cost record", "logs/cost.jsonl", line_no)
             continue
         row = {field: record.get(field) if _is_scalar(record.get(field)) else None for field in _CAPACITY_FIELDS}
-        for field in ("input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd"):
+        for field in ("input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd", "duration_s",
+                      "stall_retries", "exit"):
             if not isinstance(row[field], (int, float)) or isinstance(row[field], bool):
                 row[field] = None
+        if not isinstance(row["fallback_used"], bool):
+            row["fallback_used"] = None
         row["provenance"] = [_provenance_for(capture, "logs/cost.jsonl", line_no)]
         result.append(row)
     return sorted(result, key=lambda row: tuple(str(row.get(key) or "") for key in ("backend", "model", "role", "task_id", "run_id")))
