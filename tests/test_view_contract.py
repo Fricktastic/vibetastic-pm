@@ -256,7 +256,7 @@ reason: \"Approve device verification\"
         snapshot = build_snapshot(self.pm, now=self.now)
         self.assertEqual(set(snapshot), {
             "contract", "schema_version", "generated_at", "generation", "project", "plan",
-            "stages", "tasks", "recommended_next", "attention", "ownership", "runs",
+            "stages", "tasks", "artifacts", "recommended_next", "attention", "ownership", "runs",
             "capacity", "sources", "warnings",
         })
         self.assertEqual(snapshot["generated_at"], "2026-09-13T01:00:00Z")
@@ -266,6 +266,38 @@ reason: \"Approve device verification\"
         })
         self.assertTrue(all(source["read_at"] == snapshot["generated_at"] for source in snapshot["sources"].values()))
         self.assertEqual(snapshot["recommended_next"], [])
+
+    def test_artifacts_come_only_from_clean_allowlisted_outputs(self):
+        plan = (self.pm / "PLAN.md").read_text()
+        block = (
+            "    outputs:\n      - prompts/design-spec.md\n      - docs/report.md\n"
+            "      - prompts/task-T001.md\n      - logs/run.log\n      - ../escape.md\n"
+            "      - /etc/passwd\n      - .orchestrator/lease.json\n      - linked/x.md\n"
+        )
+        plan = plan.replace("  - id: T001\n", "  - id: T001\n" + block, 1)
+        self.assertIn("docs/report.md", plan)
+        (self.pm / "PLAN.md").write_text(plan)
+        (self.pm / "docs").mkdir()
+        (self.pm / "docs" / "report.md").write_text("# r\n")
+        os.symlink("/", self.pm / "linked")
+        snapshot = build_snapshot(self.pm, now=self.now)
+        paths = [artifact["path"] for artifact in snapshot["artifacts"]]
+        self.assertEqual(paths, ["docs/report.md", "prompts/design-spec.md"])
+        report = snapshot["artifacts"][0]
+        self.assertEqual(report["kind"], "document")
+        self.assertEqual(report["media_type"], "text/markdown")
+        self.assertTrue(report["exists"])
+        self.assertFalse(snapshot["artifacts"][1]["exists"])
+        self.assertEqual(report["task_ids"], ["T001"])
+        task = next(task for task in snapshot["tasks"] if task["id"] == "T001")
+        self.assertEqual(sorted(task["artifacts"]), sorted(a["id"] for a in snapshot["artifacts"]))
+        self.assertNotIn("outputs", task)
+        rejected = [w for w in snapshot["warnings"] if w.get("code") == "artifact_path_rejected"]
+        self.assertEqual(len(rejected), 6)
+        encoded = json.dumps(snapshot)
+        for leak in ("/etc/passwd", "escape.md", "task-T001.md", "logs/run.log", "linked/x.md"):
+            self.assertNotIn(leak, encoded)
+        self.assertEqual(report["id"], build_snapshot(self.pm, now=self.now)["artifacts"][0]["id"])
 
     def test_runs_and_inferred_ids_are_deterministic_and_link_only_authoritative_tasks(self):
         (self.pm / "PLAN.md").write_text((self.pm / "PLAN.md").read_text().replace(

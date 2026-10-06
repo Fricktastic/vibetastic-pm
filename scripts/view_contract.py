@@ -52,6 +52,22 @@ _RUN_FIELDS = ("run_id", "task_id", "status", "phase", "role", "backend", "model
 _CAPACITY_FIELDS = ("run_id", "task_id", "role", "backend", "model", "tier", "ts", "input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd",
                     "duration_s", "primary_model", "fallback_used", "stall_retries", "exit")
 _SCALARS = (str, int, float, bool)
+# Artifact references come only from PLAN ``outputs:``. Dispatch inputs, logs,
+# run state and VCS internals are never artifacts; under prompts/ only the two
+# role deliverables (Designer, Architect) are, never task/critic/review prompts.
+_ARTIFACT_DENIED_PREFIXES = ("logs/", "prompts/", ".git/", ".orchestrator/", ".claude/", ".codex/")
+_ARTIFACT_PROMPT_ALLOW = {"prompts/design-spec.md", "prompts/build-spec.md"}
+_ARTIFACT_PATH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$")
+_ARTIFACT_TYPES = {
+    ".md": ("document", "text/markdown"), ".txt": ("document", "text/plain"),
+    ".json": ("data", "application/json"), ".jsonl": ("data", "application/x-ndjson"),
+    ".yaml": ("data", "application/yaml"), ".yml": ("data", "application/yaml"),
+    ".csv": ("data", "text/csv"), ".html": ("document", "text/html"),
+    ".pdf": ("document", "application/pdf"), ".png": ("image", "image/png"),
+    ".jpg": ("image", "image/jpeg"), ".jpeg": ("image", "image/jpeg"),
+    ".gif": ("image", "image/gif"), ".svg": ("image", "image/svg+xml"),
+    ".webp": ("image", "image/webp"),
+}
 _EXPLICIT_TYPES = {"user_escalation", "gate_requested", "device_evidence_requested", "verification_requested", "operator_action_requested"}
 
 
@@ -229,6 +245,7 @@ def _parse_task_fields(
         tasks.append(
             {
                 "id": task_id,
+                "outputs": _list_field(item, "outputs"),
                 "source_id": source_id,
                 "entry_key": entry_key,
                 "valid_identity": valid_identity,
@@ -365,6 +382,83 @@ def _fields(item: list[tuple[int, str]]) -> tuple[dict[str, str | None], dict[st
     return fields, lines
 
 
+def _list_field(item: list[tuple[int, str]], name: str) -> list[str]:
+    """Read a task's ``name: [a, b]`` or block-list field as plain strings."""
+    values: list[str] = []
+    owner_indent: int | None = None
+    for _line_no, line in item:
+        body = line
+        list_match = _LIST_ITEM.match(line)
+        if owner_indent is not None:
+            indent = len(line) - len(line.lstrip())
+            if list_match and indent > owner_indent and not _FIELD.match(list_match.group("body")):
+                value = _scalar(list_match.group("body"))
+                if value:
+                    values.append(value)
+                continue
+            if line.strip():
+                break
+            continue
+        if list_match:
+            body = list_match.group("body")
+        match = _FIELD.match(body)
+        if not match or match.group("name") != name:
+            continue
+        value = match.group("value").split(" #", 1)[0].strip()
+        if value.startswith("["):
+            return [part.strip().strip("\"'") for part in value.strip("[]").split(",") if part.strip()]
+        owner_indent = len(line) - len(line.lstrip()) + (len(line.lstrip()) - len(body) if list_match else 0)
+    return values
+
+
+def _artifact_path(pm_dir: Path, path: str) -> tuple[str | None, str | None]:
+    """Return ``(clean_path, None)`` or ``(None, reason)``; never echoes a rejected path."""
+    if not _ARTIFACT_PATH.match(path) or "//" in path or path.endswith("/"):
+        return None, "not_clean_relative"
+    if any(part in {".", ".."} for part in path.split("/")):
+        return None, "not_clean_relative"
+    if path.startswith(_ARTIFACT_DENIED_PREFIXES) and path not in _ARTIFACT_PROMPT_ALLOW:
+        return None, "denied_location"
+    root = pm_dir.resolve()
+    try:
+        resolved = (root / path).resolve()
+    except (OSError, RuntimeError):
+        return None, "unresolvable"
+    if resolved != root and root not in resolved.parents:
+        return None, "outside_pm_dir"
+    relative = resolved.relative_to(root).as_posix()
+    if relative != path and (relative.startswith(_ARTIFACT_DENIED_PREFIXES) and relative not in _ARTIFACT_PROMPT_ALLOW):
+        return None, "denied_location"
+    return path, None
+
+
+def _artifacts(pm_dir: Path, tasks: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_path: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        refs: list[str] = []
+        for raw in task.pop("outputs", []):
+            path, reason = _artifact_path(pm_dir, raw)
+            if path is None:
+                _view_warning(warnings, "artifact_path_rejected", f"Task {task['id']} output rejected: {reason}",
+                              "PLAN.md", task["provenance"].get("line"), task_id=task["id"], reason=reason)
+                continue
+            if path not in by_path:
+                kind, media_type = _ARTIFACT_TYPES.get(Path(path).suffix.lower(), ("other", "application/octet-stream"))
+                target = pm_dir / path
+                by_path[path] = {
+                    "id": "art-" + hashlib.sha256(path.encode()).hexdigest()[:16], "path": path,
+                    "kind": kind, "media_type": media_type, "title": Path(path).name,
+                    "exists": target.is_file(), "task_ids": [],
+                }
+            artifact = by_path[path]
+            if task["valid_identity"] and task["id"] not in artifact["task_ids"]:
+                artifact["task_ids"].append(task["id"])
+            if artifact["id"] not in refs:
+                refs.append(artifact["id"])
+        task["artifacts"] = refs if task["valid_identity"] else []
+    return sorted(by_path.values(), key=lambda artifact: artifact["path"])
+
+
 def _scalar(value: str) -> str | None:
     value = value.strip()
     if not value or value in {"null", "~"}:
@@ -483,13 +577,14 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
         copy = {key: value for key, value in task.items() if key != "field_lines"}
         copy["runs"] = sorted(task_runs.get(task["id"], set())) if task["valid_identity"] else []
         tasks.append(copy)
+    artifacts = _artifacts(Path(pm_dir), tasks, warnings)
     capacity = {"usage": _capacity_rows(captures["logs/cost.jsonl"], warnings), "provenance": _provenance_for(captures["logs/cost.jsonl"], "logs/cost.jsonl", 1)}
     snapshot = {
         "contract": "vibetastic-view/v1", "schema_version": 1, "generated_at": generated,
         "generation": _prior_generation(Path(pm_dir), warnings), "project": project,
         "plan": {key: plan[key] for key in ("project", "created", "updated", "provenance")},
         "stages": [{key: value for key, value in stage.items() if key != "field_lines"}
-                   for stage in plan["stages"]], "tasks": tasks, "recommended_next": [], "attention": [],
+                   for stage in plan["stages"]], "tasks": tasks, "artifacts": artifacts, "recommended_next": [], "attention": [],
         "ownership": ownership, "runs": runs, "capacity": capacity, "sources": sources,
         "warnings": [],
     }
