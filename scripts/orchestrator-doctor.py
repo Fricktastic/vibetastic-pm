@@ -476,7 +476,15 @@ def check_view_contract_v1(pm_dir, framework_dir):
                             )
                             _scan_forbidden(row, "event", f"{events_path} line {line_no}", errors)
                             continue
-                        expected_keys = {"event_id", "type", "operation", *allowed_event_types[event_type]}
+                        expected_keys = {"event_id", "type", "operation", "recorded_at", *allowed_event_types[event_type]}
+                        recorded_at = row.get("recorded_at")
+                        if recorded_at is not None and not (
+                            isinstance(recorded_at, str)
+                            and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", recorded_at)
+                        ):
+                            errors.append(
+                                f"{events_path} line {line_no}: recorded_at is not a UTC timestamp"
+                            )
                         extra = set(row) - expected_keys
                         if extra:
                             sample = sorted(extra)[0]

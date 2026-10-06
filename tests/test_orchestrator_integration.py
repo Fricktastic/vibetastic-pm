@@ -646,6 +646,25 @@ class DoctorTests(unittest.TestCase):
         self.assertNotIn('"x"', view.get("errors", []).__repr__())
         self.assertNotIn("null", view.get("errors", [])[0] if view.get("errors") else "")
 
+    def test_doctor_accepts_events_stamped_by_the_writer(self):
+        install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
+        self.assertEqual(install.returncode, 0, install.stderr)
+        from scripts.view_contract import append_view_events
+        events_path = append_view_events(self.pm, [{
+            "event_id": "cmd:renew:abc:def:0", "type": "lease_renewed", "operation": "renew",
+            "provider": "claude", "session": "test", "profile": "normal",
+        }])
+        self.assertIn('"recorded_at"', events_path.read_text())
+        result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        view = json.loads(result.stdout)["checks"]["view_contract_v1"]
+        self.assertEqual(view["status"], "ok", view)
+
+        events_path.write_text(events_path.read_text().replace("Z\"", "+00:00\""))
+        result = run(DOCTOR, "--pm-dir", self.pm, "--framework-dir", self.framework, "--json")
+        view = json.loads(result.stdout)["checks"]["view_contract_v1"]
+        self.assertEqual(view["status"], "error")
+        self.assertIn("recorded_at", "\n".join(view["errors"]))
+
     def test_doctor_group_write_warns_and_world_write_errors(self):
         install = run(INSTALLER, "--pm-dir", self.pm, "--framework-dir", self.framework)
         self.assertEqual(install.returncode, 0, install.stderr)
