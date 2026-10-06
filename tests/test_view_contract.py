@@ -460,6 +460,7 @@ reason: \"Approve device verification\"
             {"event": "run_finish", "run_id": "old-1", "ts_end": "2026-09-01T00:05:00Z", "exit": 0},
             {"event": "run_start", "run_id": "old-2", "task_id": "investigate-x.md", "ts_start": "2026-09-01T00:00:00Z"},
             {"event": "run_finish", "run_id": "old-2", "ts_end": "2026-09-01T00:05:00Z", "exit": 1},
+            {"event": "run_start", "run_id": "dead-1", "task_id": None, "prompt": "analysis-x.md", "ts_start": "2026-09-01T00:00:00Z"},
             {"event": "run_start", "run_id": "live-1", "task_id": None, "prompt": "review-T001.md", "ts_start": "2026-09-13T00:30:00Z"},
         ]
         (self.pm / "logs" / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
@@ -468,6 +469,11 @@ reason: \"Approve device verification\"
         self.assertEqual((runs["old-1"]["task_id"], runs["old-1"]["status"], runs["old-1"]["finished_at"]),
                          ("T001", "finished", "2026-09-01T00:05:00Z"))
         self.assertEqual(runs["old-2"]["status"], "finished")
+        self.assertEqual(runs["dead-1"]["status"], "abandoned")
+        unlinked = [w for w in snapshot["warnings"] if w["code"] == "historical_run_unlinked"]
+        self.assertEqual(sorted(w["run_id"] for w in unlinked), ["dead-1", "old-2"])
+        self.assertEqual({w["line"] for w in unlinked}, {3, 5})
+        self.assertNotIn("analysis-x.md", json.dumps(snapshot))
         self.assertEqual((runs["live-1"]["task_id"], runs["live-1"]["status"]), ("T001", "unfinished"))
         codes = [w["code"] for w in snapshot["warnings"]]
         self.assertIn("historical_run_unlinked", codes)
