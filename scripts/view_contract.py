@@ -565,17 +565,24 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
     reservations = _reservation_rows(captures[".orchestrator/runs.json"], warnings)
     journals = _journal_rows(captures["logs/runs.jsonl"], warnings)
     runs = _join_runs(reservations, journals)
+    generated_dt = _datetime_timestamp(generated)
+    for run in runs:
+        # A journal start with no finish for over a day is a dead dispatch, not live work.
+        started = _datetime_timestamp(run["started_at"]) if isinstance(run["started_at"], str) else None
+        if run["status"] == "unfinished" and started and generated_dt and (generated_dt - started).total_seconds() > 86400:
+            run["status"] = "abandoned"
     valid_task_ids = {task["id"] for task in plan["tasks"] if task["valid_identity"] and task["id"]}
     task_runs: dict[str, set[str]] = {task_id: set() for task_id in valid_task_ids}
     for run in runs:
         task_id = run["task_id"]
         if task_id in valid_task_ids:
             task_runs[task_id].add(run["run_id"])
-        elif run["status"] not in _LIVE_RUN_STATUSES:
-            _view_warning(warnings, "historical_run_unlinked", "Finished run has no authoritative PLAN task",
-                          ".orchestrator/runs.json" if run["source"] != "journal" else "logs/runs.jsonl", task_id=task_id)
         else:
-            _view_warning(warnings, "missing_task_linkage", "Run has no authoritative PLAN task", ".orchestrator/runs.json" if run["source"] != "journal" else "logs/runs.jsonl", task_id=task_id)
+            origin = run["provenance"][0] if run["provenance"] else {}
+            live = run["status"] in _LIVE_RUN_STATUSES
+            _view_warning(warnings, "missing_task_linkage" if live else "historical_run_unlinked",
+                          "Run has no authoritative PLAN task" if live else "Finished run has no authoritative PLAN task",
+                          origin.get("path", "logs/runs.jsonl"), origin.get("line"), task_id=task_id, run_id=run["run_id"])
     tasks = []
     for task in plan["tasks"]:
         # ``field_lines`` is parser bookkeeping.  It is intentionally not part of

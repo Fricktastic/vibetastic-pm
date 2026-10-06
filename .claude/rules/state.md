@@ -146,7 +146,7 @@ deliverables `prompts/design-spec.md` and `prompts/build-spec.md`. A refused out
 `outputs:` to make them viewable.
 
 Runs: an open reservation is `active`; a journal finish is `finished`; a journal start with
-no finish and no reservation is `unfinished` (`orphaned_run` attention). A run links to its
+no finish and no reservation is `unfinished` (`orphaned_run` attention), or `abandoned` once it started over 24 hours ago. Run warnings carry `run_id` and the journal line. A run links to its
 `gate_task_id`, else to the `T###` in a legacy prompt-name key (`fixup-T159D-r3.md`). Only
 live runs raise linkage attention; a finished unlinked run is a `historical_run_unlinked`
 warning. `recommended_next` is populated only by a `next_recommended` TASK_LOG event.
