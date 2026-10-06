@@ -469,6 +469,9 @@ reason: \"Approve device verification\"
         self.assertEqual((runs["old-1"]["task_id"], runs["old-1"]["status"], runs["old-1"]["finished_at"]),
                          ("T001", "finished", "2026-09-01T00:05:00Z"))
         self.assertEqual(runs["old-2"]["status"], "finished")
+        self.assertEqual((runs["old-1"]["step"], runs["old-1"]["round"]), ("fixup", 3))
+        self.assertEqual((runs["live-1"]["step"], runs["live-1"]["round"]), ("review", None))
+        self.assertEqual((runs["old-2"]["step"], runs["old-2"]["round"]), (None, None))
         self.assertEqual(runs["dead-1"]["status"], "abandoned")
         unlinked = [w for w in snapshot["warnings"] if w["code"] == "historical_run_unlinked"]
         self.assertEqual(sorted(w["run_id"] for w in unlinked), ["dead-1", "old-2"])
@@ -503,6 +506,7 @@ reason: \"Approve device verification\"
         snapshot = build_snapshot(self.pm, now=self.now)
         run = next(r for r in snapshot["runs"] if r["run_id"] == "run-9")
         self.assertEqual((run["task_id"], run["status"]), ("T001", "active"))
+        self.assertEqual((run["step"], run["round"]), ("build", None))
         self.assertFalse(any(w["code"] == "missing_task_linkage" for w in snapshot["warnings"]))
 
     def test_operator_action_request_needs_no_task(self):

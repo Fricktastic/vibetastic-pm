@@ -48,11 +48,21 @@ _SOURCE_PATHS = (
     "logs/cost.jsonl",
 )
 _LEASE_FIELDS = ("provider", "session", "profile", "acquired_at", "renewed_at")
-_RUN_FIELDS = ("run_id", "task_id", "status", "phase", "role", "backend", "model", "tier", "started_at", "finished_at", "heartbeat_at")
+_RUN_FIELDS = ("run_id", "task_id", "status", "phase", "role", "backend", "model", "tier", "started_at", "finished_at", "heartbeat_at", "step", "round")
 _CAPACITY_FIELDS = ("run_id", "task_id", "role", "backend", "model", "tier", "ts", "input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd",
                     "duration_s", "primary_model", "fallback_used", "stall_retries", "exit")
 _SCALARS = (str, int, float, bool)
 _PROMPT_TASK = re.compile(r"^(?:[a-z]+-)?(T\d+[A-Za-z]*)(?:[-.]|$)")
+_PROMPT_STEP = re.compile(r"^(?P<step>[a-z]+)-T\d+[A-Za-z]*(?:-r(?P<round>\d+))?(?:[-.]|$)")
+
+
+def _step_round(row: dict[str, Any], *names: Any) -> None:
+    """Keep the prompt key's step (build/fixup/critic/review…) and round; never the key itself."""
+    for name in names:
+        if isinstance(name, str) and (m := _PROMPT_STEP.match(name)):
+            row["step"] = m.group("step")
+            row["round"] = int(m.group("round")) if m.group("round") else None
+            return
 # Run states the operator can still act on; anything else is history.
 _LIVE_RUN_STATUSES = {"active", "unfinished"}
 # Artifact references come only from PLAN ``outputs:``. Dispatch inputs, logs,
@@ -816,6 +826,8 @@ def _reservation_rows(capture: dict[str, Any], warnings: list[dict[str, Any]]) -
         rows[record["run_id"]]["provenance"] = [_provenance_for(capture, ".orchestrator/runs.json", 1)]
         # Reservations are keyed by prompt name (``build-T247.md``); link to its T### task.
         key = rows[record["run_id"]]["task_id"]
+        rows[record["run_id"]]["step"] = rows[record["run_id"]]["round"] = None
+        _step_round(rows[record["run_id"]], key)
         if isinstance(key, str) and (m := _PROMPT_TASK.match(key)):
             rows[record["run_id"]]["task_id"] = m.group(1)
     return rows
@@ -848,6 +860,8 @@ def _journal_rows(capture: dict[str, Any], warnings: list[dict[str, Any]]) -> di
                 row[field] = record[field]
         # dispatch.sh journals the review-gate task (--task, or task|fixup|critic|review-T0XX
         # prompt names) as gate_task_id; task_id is only the narrower reservation key.
+        if record["event"] == "run_start":
+            _step_round(row, record.get("prompt"), record.get("task_id"))
         if isinstance(record.get("gate_task_id"), str) and record["gate_task_id"]:
             row["task_id"] = record["gate_task_id"]
         # Pre-gate_task_id journals keyed runs by prompt file name (``fixup-T159D-r3.md``).
