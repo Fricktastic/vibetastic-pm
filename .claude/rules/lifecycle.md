@@ -50,8 +50,9 @@ Ask the user (one message):
   bare `build`, which never compiles the test target and so cannot notice a test file that
   does not build (issue #36). This becomes the per-task gate for the self-correction loop. If
   unknown, leave blank — the loop degrades to a single run with no auto-correction.
-  **It is not a test run.** Test execution is the orchestrator's job, on a real
-  simulator/device — see `framework/VERIFY.md` § Who runs what.
+  **By default it is not a test run.** Test execution is the orchestrator's job, on a real
+  simulator/device. A project may opt in to tests in the verify loop, wrapped in
+  `scripts/sim-lock.py` — see `framework/VERIFY.md` § Who runs what.
 - What single command **runs the test suite** on a real simulator/device? This is the
   orchestrator's command — `dispatch.sh` never runs it, and no builder can. Pin the
   destination explicitly. It goes in `PROJECT.md § Test command` so no future session has to

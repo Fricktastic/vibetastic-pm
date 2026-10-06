@@ -61,7 +61,7 @@ not what it looks like.
 |---|---|---|
 | Compile (incl. the **test target**) | `dispatch.sh` verify loop, out-of-sandbox | verify-cmd in `PROJECT.md` |
 | R1 fixture / integration test | verify loop **iff** the verify-cmd invokes it | verify-cmd |
-| **Test execution** (unit + simulator/device) | after the dispatch, on real hardware or a simulator | **orchestrator** |
+| **Test execution** (unit + simulator/device) | after the dispatch, on real hardware or a simulator; **also** in the verify loop when the project opts in (below) | **orchestrator** |
 | R2 run-and-observe | after the dispatch | orchestrator |
 | Diff review | after the dispatch returns green | orchestrator (cheap first pass) |
 
@@ -77,6 +77,26 @@ result (issue #37).
 > T077): a test-only task returned exit 0 with `verify passed on attempt 1/3` and a report
 > containing a 10-run flake table — while the test target did not compile at all, because
 > the verify-cmd was the app scheme's `build`. See issue #36.
+
+**Opt-in: tests in the verify loop.** A project may put test runs in its verify-cmd. The verify
+loop runs out of the sandbox, so the simulator is reachable, and on failure `dispatch.sh`
+feeds the output (failing assertions included) back to the same builder session. That gives
+the builder a test result it did not have to claim. Field case (gamedaytastic T247): fixup r2
+reported two failures fixed without running them, and both were still red; r3 needed a PM
+probe the builder could have made itself. Rules when opting in:
+
+- Wrap every simulator use in `python3 framework/scripts/sim-lock.py -- <cmd>`, in the
+  verify-cmd **and** `PROJECT.md § Test command`. Parallel dispatches and the merge gate then
+  queue on one machine-wide lock instead of wedging CoreSimulator. A lock timeout exits 75,
+  so the verifier fails and the loop retries.
+- The standing rule above still holds. A verify-loop green is mechanical evidence that the
+  verify-cmd passed, and the orchestrator still runs the suite at the merge gate. What the
+  opt-in removes is the builder's blindness, not the gate.
+- It catches tests that fail. It does not catch hollow tests that pass on the branch and fail
+  on base for the wrong reason (source-text greps, set/read-back); only review or mutation
+  catches those.
+- Budget it: every verify attempt now pays a test run (gamedaytastic: about 1–2 min
+  incremental, ~10 min cold).
 
 **Corollary for the verify-cmd:** it must compile the test target, not just the app. On iOS
 that is `xcodebuild build-for-testing`, which compiles tests without booting a simulator —
