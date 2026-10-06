@@ -483,6 +483,19 @@ reason: \"Approve device verification\"
         self.assertNotIn("missing_task_linkage", kinds)
         self.assertFalse(any(item.get("rule") == "contract_error" and "Finished run" in item["reason"] for item in snapshot["attention"]))
 
+    def test_explicit_attention_closes_when_task_is_done_or_gone(self):
+        log = (self.pm / "TASK_LOG.md").read_text()
+        log += "\n### 2026-07-12T18:40:00Z · user_escalation\n```yaml\ntask_id: T999\nreason: \"old\"\n```\n"
+        (self.pm / "TASK_LOG.md").write_text(log)
+        ids = {item["task_id"] for item in build_snapshot(self.pm, now=self.now)["attention"] if item["classification"] == "explicit"}
+        self.assertIn("T001", ids)
+        self.assertNotIn("T999", ids)
+        plan = (self.pm / "PLAN.md").read_text()
+        (self.pm / "PLAN.md").write_text(plan.replace("status: pending", "status: done", 1))
+        snapshot = build_snapshot(self.pm, now=self.now)
+        self.assertEqual(next(t for t in snapshot["tasks"] if t["id"] == "T001")["state"], "done")
+        self.assertFalse(any(i["task_id"] == "T001" and i["classification"] == "explicit" for i in snapshot["attention"]))
+
     def test_operator_action_request_needs_no_task(self):
         with (self.pm / "TASK_LOG.md").open("a") as log:
             log.write("\n### 2026-09-13T00:03:00Z · operator_action_requested\n```yaml\n"

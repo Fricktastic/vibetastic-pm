@@ -149,7 +149,7 @@ Runs: an open reservation is `active`; a journal finish is `finished`; a journal
 no finish and no reservation is `unfinished` (`orphaned_run` attention), or `abandoned` once it started over 24 hours ago. Run warnings carry `run_id` and the journal line. A run links to its
 `gate_task_id`, else to the `T###` in a legacy prompt-name key (`fixup-T159D-r3.md`). Only
 live runs raise linkage attention; a finished unlinked run is a `historical_run_unlinked`
-warning. `recommended_next` is populated only by a `next_recommended` TASK_LOG event.
+warning. Explicit attention for a task that is done, closed or absent from PLAN is dropped. `recommended_next` is populated only by a `next_recommended` TASK_LOG event.
 
 ```markdown
 ### <ISO8601> · operator_action_requested      # "needs your action"; task_id may be null
