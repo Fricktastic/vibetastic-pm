@@ -602,6 +602,10 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
         "warnings": [],
     }
     explicit = _explicit_attention(captures["TASK_LOG.md"], warnings)
+    # An escalation about a task that is finished or gone from PLAN is history, not an open ask.
+    task_states = {task["id"]: task["state"] for task in tasks if task.get("valid_identity")}
+    explicit = [item for item in explicit
+                if item["task_id"] is None or task_states.get(item["task_id"]) not in {None, "done", "closed"}]
     snapshot["recommended_next"] = _recommended_next(captures["TASK_LOG.md"], tasks, warnings)
     snapshot["warnings"] = _sort_warnings(warnings)
     snapshot["attention"] = _derive_attention(snapshot, generated, explicit, captures["HANDOFF.md"].get("mtime"))
