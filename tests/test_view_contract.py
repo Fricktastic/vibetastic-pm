@@ -496,6 +496,15 @@ reason: \"Approve device verification\"
         self.assertEqual(next(t for t in snapshot["tasks"] if t["id"] == "T001")["state"], "done")
         self.assertFalse(any(i["task_id"] == "T001" and i["classification"] == "explicit" for i in snapshot["attention"]))
 
+    def test_reservation_keyed_by_prompt_name_links_to_task(self):
+        (self.pm / ".orchestrator" / "runs.json").write_text(json.dumps({"run-9": {
+            "run_id": "run-9", "task_id": "build-T001.md", "status": "active",
+            "started_at": "2026-09-13T00:50:00Z"}}))
+        snapshot = build_snapshot(self.pm, now=self.now)
+        run = next(r for r in snapshot["runs"] if r["run_id"] == "run-9")
+        self.assertEqual((run["task_id"], run["status"]), ("T001", "active"))
+        self.assertFalse(any(w["code"] == "missing_task_linkage" for w in snapshot["warnings"]))
+
     def test_operator_action_request_needs_no_task(self):
         with (self.pm / "TASK_LOG.md").open("a") as log:
             log.write("\n### 2026-09-13T00:03:00Z · operator_action_requested\n```yaml\n"

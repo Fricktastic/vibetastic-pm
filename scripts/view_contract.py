@@ -814,6 +814,10 @@ def _reservation_rows(capture: dict[str, Any], warnings: list[dict[str, Any]]) -
             continue
         rows[record["run_id"]] = {field: record.get(field) if _is_scalar(record.get(field)) else None for field in _RUN_FIELDS}
         rows[record["run_id"]]["provenance"] = [_provenance_for(capture, ".orchestrator/runs.json", 1)]
+        # Reservations are keyed by prompt name (``build-T247.md``); link to its T### task.
+        key = rows[record["run_id"]]["task_id"]
+        if isinstance(key, str) and (m := _PROMPT_TASK.match(key)):
+            rows[record["run_id"]]["task_id"] = m.group(1)
     return rows
 
 
