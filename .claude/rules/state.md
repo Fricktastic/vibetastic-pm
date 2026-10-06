@@ -137,6 +137,14 @@ one; its closing event cites the merged SHA.
 optional TASK_LOG events feed it; nothing gates on them, and omitting them only leaves the
 panels empty.
 
+Artifact references come from each task's PLAN `outputs:` and nothing else: top-level
+`artifacts[]` (`id`, `path`, `kind`, `media_type`, `title`, `exists`, `task_ids`) and per-task
+`artifacts` (ids). A path must be clean, relative and resolve inside the PM dir; `logs/`,
+`.git/`, `.orchestrator/`, `.claude/`, `.codex/` and `prompts/` are refused, except the role
+deliverables `prompts/design-spec.md` and `prompts/build-spec.md`. A refused output is an
+`artifact_path_rejected` warning that never echoes the path. List a task's deliverables in
+`outputs:` to make them viewable.
+
 ```markdown
 ### <ISO8601> · operator_action_requested      # "needs your action"; task_id may be null
 ```yaml
