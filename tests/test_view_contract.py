@@ -453,6 +453,30 @@ reason: \"Approve device verification\"
         self.assertEqual(task["runs"], ["run-2"])
         self.assertFalse(any(w["code"] == "missing_task_linkage" for w in snapshot["warnings"]))
 
+    def test_legacy_journal_history_is_terminal_linked_and_quiet(self):
+        (self.pm / ".orchestrator" / "runs.json").write_text("{}")
+        rows = [
+            {"event": "run_start", "run_id": "old-1", "task_id": "fixup-T001-r3.md", "prompt": "fixup-T001-r3.md", "ts_start": "2026-09-01T00:00:00Z"},
+            {"event": "run_finish", "run_id": "old-1", "ts_end": "2026-09-01T00:05:00Z", "exit": 0},
+            {"event": "run_start", "run_id": "old-2", "task_id": "investigate-x.md", "ts_start": "2026-09-01T00:00:00Z"},
+            {"event": "run_finish", "run_id": "old-2", "ts_end": "2026-09-01T00:05:00Z", "exit": 1},
+            {"event": "run_start", "run_id": "live-1", "task_id": None, "prompt": "review-T001.md", "ts_start": "2026-09-13T00:30:00Z"},
+        ]
+        (self.pm / "logs" / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        snapshot = build_snapshot(self.pm, now=self.now)
+        runs = {run["run_id"]: run for run in snapshot["runs"]}
+        self.assertEqual((runs["old-1"]["task_id"], runs["old-1"]["status"], runs["old-1"]["finished_at"]),
+                         ("T001", "finished", "2026-09-01T00:05:00Z"))
+        self.assertEqual(runs["old-2"]["status"], "finished")
+        self.assertEqual((runs["live-1"]["task_id"], runs["live-1"]["status"]), ("T001", "unfinished"))
+        codes = [w["code"] for w in snapshot["warnings"]]
+        self.assertIn("historical_run_unlinked", codes)
+        self.assertNotIn("missing_task_linkage", codes)
+        kinds = [item["kind"] for item in snapshot["attention"] if item["classification"] == "inferred"]
+        self.assertEqual(kinds.count("orphaned_run"), 1)
+        self.assertNotIn("missing_task_linkage", kinds)
+        self.assertFalse(any(item.get("rule") == "contract_error" and "Finished run" in item["reason"] for item in snapshot["attention"]))
+
     def test_operator_action_request_needs_no_task(self):
         with (self.pm / "TASK_LOG.md").open("a") as log:
             log.write("\n### 2026-09-13T00:03:00Z · operator_action_requested\n```yaml\n"

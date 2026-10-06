@@ -52,6 +52,9 @@ _RUN_FIELDS = ("run_id", "task_id", "status", "phase", "role", "backend", "model
 _CAPACITY_FIELDS = ("run_id", "task_id", "role", "backend", "model", "tier", "ts", "input_tokens", "output_tokens", "quota_proxy_tokens", "cost_usd",
                     "duration_s", "primary_model", "fallback_used", "stall_retries", "exit")
 _SCALARS = (str, int, float, bool)
+_PROMPT_TASK = re.compile(r"^(?:[a-z]+-)?(T\d+[A-Za-z]*)(?:[-.]|$)")
+# Run states the operator can still act on; anything else is history.
+_LIVE_RUN_STATUSES = {"active", "unfinished"}
 # Artifact references come only from PLAN ``outputs:``. Dispatch inputs, logs,
 # run state and VCS internals are never artifacts; under prompts/ only the two
 # role deliverables (Designer, Architect) are, never task/critic/review prompts.
@@ -568,6 +571,9 @@ def build_snapshot(pm_dir: Path, now: datetime | None = None) -> dict[str, Any]:
         task_id = run["task_id"]
         if task_id in valid_task_ids:
             task_runs[task_id].add(run["run_id"])
+        elif run["status"] not in _LIVE_RUN_STATUSES:
+            _view_warning(warnings, "historical_run_unlinked", "Finished run has no authoritative PLAN task",
+                          ".orchestrator/runs.json" if run["source"] != "journal" else "logs/runs.jsonl", task_id=task_id)
         else:
             _view_warning(warnings, "missing_task_linkage", "Run has no authoritative PLAN task", ".orchestrator/runs.json" if run["source"] != "journal" else "logs/runs.jsonl", task_id=task_id)
     tasks = []
@@ -820,14 +826,22 @@ def _journal_rows(capture: dict[str, Any], warnings: list[dict[str, Any]]) -> di
         if record["event"] == "run_start":
             mapping = {"ts_start": "started_at"}
         else:
-            mapping = {"ts_finish": "finished_at"}
+            # dispatch.sh writes ts_end; ts_finish is accepted for older writers.
+            mapping = {"ts_end": "finished_at", "ts_finish": "finished_at"}
         for field in ("run_id", "task_id", "role", "backend", "model", "tier", "status", "phase", "heartbeat_at"):
             if field in record and _is_scalar(record.get(field)):
                 row[field] = record[field]
         # dispatch.sh journals the review-gate task (--task, or task|fixup|critic|review-T0XX
         # prompt names) as gate_task_id; task_id is only the narrower reservation key.
-        if row["task_id"] is None and isinstance(record.get("gate_task_id"), str):
+        if isinstance(record.get("gate_task_id"), str) and record["gate_task_id"]:
             row["task_id"] = record["gate_task_id"]
+        # Pre-gate_task_id journals keyed runs by prompt file name (``fixup-T159D-r3.md``).
+        for name in (row["task_id"], record.get("prompt")):
+            if isinstance(name, str) and (m := _PROMPT_TASK.match(name)):
+                row["task_id"] = m.group(1)
+                break
+        if record["event"] == "run_finish":
+            row["status"] = row["status"] or "finished"
         for source, target in mapping.items():
             if source in record and _is_scalar(record.get(source)):
                 row[target] = record[source]
@@ -846,6 +860,9 @@ def _join_runs(reservations: dict[str, dict[str, Any]], journals: dict[str, dict
             for field in _RUN_FIELDS:
                 if reservation.get(field) is not None:
                     row[field] = reservation[field]
+        if row["status"] is None and journal and not reservation:
+            # A journal start with no finish: crashed, killed or still running unreserved.
+            row["status"] = "unfinished"
         row["run_id"] = run_id
         row["source"] = "reservation+journal" if reservation and journal else "reservation" if reservation else "journal"
         row["provenance"] = (reservation or {}).get("provenance", []) + (journal or {}).get("provenance", [])
@@ -952,8 +969,8 @@ def _derive_attention(snapshot: dict[str, Any], now: str, explicit: list[dict[st
     now_dt = _datetime_timestamp(now)
     for run in snapshot.get("runs", []):
         evidence = run.get("provenance") or [{"path": "logs/runs.jsonl", "sha256": None, "line": 1}]
-        if run.get("source") == "journal":
-            add("orphaned_run", run.get("task_id"), "orphaned_run", "Run is present only in the journal", evidence)
+        if run.get("source") == "journal" and run.get("status") == "unfinished":
+            add("orphaned_run", run.get("task_id"), "orphaned_run", "Run started but never finished and has no reservation", evidence)
         if run.get("source") in {"reservation", "reservation+journal"} and run.get("status") == "active":
             heartbeat = _datetime_timestamp(run.get("heartbeat_at")) if isinstance(run.get("heartbeat_at"), str) else None
             if heartbeat and now_dt and (now_dt - heartbeat).total_seconds() > 900:
@@ -962,6 +979,8 @@ def _derive_attention(snapshot: dict[str, Any], now: str, explicit: list[dict[st
         path = warning.get("path") if isinstance(warning.get("path"), str) else "PLAN.md"
         evidence = [{"path": path, "sha256": snapshot.get("sources", {}).get(path, {}).get("sha256"), "line": warning.get("line", 1) or 1}]
         code = warning.get("code")
+        if code == "historical_run_unlinked":
+            continue
         if code == "missing_task_linkage":
             add("missing_task_linkage", warning.get("task_id"), "missing_task_linkage", warning.get("message", "Missing task linkage"), evidence)
         elif code in {"unknown_task_status", "unknown_stage_status"}:
