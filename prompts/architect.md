@@ -227,6 +227,11 @@ A green suite is not it — the suite is green before the change too.
 
 The task's Acceptance criteria must include that observation.
 
+For a `Risk: true` or `Observation: test` task, also give each required test a kill mutation
+and list the branches that need tests, in the `kill_mutations:` form and under the rules
+`prompts/tech-lead.md` § Kill mutations sets out (issue #87). Source-text greps,
+set/read-back tests and compile-only redness do not count as tests.
+
 ---
 
 ## Return Format

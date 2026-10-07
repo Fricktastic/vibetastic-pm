@@ -210,6 +210,35 @@ Where an Apple API is involved, specify the exact method signatures and paramete
   - `none` — no behaviour change (refactor, docs, test-only). Say why. This is the only kind
     whose diff may carry no production change.
 
+- **Kill mutations — required tests must be able to fail for the right reason (issue #87).**
+  For a `risk: true` or `observation: test` task, a test that is red on base and green on the
+  branch can still test nothing. Field case (gamedaytastic T247): all 26 required tests did
+  that, and the reviewer still REJECTed it. The tests grepped source text, read back a
+  property they had just set, or were red on base only because a symbol did not exist yet.
+  Two mutations of the production code survived. So:
+  - **Name a kill mutation for every required test.** This is one small edit to production
+    code that breaks the behaviour the test claims to cover, and the test must go red under
+    it. Give each in this block, so a later merge-gate step can apply it mechanically:
+
+    ```yaml
+    kill_mutations:
+      - test: <test name>
+        file: <path from the project root>
+        find: "<exact text, unique in that file>"
+        replace: "<the broken version>"
+        breaks: <one clause: the behaviour this removes>
+    ```
+  - **List the branches that need a test.** Name every branch the change adds or alters
+    (each guard, early return, edge case, empty/single/last element, async identity re-check),
+    and say which test covers each one.
+  - **These count as no test at all; do not specify them:**
+    - a test that reads production source files and checks for text (`String.contains` on a
+      `.swift` file);
+    - a test that sets a stored property and reads it back with no logic in between;
+    - a test whose only failure on base is a compile error from a missing symbol. It needs
+      an assertion that fails for a behavioural reason once the symbol exists.
+
+
 ---
 
 ### Section 5 — Commit Plan
