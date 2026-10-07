@@ -94,7 +94,8 @@ probe the builder could have made itself. Rules when opting in:
   opt-in removes is the builder's blindness, not the gate.
 - It catches tests that fail. It does not catch hollow tests that pass on the branch and fail
   on base for the wrong reason (source-text greps, set/read-back); only review or mutation
-  catches those.
+  catches those. Specs name a kill mutation per required test, and the critic blocks plans
+  without them (issue #87).
 - Budget it: every verify attempt now pays a test run (gamedaytastic: about 1–2 min
   incremental, ~10 min cold).
 

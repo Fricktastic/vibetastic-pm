@@ -83,6 +83,23 @@ rules above), or `none` (no behaviour change, with the reason). Return `[BLOCKIN
   mocks away the path the change is in;
 - `observation: none` is claimed for work that changes behaviour.
 
+## Kill mutation check (issue #87)
+
+For a `risk: true` or `observation: test` plan, a test that is red on base and green on the
+branch can still be hollow. Each required test needs a **kill mutation**: a `kill_mutations:`
+entry naming the test, the file, an exact `find`, the `replace` and what it `breaks`. The plan
+must also list the branches the change adds or alters and the test covering each. Return
+`[BLOCKING-PLAN]` when:
+
+- a required test has no kill mutation, or the mutation's `find` would not be unique in the
+  file;
+- a mutation does not touch the behaviour being changed. Breaking unrelated code proves
+  nothing about this task's tests;
+- a branch the change adds or alters (guard, early return, edge case, async identity
+  re-check) has no test;
+- a required test is hollow: it greps production source for text, sets a stored property and
+  reads it back, or fails on base only because a symbol is missing.
+
 ## Defect evidence check (issue #46)
 
 If the plan fixes a defect (behaviour that is wrong on the current tree: a bug, a regression,

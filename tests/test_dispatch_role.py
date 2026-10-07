@@ -84,6 +84,20 @@ class RoleResultTests(unittest.TestCase):
         # the finding must use a tag the result block counts, or it never blocks the build
         self.assertIn('blocking_plan: <number of [BLOCKING-PLAN] findings>', critic)
 
+    def test_kill_mutation_contract_spans_author_and_critic(self):
+        """The block the spec authors write is the one the critic blocks on (issue #87)."""
+        critic=(ROOT/'prompts/critic.md').read_text()
+        self.assertIn('## Kill mutation check', critic)
+        check=critic.split('## Kill mutation check',1)[1].split('\n## ',1)[0]
+        self.assertIn('[BLOCKING-PLAN]', check)
+        for name in ('tech-lead.md','architect.md'):
+            self.assertIn('kill_mutations:', (ROOT/'prompts'/name).read_text(), name)
+        spec=(ROOT/'prompts/tech-lead.md').read_text()
+        for field in ('test:','file:','find:','replace:','breaks:'):
+            self.assertIn(field, spec.split('kill_mutations:',1)[1].split('```',1)[0], field)
+        for pattern in ('greps production source','reads it back','symbol is missing'):
+            self.assertIn(pattern, check, pattern)
+
     def test_architect_separates_spec_body_from_registration_metadata(self):
         reply='long build spec\n<!-- ARCHITECT_RESULT_START -->\n```yaml\nselected_tier: standard\n```\n'
         spec, meta=self.module.architect_result(reply)
