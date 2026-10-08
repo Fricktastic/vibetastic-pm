@@ -214,6 +214,12 @@ mechanically.
 from the claude backend's environment so this lane can never silently bill per-token
 (the Anthropic-on-subscription-only invariant, enforced structurally).
 
+**Candidate: `claude-haiku-5-5` at `fast`** (released 2026-10-07, on subscription). Not
+adopted: Terminal-Bench 4.0 39.2% vs Sonnet 5.5's 70.6%, so a cheaper `fast` rung may cost
+more window in exit-20 escalations than it saves. Adopt only on a field test (as #69 did for
+`gpt-6-luna`): first-attempt verifier pass rate, escalation rate, wall time and window burn
+versus `sonnet` on real `fast` tasks.
+
 ### Weekly-quota burn proxy (codex)
 
 Codex exposes **no in-band weekly-quota figure** (probed v0.144.4). dispatch.sh records
@@ -342,7 +348,8 @@ offload lane). Context/prices verified on OpenRouter 2026-06-29.
 | `sonnet` | 2.00 | 10.00 | 1M | Subscription only (PM + Tech Lead default). **Floating alias** — the claude CLI resolves it to the current default Sonnet, so cost.jsonl records written as `sonnet` are not pinned to a version. |
 | `claude-sonnet-5` | 2.00 | 10.00 | 1M | Subscription only. Pinned. Observed 3/3 in the field 2026-08. |
 | `claude-sonnet-4.6` | 3.00 | 15.00 | 1M | Subscription only. Pinned, previous generation — keep listed so historical `sonnet`-era records and any pinned dispatch still validate. |
-| `haiku` / `claude-haiku-4-5` | 1.00 | 5.00 | 200K | Subscription only (commit subagent / mechanical steps) |
+| `haiku` / `claude-haiku-5-5` | 0.10 | 0.50 | — | Subscription only (commit subagent / mechanical steps). Released 2026-10-07, on subscription. **Tiered:** $ shown are the ≤100K-prompt rates; >100K is 0.50 / 2.50 (cache read 0.01 / 0.05, write 0.125 / 0.625). **Floating alias** like `sonnet`. Claude `fast`-tier candidate pending field test (§ Claude tier column) |
+| `claude-haiku-4-5` | 1.00 | 5.00 | 200K | Subscription only. Pinned, previous generation — keep listed so historical `haiku`-era records still validate. |
 | `openrouter/deepseek/deepseek-v4-pro` | 0.96 | 1.91 | 1M | **RETIRING (announced 2026-09-10, days away)** — unpinned 0423 preview. No longer in any tier (superseded by minimax-m3 / kimi-k2.6 at the 2026-08-22 bake-off). Do not add it back; use `deepseek-v4-pro-0813`. Price also rose 2.2× since it was documented |
 | `openrouter/deepseek/deepseek-v4-pro-0813` | 0.66 | 1.98 | 1M | **heavy fallback** — GA release. Price *fell* ~45% since 2026-08-22 ($1.19/$3.56), now cheaper than glm-5.2 output |
 | `openrouter/deepseek/deepseek-v4-flash-0731` | 0.065 | 0.18 | 1.31M | **fast** primary — 28 providers, unaffected by the 2026-09-10 DeepSeek retirements |
