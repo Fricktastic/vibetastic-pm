@@ -5,11 +5,26 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import subprocess
 import sys
 import uuid
 
 HERE = Path(__file__).resolve().parent
+
+
+def split_provider_command(argv):
+    """Expand a quoted provider command ('claude --name x') into separate arguments."""
+    out = list(argv)
+    for i, arg in enumerate(out):
+        if arg == '--':
+            break
+        parts = shlex.split(arg) if ' ' in arg.strip() else []
+        if parts and parts[0] in ('claude', 'codex'):
+            return out[:i] + parts + out[i+1:]
+        if not arg.startswith('-') and (i == 0 or out[i-1] not in ('--pm-dir', '--profile')):
+            break
+    return out
 
 
 def main():
@@ -18,7 +33,7 @@ def main():
     parser.add_argument('--profile', choices=['normal','codex-fallback'])
     parser.add_argument('provider', choices=['claude','codex'])
     parser.add_argument('harness_args', nargs=argparse.REMAINDER, help='arguments passed unchanged to the native CLI')
-    args = parser.parse_args()
+    args = parser.parse_args(split_provider_command(sys.argv[1:]))
     pm = Path(args.pm_dir).resolve()
     if not (pm/'.orchestrator/config.json').is_file():
         print('Install project orchestration first: python3 framework/scripts/install-orchestrators.py --pm-dir .', file=sys.stderr)
