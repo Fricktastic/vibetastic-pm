@@ -3,9 +3,31 @@
 import argparse
 import json
 import os
+import secrets
 from pathlib import Path
 import sys
 from pm_state import PMState, StateError
+
+
+def caller_ownership(lease):
+    """Say whether the lease belongs to the session asking.
+
+    The wrapper (orchestrate.py) holds the lease and its PID is the wrapper's, not the CLI's,
+    so a session reading `active` saw a live owner with a session name it did not recognise
+    and concluded another session held the project. The token in this process's environment
+    is the authority: if it matches, the caller IS the owner.
+    """
+    token = os.environ.get('PM_ORCHESTRATOR_TOKEN')
+    owns = bool(lease and token and secrets.compare_digest(str(lease['token']), token))
+    if owns:
+        note = ('YOU own this lease: your wrapper (orchestrate.py, pid %s) holds it for session %r '
+                'and its token is in your environment. Proceed with state commands.'
+                % (lease['pid'], lease['session']))
+    elif lease:
+        note = 'Another session owns this lease; your environment token does not match.'
+    else:
+        note = 'No lease is held.'
+    return {'owns_lease': owns, 'note': note}
 
 
 def main():
@@ -44,6 +66,8 @@ def main():
         args['content'] = args.pop('source').read_text()
     try:
         result = getattr(state, name)(**args)
+        if name == 'active':
+            result['caller'] = caller_ownership(result.get('lease'))
         print(json.dumps(result, sort_keys=True))
         return 0
     except (StateError, OSError, ValueError, KeyError, TypeError) as exc:
