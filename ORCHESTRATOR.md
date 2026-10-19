@@ -42,6 +42,11 @@ Native CLI arguments follow the provider, for example `codex -- resume --last`.
 `PM_ORCHESTRATOR_TOKEN` are session environment variables, not PROJECT.md preferences.
 Never pass the token to a builder or copy it into prompts or logs.
 
+**A wrapper-launched session owns the wrapper's lease.** The lease's `pid` and `session` are
+the wrapper's, not the CLI's, so they will not look like "you". If `PM_ORCHESTRATOR_TOKEN` is
+set, you are the owner; `orchestrator-state.py active` reports this as `caller.owns_lease`.
+Only `owns_lease: false` with a live owner means another session holds the project.
+
 A second writer is refused. Read-only inspection outside the session is allowed, but never
 mutate durable state without ownership. A desktop/native session launched independently
 must explicitly acquire a lease using its live process ID and export the returned token

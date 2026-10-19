@@ -117,12 +117,27 @@ def render(pm_dir, today=None):
     return BANNER + "\n\n" + "\n".join(rendered) + "\n"
 
 
+def ownership_line():
+    """Tell a wrapper-launched session up front that the lease is its own.
+
+    Sessions saw the wrapper's lease (a live PID and session name that are not the CLI's own)
+    and reported "another session holds this project". The wrapper exports the token only to
+    the session it launched, so its presence is the ownership signal.
+    """
+    session = os.environ.get("PM_ORCHESTRATOR_SESSION")
+    if not os.environ.get("PM_ORCHESTRATOR_TOKEN") or not session:
+        return ""
+    return (f"[orchestrator] YOU own the project lease (session {session!r}). It is held by the "
+            "orchestrate.py wrapper that launched you; its live PID is your wrapper, not another "
+            "session. Confirm with `orchestrator-state.py active` (caller.owns_lease).\n\n")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--pm-dir", type=Path, default=None)
     args, _ = parser.parse_known_args(argv)
     pm_dir = args.pm_dir or Path(os.environ.get("PM_DIR") or os.getcwd())
-    output = render(pm_dir.resolve())
+    output = ownership_line() + render(pm_dir.resolve())
     if output:
         sys.stdout.write(output)
     return 0
