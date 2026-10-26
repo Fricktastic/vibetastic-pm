@@ -344,7 +344,7 @@ class Issue57GateTests(unittest.TestCase):
         # A non-security task needs no particular adjudicator.
         self.record("critic", "T010", critic_reply("PROCEED"))
         self.assertEqual(self.gate("adjudicate", "--task", "T010", "--outcome", "proceed",
-                                   "--model", "gpt-5.6-terra").returncode, 0)
+                                   "--model", "gpt-6.1-terra").returncode, 0)
         self.assertEqual(self.gate("build-gate", "--task", "T010").returncode, 0)
 
     def test_security_build_gate_rejects_a_non_opus_clearing_row(self):
@@ -362,7 +362,7 @@ class Issue57GateTests(unittest.TestCase):
         self.assertIn("accepted as legacy", legacy.stderr)
         # The operator's override stands whatever model recorded it.
         self.append_raw({"event": "adjudication", "task_id": "T014", "role": "critic",
-                         "outcome": "override", "reason": "operator", "model": "gpt-5.6-terra"})
+                         "outcome": "override", "reason": "operator", "model": "gpt-6.1-terra"})
         self.assertEqual(self.gate("build-gate", "--task", "T014").returncode, 0)
 
     def test_adjudication_is_voided_by_a_spec_change(self):
@@ -459,7 +459,7 @@ class DispatchGateTests(unittest.TestCase):
         prompt = self.pm / f"prompts/critic-{task}.md"
         prompt.write_text("Critique the plan.\n\n{{PROJECT_POLICY}}\n")
         return ["--read-only", "--role", "critic", "--author-model", "sonnet",
-                "--backend", "codex", "gpt-5.6-terra", self.code, prompt]
+                "--backend", "codex", "gpt-6.1-terra", self.code, prompt]
 
     def critic(self, task="T010"):
         return self.dispatch(*self.critic_args(task))
@@ -467,7 +467,7 @@ class DispatchGateTests(unittest.TestCase):
     def build(self, task="T010"):
         prompt = self.pm / f"prompts/task-{task}.md"
         prompt.write_text("Build it.\n")
-        return self.dispatch("--worktree", f"task/{task}", "--backend", "codex", "gpt-5.6-terra",
+        return self.dispatch("--worktree", f"task/{task}", "--backend", "codex", "gpt-6.1-terra",
                              self.code, prompt, "", "true", "1", "standard")
 
     def test_critic_rounds_are_recorded_and_capped_before_any_spend(self):
@@ -521,7 +521,7 @@ class DispatchGateTests(unittest.TestCase):
             prompt = self.pm / f"prompts/{role}-T010.md"
             prompt.write_text("x\n")
             result = self.dispatch("--role", role, "--author-model", "sonnet", "--worktree", "task/T010",
-                                   "--backend", "codex", "gpt-5.6-terra", self.code, prompt, "", "true",
+                                   "--backend", "codex", "gpt-6.1-terra", self.code, prompt, "", "true",
                                    "1", "standard")
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("requires --read-only", result.stderr)
@@ -542,7 +542,7 @@ class DispatchGateTests(unittest.TestCase):
         for name, branch, warned in (("adhoc-fix.md", "adhoc", True), ("task-T011.md", "task/T011", False)):
             prompt = self.pm / "prompts" / name
             prompt.write_text("Build it.\n")
-            result = self.dispatch("--worktree", branch, "--backend", "codex", "gpt-5.6-terra",
+            result = self.dispatch("--worktree", branch, "--backend", "codex", "gpt-6.1-terra",
                                    self.code, prompt, "", "true", "1", "standard",
                                    PM_ORCHESTRATOR_TOKEN=token)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -552,7 +552,7 @@ class DispatchGateTests(unittest.TestCase):
         prompt = self.pm / "prompts/critique.md"
         prompt.write_text("x\n")
         result = self.dispatch("--read-only", "--role", "critic", "--author-model", "sonnet",
-                               "--backend", "codex", "gpt-5.6-terra", self.code, prompt)
+                               "--backend", "codex", "gpt-6.1-terra", self.code, prompt)
         self.assertEqual(result.returncode, 31)
         self.assertIn("--task", result.stderr)
         self.assertEqual(self.calls_made(), 0)
@@ -578,7 +578,7 @@ class DispatchGateTests(unittest.TestCase):
         prompt = self.pm / "prompts/fix-something.md"
         prompt.write_text("Build it.\n")
         result = self.dispatch("--task", "T010", "--worktree", "task/T010-b", "--backend", "codex",
-                               "gpt-5.6-terra", self.code, prompt, "", "true", "1", "standard")
+                               "gpt-6.1-terra", self.code, prompt, "", "true", "1", "standard")
         self.assertEqual(result.returncode, 31, result.stderr)
 
     def test_suffixed_task_id_is_gated_not_truncated(self):
@@ -599,7 +599,7 @@ class DispatchGateTests(unittest.TestCase):
         prompt = self.pm / "prompts/fix-something.md"
         prompt.write_text("Build it.\n")
         result = self.dispatch("--task", "T010.1", "--worktree", "task/T010-c", "--backend", "codex",
-                               "gpt-5.6-terra", self.code, prompt, "", "true", "1", "standard")
+                               "gpt-6.1-terra", self.code, prompt, "", "true", "1", "standard")
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("configuration error", result.stderr)
         self.assertEqual(self.calls_made(), 0)
@@ -612,7 +612,7 @@ class DispatchGateTests(unittest.TestCase):
         head = subprocess.run(["git", "-C", self.code, "rev-parse", "HEAD"], capture_output=True,
                               text=True, check=True).stdout.strip()
         review = lambda: self.dispatch("--read-only", "--role", "reviewer", "--author-model", "sonnet",
-                                       "--backend", "codex", "gpt-5.6-terra", self.code, prompt)
+                                       "--backend", "codex", "gpt-6.1-terra", self.code, prompt)
         self.assertEqual(review().returncode, 0)
         (self.code / "scratch.txt").write_text("uncommitted\n")
         self.assertEqual(review().returncode, 0)

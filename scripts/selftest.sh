@@ -183,7 +183,7 @@ CODEX_CALLS="$DISPATCH_TMP/codex-calls"
 CODEX_FLAG="$DISPATCH_TMP/codex-verified"
 PATH="$DISPATCH_BIN:$PATH" FAKE_CALLS="$CODEX_CALLS" FAKE_VERIFY_FLAG="$CODEX_FLAG" \
   CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_LOGS" DISPATCH_ALLOW_NO_WORKTREE=1 \
-  bash dispatch.sh --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
+  bash dispatch.sh --backend codex gpt-6.1-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
   '' "test -f $CODEX_FLAG" 2 standard > "$DISPATCH_TMP/codex.stdout" 2> "$DISPATCH_TMP/codex.stderr"
 got=$?
 CODEX_LOG="$(find "$CODEX_LOGS" -name '*.log' -type f | head -n 1)"
@@ -209,7 +209,7 @@ fi
 
 CODEX_READONLY_LOGS="$DISPATCH_TMP/codex-readonly-logs"
 PATH="$DISPATCH_BIN:$PATH" CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$CODEX_READONLY_LOGS" \
-  bash dispatch.sh --read-only --backend codex gpt-5.6-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
+  bash dispatch.sh --read-only --backend codex gpt-6.1-terra "$DISPATCH_PROJECT" "$DISPATCH_TMP/task-T998.md" \
   > /dev/null 2> "$DISPATCH_TMP/codex-readonly.stderr"
 got=$?
 CODEX_READONLY_LOG="$(find "$CODEX_READONLY_LOGS" -name '*.log' -type f | head -n 1)"
@@ -283,7 +283,7 @@ SH
 fm_fake codex    '{"type":"item.completed","item":{"type":"agent_message","text":"fm ok"}}'
 fm_fake claude   '{"session_id":"fm","result":"fm ok"}'
 fm_fake opencode 'fm ok'
-for fm_case in "codex gpt-5.6-terra" "claude sonnet" "opencode openrouter/minimax/minimax-m3"; do
+for fm_case in "codex gpt-6.1-terra" "claude sonnet" "opencode openrouter/minimax/minimax-m3"; do
   fm_be="${fm_case%% *}"; fm_model="${fm_case#* }"
   PATH="$FM_BIN:$PATH" CODEX_FIRST_EVENT_TIMEOUT=0 OPENCODE_DISPATCH_LOG_DIR="$FM_TMP/logs-$fm_be" \
     bash dispatch.sh --read-only --backend "$fm_be" "$fm_model" "$FM_PROJ" "$FM_TMP/role-frontmatter.md" \
@@ -644,8 +644,8 @@ else
   }
   # tier must select the model (11 field runs contradicted MODELS.md)
   gate_case 2 codex    gpt-6.1-sol@high    standard false "tier standard + sol@high is refused"
-  gate_case 0 codex    gpt-5.6-terra       standard false "tier standard + terra is allowed"
-  gate_case 2 codex    gpt-5.6-terra       fast     false "tier fast + terra is refused"
+  gate_case 0 codex    gpt-6.1-terra       standard false "tier standard + terra is allowed"
+  gate_case 2 codex    gpt-6.1-terra       fast     false "tier fast + terra is refused"
   gate_case 0 codex    gpt-6-luna          fast     false "tier fast + luna is allowed"
   gate_case 0 codex    gpt-6.1-sol@medium  heavy    false "a within-rung effort bump still matches heavy"
   gate_case 0 claude   sonnet              standard false "claude standard + sonnet is allowed"
@@ -653,8 +653,8 @@ else
   gate_case 0 opencode openrouter/minimax/minimax-m3       standard false "opencode standard resolves"
   gate_case 2 opencode openrouter/google/gemini-2.5-flash  fast false "a retired model is not a live rung"
   # missing tier (issue #19 — was a warning, missing on 78% of runs)
-  gate_case 2 codex    gpt-5.6-terra       ""       false "a build dispatch with no tier is refused"
-  gate_case 0 codex    gpt-5.6-terra       ""       true  "a read-only dispatch needs no tier"
+  gate_case 2 codex    gpt-6.1-terra       ""       false "a build dispatch with no tier is refused"
+  gate_case 0 codex    gpt-6.1-terra       ""       true  "a read-only dispatch needs no tier"
   # sol@high is the terminal rung, and it is burn-gated
   gate_case 2 codex    gpt-6.1-sol@high    heavy    true  "read-only never reaches sol@high"
   gate_case 2 codex    gpt-6.1-sol@high    heavy    false "a first-attempt sol@high is refused"
@@ -753,10 +753,10 @@ acc_case() {  # want_exit, want "acceptance scope verify_passed", fresh, resume,
   if [ -n "$5" ]; then
     PATH="$ACC_BIN:$PATH" ACC_FRESH="$3" ACC_RESUME="$4" ACC_FLAG="$ACC_TMP/flag" CODEX_FIRST_EVENT_TIMEOUT=0 \
       OPENCODE_DISPATCH_LOG_DIR="$logs" DISPATCH_ALLOW_NO_WORKTREE=1 bash dispatch.sh --backend codex \
-      gpt-5.6-terra "$ACC_PROJ" "$ACC_TMP/task-T996.md" '' "$5" 2 standard > /dev/null 2> "$ACC_TMP/stderr"
+      gpt-6.1-terra "$ACC_PROJ" "$ACC_TMP/task-T996.md" '' "$5" 2 standard > /dev/null 2> "$ACC_TMP/stderr"
   else
     PATH="$ACC_BIN:$PATH" ACC_FRESH="$3" ACC_FLAG="$ACC_TMP/flag" CODEX_FIRST_EVENT_TIMEOUT=0 \
-      OPENCODE_DISPATCH_LOG_DIR="$logs" bash dispatch.sh --read-only --backend codex gpt-5.6-terra \
+      OPENCODE_DISPATCH_LOG_DIR="$logs" bash dispatch.sh --read-only --backend codex gpt-6.1-terra \
       "$ACC_PROJ" "$ACC_TMP/task-T996.md" > /dev/null 2> "$ACC_TMP/stderr"
   fi
   got=$?
@@ -802,7 +802,7 @@ q_case() {  # want_exit, backend, model, label  (fake CLI body already written)
 q_fake() { printf '#!/bin/bash\nprintf "call\\n" >> "$Q_CALLS"\n%s\n' "$2" > "$Q_BIN/$1"; chmod +x "$Q_BIN/$1"; }
 q_fake codex "printf '%s\n' '{\"type\":\"error\",\"message\":\"You have hit your usage limit. Try again later.\"}'
 printf '%s\n' '{\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit\"}}'; exit 1"
-q_case 30 codex gpt-5.6-terra "codex usage-limit event exits 30 (backend unavailable)"
+q_case 30 codex gpt-6.1-terra "codex usage-limit event exits 30 (backend unavailable)"
 grep -q 'backend unavailable: codex' "$Q_TMP/stderr" \
   && pass "the refusal reason is reported on stderr" || fail "exit 30 carried no reason"
 q_fake claude "printf '%s\n' '{\"is_error\":true,\"result\":\"Claude AI usage limit reached|1790000000\",\"session_id\":\"s\"}'; exit 1"
@@ -813,7 +813,7 @@ q_case 30 opencode openrouter/minimax/minimax-m3 "opencode insufficient-credits 
 [ "$(wc -l < "$Q_TMP/calls" | tr -d ' ')" = 1 ] \
   && pass "a refused silent run is not stall-retried" || fail "a quota refusal was stall-retried"
 q_fake codex "printf '%s\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"added a rate limit and fixed the 429 quota handling\"}}'; exit 1"
-q_case 1 codex gpt-5.6-terra "the builder's own report mentioning rate limits stays exit 1"
+q_case 1 codex gpt-6.1-terra "the builder's own report mentioning rate limits stays exit 1"
 rm -rf "$Q_TMP"
 
 echo "[selftest] investigate.sh — the one-command diagnosis lane (issue #42)"
@@ -865,7 +865,7 @@ fi
 # investigate.sh carries its own tier->model table; MODELS.md is the source of truth, so
 # assert they agree. Without this the two drift silently — the read-only lane passes no
 # tier, so dispatch.sh's issue-#41 check never sees this pairing.
-for pair in "codex:fast:gpt-6-luna" "codex:standard:gpt-5.6-terra" "codex:heavy:gpt-6.1-sol" \
+for pair in "codex:fast:gpt-6-luna" "codex:standard:gpt-6.1-terra" "codex:heavy:gpt-6.1-sol" \
             "opencode:fast:openrouter/deepseek/deepseek-v4-flash-0731" "opencode:standard:openrouter/minimax/minimax-m3" "opencode:heavy:openrouter/moonshotai/kimi-k2.6"; do
   be="${pair%%:*}"; rest="${pair#*:}"; tr_="${rest%%:*}"; want="${rest#*:}"
   got="$(python3 -c "

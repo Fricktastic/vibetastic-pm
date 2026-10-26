@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Issue #69 field test: same task, N runs per model, each in its own worktree off `main`.
 #
-#   bash Docs/field-tests/issue-69/run.sh <pair> [runs]      pair: fast | heavy
+#   bash Docs/field-tests/issue-69/run.sh <pair> [runs]      pair: fast | standard | heavy
 #
 # fast:  gpt-6-luna      vs gpt-5.6-luna      (both default effort = medium)
+# standard: gpt-6.1-terra vs gpt-5.6-terra    (both default effort = medium)
 # heavy: gpt-6.1-sol@low vs gpt-5.6-sol@low   (explicit @low on both)
 #
 # Runs alternate between the two models so quota/time-of-day drift hits both equally.
@@ -13,15 +14,16 @@
 # Results: logs/cost.jsonl rows (prompt ft69-*.md) + results.jsonl from check.py.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; REPO="$(cd "$HERE/../../.." && pwd)"
-PAIR="${1:?fast|heavy}"; RUNS="${2:-5}"
+PAIR="${1:?fast|standard|heavy}"; RUNS="${2:-5}"
 case "$PAIR" in
   fast)  MODELS=(gpt-6-luna gpt-5.6-luna) ;;
+  standard) MODELS=(gpt-6.1-terra gpt-5.6-terra) ;;
   heavy) MODELS=(gpt-6.1-sol@low gpt-5.6-sol@low) ;;
-  *) echo "pair must be fast or heavy" >&2; exit 2 ;;
+  *) echo "pair must be fast, standard or heavy" >&2; exit 2 ;;
 esac
 OUT="$HERE/out"; mkdir -p "$OUT"
 MF="$OUT/MODELS.candidates.md"
-{ cat "$REPO/MODELS.md"; printf '\n## Field-test candidates (issue #69, temp copy only)\n\n`gpt-6-luna` `gpt-6.1-sol`\n'; } > "$MF"
+{ cat "$REPO/MODELS.md"; printf '\n## Field-test candidates (issue #69, temp copy only)\n\n`gpt-6-luna` `gpt-6.1-sol` `gpt-6.1-terra`\n'; } > "$MF"
 
 for i in $(seq 1 "$RUNS"); do
   for m in "${MODELS[@]}"; do
