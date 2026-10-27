@@ -5,6 +5,7 @@ its own worktree branched from `main`. Runs alternate between the two models of 
 
 ```sh
 bash Docs/field-tests/issue-69/run.sh fast  5   # gpt-6-luna      vs gpt-5.6-luna
+bash Docs/field-tests/issue-69/run.sh standard 5  # gpt-6.1-terra  vs gpt-5.6-terra (2026-10-26)
 bash Docs/field-tests/issue-69/run.sh heavy 5   # gpt-6.1-sol@low vs gpt-5.6-sol@low
 ```
 

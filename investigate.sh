@@ -80,14 +80,14 @@ BACKEND="$(sed -n '/^---$/,/^---$/p' "$PM_DIR/PROJECT.md" 2>/dev/null \
 BACKEND="${BACKEND:-codex}"
 case "$BACKEND:$TIER" in
   codex:fast)        MODEL=gpt-6-luna ;;
-  codex:standard)    MODEL=gpt-5.6-terra ;;
+  codex:standard)    MODEL=gpt-6.1-terra ;;
   codex:heavy)       MODEL=gpt-6.1-sol@low ;;
   claude:fast|claude:standard) MODEL=sonnet ;;
   claude:heavy)      MODEL=opus ;;
   opencode:fast)     MODEL=openrouter/deepseek/deepseek-v4-flash-0731 ;;
   opencode:heavy)    MODEL=openrouter/moonshotai/kimi-k2.6 ;;
   opencode:*)        MODEL=openrouter/minimax/minimax-m3 ;;
-  *)                 MODEL=gpt-5.6-terra; BACKEND=codex ;;
+  *)                 MODEL=gpt-6.1-terra; BACKEND=codex ;;
 esac
 
 echo "[investigate] $BACKEND $MODEL ($TIER, read-only) -> $(basename "$PROMPT_FILE")" >&2
