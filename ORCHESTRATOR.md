@@ -125,6 +125,11 @@ A task TASK_LOG shows shipped but PLAN still holds `in_progress` is recorded `do
 never a failure.
 
 For a dead owner, `takeover` requires the current evidence hash and a written reason.
+`orchestrate.py` does this itself at launch when the owner is provably dead and no
+dispatch reservation is open, recording the reason and taking the lease with its own pid. A
+live owner or an open reservation still refuses. A hand-run `takeover` records the pid of
+the shell that ran it (`--pid` defaults to the parent), so run it from a process that
+outlives the lease or the new lease is dead on arrival.
 For a live owner, use `handoff` or release from that owner. New ownership invalidates the
 old token. Unresolved dispatch reservations survive ownership changes and prevent duplicate
 builds. Only the recorded dispatch process can finish its reservation; a dead reservation
