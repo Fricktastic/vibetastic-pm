@@ -27,6 +27,45 @@ def split_provider_command(argv):
     return out
 
 
+def take_over_dead_owner(state, provider, session, profile, refused):
+    """Take over a lease only when its owner is provably dead and no dispatch is open.
+
+    A crashed session leaves its lease behind. Taking it over by hand meant running
+    `takeover` from a shell that exits at once, which recorded a dead pid and left a new
+    stale lease. The wrapper takes over with its own pid instead, so the lease it takes is
+    the one it holds and renews. A live owner or an open reservation still refuses.
+    """
+    active = subprocess.run(state+['active'], capture_output=True, text=True)
+    try:
+        evidence = json.loads(active.stdout) if active.returncode == 0 else None
+    except ValueError:
+        evidence = None
+    lease = (evidence or {}).get('lease')
+    if not evidence or not lease or evidence.get('owner_alive'):
+        print(refused.stderr, end='', file=sys.stderr)
+        if lease and evidence.get('owner_alive'):
+            print(f"[orchestrate] live {lease['provider']} session {lease['session']} (pid {lease['pid']}) owns this "
+                  'project; close it or hand off.', file=sys.stderr)
+        return None
+    if evidence.get('runs'):
+        print(refused.stderr, end='', file=sys.stderr)
+        print('[orchestrate] previous owner is dead but dispatch reservations are open: '
+              + ', '.join(r['run_id'] for r in evidence['runs'])
+              + '. Reconcile them (orchestrator-state.py reconcile), then relaunch.', file=sys.stderr)
+        return None
+    reason = (f"auto-takeover by orchestrate.py: owner pid {lease['pid']} (session {lease['session']}, "
+              f"last renewed {lease.get('renewed_at')}) is not live; no open reservations")
+    taken = subprocess.run(state+['takeover','--provider',provider,'--session',session,'--pid',str(os.getpid()),
+                                  '--profile',profile,'--evidence-hash',evidence['evidence_hash'],'--reason',reason],
+                           capture_output=True, text=True)
+    if taken.returncode:
+        print(taken.stderr, end='', file=sys.stderr)
+        return None
+    print(f"[orchestrate] took over stale lease from dead pid {lease['pid']} "
+          f"(last renewed {lease.get('renewed_at')}).", file=sys.stderr)
+    return taken
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pm-dir', default='.')
@@ -46,8 +85,9 @@ def main():
     state = [sys.executable, str(HERE/'scripts/orchestrator-state.py'), '--pm-dir', str(pm)]
     acquired = subprocess.run(state+['acquire','--provider',args.provider,'--session',session,'--pid',str(os.getpid()),'--profile',profile],capture_output=True,text=True)
     if acquired.returncode:
-        print(acquired.stderr, end='', file=sys.stderr)
-        return 31
+        acquired = take_over_dead_owner(state, args.provider, session, profile, acquired)
+        if acquired is None:
+            return 31
     token = json.loads(acquired.stdout)['token']
     env = {**os.environ, 'PM_DIR': str(pm), 'PM_ORCHESTRATOR_PROVIDER': args.provider,
            'PM_ORCHESTRATOR_SESSION': session, 'PM_ORCHESTRATOR_TOKEN': token}
